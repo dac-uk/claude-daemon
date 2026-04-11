@@ -360,7 +360,7 @@ class TelegramIntegration(BaseIntegration):
         if not self.daemon or not self.daemon.store:
             return
 
-        self.daemon.store.reset_conversation(str(user.id), "telegram")
+        self.daemon.store.reset_conversation(str(user.id))
         await update.message.reply_text("Session cleared. Starting fresh!")
 
     async def _cmd_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -390,7 +390,7 @@ class TelegramIntegration(BaseIntegration):
         if not self.daemon or not self.daemon.store:
             return
 
-        stats = self.daemon.store.get_user_stats(str(user.id), "telegram")
+        stats = self.daemon.store.get_user_stats(str(user.id))
         text = (
             f"Your usage (Telegram):\n"
             f"Sessions: {stats.get('sessions', 0)}\n"

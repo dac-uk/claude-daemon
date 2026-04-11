@@ -43,11 +43,12 @@ class ConversationStore:
             if row:
                 return dict(row)
 
-        # Look for existing active conversation for this user on this platform
+        # Look for existing active conversation for this user ACROSS ALL platforms.
+        # This enables seamless handover between Telegram, Discord, CLI, and API.
         row = self._db.execute(
-            "SELECT * FROM conversations WHERE user_id = ? AND platform = ? AND status = 'active' "
+            "SELECT * FROM conversations WHERE user_id = ? AND status = 'active' "
             "ORDER BY last_active DESC LIMIT 1",
-            (user_id, platform),
+            (user_id,),
         ).fetchone()
 
         if row:
@@ -122,12 +123,20 @@ class ConversationStore:
         self._db.commit()
         return cur.rowcount
 
-    def reset_conversation(self, user_id: str, platform: str) -> None:
-        self._db.execute(
-            "UPDATE conversations SET status = 'archived' "
-            "WHERE user_id = ? AND platform = ? AND status = 'active'",
-            (user_id, platform),
-        )
+    def reset_conversation(self, user_id: str, platform: str | None = None) -> None:
+        """Archive active conversations. If platform is None, clears across all platforms."""
+        if platform:
+            self._db.execute(
+                "UPDATE conversations SET status = 'archived' "
+                "WHERE user_id = ? AND platform = ? AND status = 'active'",
+                (user_id, platform),
+            )
+        else:
+            self._db.execute(
+                "UPDATE conversations SET status = 'archived' "
+                "WHERE user_id = ? AND status = 'active'",
+                (user_id,),
+            )
         self._db.commit()
 
     # -- Messages --
@@ -203,15 +212,24 @@ class ConversationStore:
         ).fetchone()
         return dict(row) if row else {}
 
-    def get_user_stats(self, user_id: str, platform: str) -> dict:
-        """Get per-user statistics."""
-        row = self._db.execute(
-            "SELECT COUNT(*) as sessions, "
-            "COALESCE(SUM(total_cost_usd), 0) as total_cost, "
-            "COALESCE(SUM(message_count), 0) as total_messages "
-            "FROM conversations WHERE user_id = ? AND platform = ?",
-            (user_id, platform),
-        ).fetchone()
+    def get_user_stats(self, user_id: str, platform: str | None = None) -> dict:
+        """Get per-user statistics. If platform is None, aggregates across all platforms."""
+        if platform:
+            row = self._db.execute(
+                "SELECT COUNT(*) as sessions, "
+                "COALESCE(SUM(total_cost_usd), 0) as total_cost, "
+                "COALESCE(SUM(message_count), 0) as total_messages "
+                "FROM conversations WHERE user_id = ? AND platform = ?",
+                (user_id, platform),
+            ).fetchone()
+        else:
+            row = self._db.execute(
+                "SELECT COUNT(*) as sessions, "
+                "COALESCE(SUM(total_cost_usd), 0) as total_cost, "
+                "COALESCE(SUM(message_count), 0) as total_messages "
+                "FROM conversations WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
         return dict(row) if row else {}
 
     # -- Full-Text Search --

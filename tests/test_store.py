@@ -31,10 +31,18 @@ def test_get_existing_conversation(store: ConversationStore):
     assert conv1["id"] == conv2["id"]
 
 
-def test_session_isolation(store: ConversationStore):
+def test_cross_platform_session_sharing(store: ConversationStore):
+    """Sessions are shared across platforms for the same user — enables seamless handover."""
     tg = store.get_or_create_conversation(None, "telegram", "user123")
     dc = store.get_or_create_conversation(None, "discord", "user123")
-    assert tg["session_id"] != dc["session_id"]
+    assert tg["session_id"] == dc["session_id"]  # Same user, shared session
+
+
+def test_different_users_isolated(store: ConversationStore):
+    """Different users should get separate sessions."""
+    u1 = store.get_or_create_conversation(None, "telegram", "user1")
+    u2 = store.get_or_create_conversation(None, "telegram", "user2")
+    assert u1["session_id"] != u2["session_id"]
 
 
 def test_get_conversation_by_session(store: ConversationStore):
