@@ -1,0 +1,154 @@
+"""Configuration loading for claude-daemon.
+
+Precedence (lowest to highest): defaults < YAML config < .env file < env vars.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+
+from claude_daemon.utils import paths
+
+
+def _env(key: str, default: Any = None, cast: type = str) -> Any:
+    """Read a CLAUDE_DAEMON_ prefixed env var with optional type cast."""
+    val = os.environ.get(f"CLAUDE_DAEMON_{key}", os.environ.get(key))
+    if val is None:
+        return default
+    if cast is bool:
+        return val.lower() in ("1", "true", "yes")
+    return cast(val)
+
+
+@dataclass
+class DaemonConfig:
+    """All daemon configuration in one place."""
+
+    # Core
+    data_dir: Path = field(default_factory=paths.config_dir)
+    log_level: str = "INFO"
+    health_port: int | None = None
+
+    # Claude Code
+    claude_binary: str = "claude"
+    max_concurrent_sessions: int = 3
+    max_budget_per_message: float = 0.50
+    default_model: str | None = None
+    permission_mode: str = "auto"
+
+    # Memory
+    daily_log_enabled: bool = True
+    compaction_threshold: int = 50_000
+    max_session_age_hours: int = 72
+    dream_enabled: bool = True
+
+    # Scheduler
+    update_cron: str = "0 3 * * *"
+    compaction_cron: str = "0 4 * * *"
+    dream_cron: str = "0 5 * * 0"
+    heartbeat_interval: int = 1800
+    custom_jobs: list[dict] = field(default_factory=list)
+
+    # Integrations (tokens from env, not YAML)
+    telegram_token: str | None = None
+    telegram_allowed_users: list[int] = field(default_factory=list)
+    telegram_polling: bool = True
+    discord_token: str | None = None
+    discord_allowed_guilds: list[int] = field(default_factory=list)
+    paperclip_url: str | None = None
+    paperclip_api_key: str | None = None
+    paperclip_poll_interval: int = 5
+
+    # Derived paths
+    @property
+    def log_dir(self) -> Path:
+        return self.data_dir / "logs"
+
+    @property
+    def memory_dir(self) -> Path:
+        return self.data_dir / "memory"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "daemon.db"
+
+    @property
+    def pid_path(self) -> Path:
+        return paths.pid_path()
+
+    @classmethod
+    def load(cls, config_path: Path | None = None) -> DaemonConfig:
+        """Load config from YAML, .env, and environment variables."""
+        # Load .env first so env vars are available
+        dotenv_path = Path(".env")
+        if dotenv_path.exists():
+            load_dotenv(dotenv_path)
+        dotenv_data = paths.config_dir() / ".env"
+        if dotenv_data.exists():
+            load_dotenv(dotenv_data)
+
+        # Load YAML config
+        yaml_data: dict[str, Any] = {}
+        candidates = [
+            config_path,
+            Path("config.yaml"),
+            Path("config.yml"),
+            paths.config_dir() / "config.yaml",
+            paths.config_dir() / "config.yml",
+        ]
+        for candidate in candidates:
+            if candidate and candidate.exists():
+                with open(candidate) as f:
+                    yaml_data = yaml.safe_load(f) or {}
+                break
+
+        daemon_cfg = yaml_data.get("daemon", {})
+        claude_cfg = yaml_data.get("claude", {})
+        memory_cfg = yaml_data.get("memory", {})
+        sched_cfg = yaml_data.get("scheduler", {})
+        integ_cfg = yaml_data.get("integrations", {})
+        tg_cfg = integ_cfg.get("telegram", {})
+        dc_cfg = integ_cfg.get("discord", {})
+        pc_cfg = integ_cfg.get("paperclip", {})
+
+        data_dir_str = _env("DATA_DIR") or daemon_cfg.get("data_dir")
+        data_dir = Path(os.path.expanduser(data_dir_str)) if data_dir_str else paths.config_dir()
+
+        return cls(
+            # Core
+            data_dir=data_dir,
+            log_level=_env("LOG_LEVEL") or daemon_cfg.get("log_level", "INFO"),
+            health_port=int(hp) if (hp := daemon_cfg.get("health_port")) else None,
+            # Claude
+            claude_binary=claude_cfg.get("binary", "claude"),
+            max_concurrent_sessions=int(claude_cfg.get("max_concurrent", 3)),
+            max_budget_per_message=float(claude_cfg.get("max_budget_per_message", 0.50)),
+            default_model=claude_cfg.get("model"),
+            permission_mode=claude_cfg.get("permission_mode", "auto"),
+            # Memory
+            daily_log_enabled=memory_cfg.get("daily_log", True),
+            compaction_threshold=int(memory_cfg.get("compaction_threshold", 50_000)),
+            max_session_age_hours=int(memory_cfg.get("max_session_age_hours", 72)),
+            dream_enabled=memory_cfg.get("dream_enabled", True),
+            # Scheduler
+            update_cron=sched_cfg.get("update_cron", "0 3 * * *"),
+            compaction_cron=sched_cfg.get("compaction_cron", "0 4 * * *"),
+            dream_cron=sched_cfg.get("dream_cron", "0 5 * * 0"),
+            heartbeat_interval=int(sched_cfg.get("heartbeat_interval", 1800)),
+            custom_jobs=sched_cfg.get("custom_jobs", []),
+            # Integrations
+            telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),
+            telegram_allowed_users=tg_cfg.get("allowed_user_ids", []),
+            telegram_polling=tg_cfg.get("polling", True),
+            discord_token=os.environ.get("DISCORD_BOT_TOKEN") or dc_cfg.get("token"),
+            discord_allowed_guilds=dc_cfg.get("allowed_guild_ids", []),
+            paperclip_url=os.environ.get("PAPERCLIP_URL") or pc_cfg.get("url"),
+            paperclip_api_key=os.environ.get("PAPERCLIP_API_KEY") or pc_cfg.get("api_key"),
+            paperclip_poll_interval=int(pc_cfg.get("poll_interval", 5)),
+        )

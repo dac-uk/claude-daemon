@@ -1,0 +1,13 @@
+[Unit]
+Description=Claude Code Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=claude-daemon start --foreground
+Restart=on-failure
+RestartSec=10
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
