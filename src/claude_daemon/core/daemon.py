@@ -355,6 +355,31 @@ class ClaudeDaemon:
         agent.load_identity()
         return f"Updated {name}.{field} = {value[:50]}{'...' if len(value) > 50 else ''}"
 
+    def spawn_task(self, agent_name: str, prompt: str) -> str:
+        """Spawn a background task on an agent. Returns immediately."""
+        if not self.orchestrator or not self.agent_registry:
+            return "Not initialized."
+        agent = self.agent_registry.get(agent_name.lower())
+        if not agent:
+            return f"Agent '{agent_name}' not found."
+        task = self.orchestrator.spawn_task(agent, prompt)
+        return f"Spawned task {task.task_id} on {agent.identity.display_name}"
+
+    def list_tasks(self) -> str:
+        """List all spawned tasks and their status."""
+        if not self.orchestrator:
+            return "Not initialized."
+        tasks = self.orchestrator.list_tasks()
+        if not tasks:
+            return "No active tasks."
+        lines = ["Tasks:\n"]
+        for t in tasks[-20:]:
+            lines.append(
+                f"  {t.task_id} [{t.status}] {t.agent_name}: {t.prompt[:60]}"
+                + (f" (${t.cost:.4f})" if t.cost else "")
+            )
+        return "\n".join(lines)
+
     def delete_agent(self, name: str) -> str:
         """Remove an agent from the registry (workspace files preserved)."""
         if not self.agent_registry:

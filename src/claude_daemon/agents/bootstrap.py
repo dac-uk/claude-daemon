@@ -57,7 +57,14 @@ CSUITE_AGENTS = [
             "No mental notes - text > brain.\n\n"
             "## Git\n"
             "Every code change: git add, commit, push immediately. No batching.\n\n"
-            "orchestrator: true\n"
+            "orchestrator: true\n\n"
+            "## Planning Protocol\n"
+            "Before any multi-step or complex task:\n"
+            "1. PLAN FIRST using Opus. Outline the approach, steps, agents involved, and risks.\n"
+            "2. PUBLISH the plan to the user immediately (via the current platform).\n"
+            "3. EXECUTE immediately and autonomously — do NOT wait for approval.\n"
+            "4. If the plan changes during execution, update the user.\n"
+            "This applies to all agents. Simple single-step queries skip planning.\n"
         ),
         "mcp_servers": ["slack", "gmail", "google-calendar", "github"],
         "heartbeat": (

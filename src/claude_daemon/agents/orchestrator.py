@@ -1,5 +1,8 @@
 """Orchestrator - routes messages to named agents and manages delegation.
 
+Supports parallel task dispatch: multiple tasks to the same agent run
+concurrently in separate sessions (no --resume collision).
+
 The orchestrator is itself an agent, but with special routing responsibilities.
 When a message arrives, it either:
 1. Routes to a specifically addressed agent (@agent_name or /agent_name)
@@ -9,8 +12,11 @@ When a message arrives, it either:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import uuid
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator
 
 from claude_daemon.agents.agent import Agent
@@ -46,6 +52,19 @@ If no agent is a good fit, respond with: orchestrator
 """
 
 
+@dataclass
+class SpawnedTask:
+    """A background task running on an agent."""
+
+    task_id: str
+    agent_name: str
+    prompt: str
+    status: str = "running"  # running, completed, failed
+    result: str = ""
+    cost: float = 0.0
+    _future: asyncio.Task | None = field(default=None, repr=False)
+
+
 class Orchestrator:
     """Routes messages to appropriate agents and manages inter-agent communication."""
 
@@ -58,6 +77,7 @@ class Orchestrator:
         self.registry = registry
         self.pm = process_manager
         self.store = store
+        self._spawned_tasks: dict[str, SpawnedTask] = {}
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
@@ -294,3 +314,77 @@ class Orchestrator:
             task_type=task_type,
         )
         return response.result
+
+    # -- Parallel task dispatch --
+
+    def spawn_task(
+        self,
+        agent: Agent,
+        prompt: str,
+        platform: str = "spawn",
+        user_id: str = "local",
+        task_type: str = "default",
+    ) -> SpawnedTask:
+        """Launch a task on an agent in the background (non-blocking).
+
+        Each spawned task gets its own fresh session so multiple tasks
+        to the same agent run truly in parallel (no --resume collision).
+        Returns immediately with a SpawnedTask for tracking.
+        """
+        task_id = str(uuid.uuid4())[:12]
+
+        async def _run():
+            # Use a unique session key to avoid sharing sessions
+            unique_user = f"{user_id}:spawn:{task_id}"
+            response = await self.send_to_agent(
+                agent=agent,
+                prompt=prompt,
+                platform=platform,
+                user_id=unique_user,
+                task_type=task_type,
+            )
+            spawned.result = response.result
+            spawned.cost = response.cost
+            spawned.status = "failed" if response.is_error else "completed"
+
+        spawned = SpawnedTask(
+            task_id=task_id,
+            agent_name=agent.name,
+            prompt=prompt[:200],
+        )
+        spawned._future = asyncio.create_task(_run())
+        self._spawned_tasks[task_id] = spawned
+        log.info("Spawned task %s on %s", task_id, agent.name)
+        return spawned
+
+    async def spawn_parallel(
+        self,
+        tasks: list[tuple[Agent, str]],
+        platform: str = "spawn",
+        user_id: str = "local",
+        task_type: str = "default",
+    ) -> list[SpawnedTask]:
+        """Launch multiple tasks in parallel and wait for all to complete.
+
+        Each (agent, prompt) pair runs in its own session concurrently.
+        Returns list of completed SpawnedTasks.
+        """
+        spawned = [
+            self.spawn_task(agent, prompt, platform, user_id, task_type)
+            for agent, prompt in tasks
+        ]
+        # Wait for all to complete
+        await asyncio.gather(
+            *[s._future for s in spawned if s._future],
+            return_exceptions=True,
+        )
+        return spawned
+
+    def get_task(self, task_id: str) -> SpawnedTask | None:
+        return self._spawned_tasks.get(task_id)
+
+    def list_tasks(self, status: str | None = None) -> list[SpawnedTask]:
+        tasks = list(self._spawned_tasks.values())
+        if status:
+            tasks = [t for t in tasks if t.status == status]
+        return tasks

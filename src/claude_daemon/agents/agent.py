@@ -164,7 +164,7 @@ class Agent:
         }
         return models.get(task_type, self.identity.default_model)
 
-    def build_system_context(self, max_chars: int = 6000) -> str:
+    def build_system_context(self, max_chars: int = 8000) -> str:
         """Build the full system prompt context for this agent.
 
         Boot sequence: SOUL -> IDENTITY -> AGENTS -> USER -> TOOLS ->
@@ -240,6 +240,17 @@ class Agent:
                 learnings = learnings_path.read_text()
                 if learnings:
                     blocks.append(f"## Team Learnings\n{learnings[-600:]}")
+
+        # Planning protocol
+        blocks.append(
+            "## Planning Protocol\n"
+            "For multi-step or complex tasks: ALWAYS plan first using Opus-level reasoning.\n"
+            "1. Outline your approach, steps, dependencies, and risks.\n"
+            "2. Publish the plan to the user IMMEDIATELY.\n"
+            "3. Execute autonomously — do NOT wait for approval.\n"
+            "4. Update the user if the plan changes during execution.\n"
+            "Skip planning for simple single-step queries."
+        )
 
         # OTA logging convention
         blocks.append(

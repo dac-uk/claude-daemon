@@ -13,7 +13,7 @@ from claude_daemon.core.config import DaemonConfig
 def test_default_config():
     config = DaemonConfig()
     assert config.log_level == "INFO"
-    assert config.max_concurrent_sessions == 3
+    assert config.max_concurrent_sessions == 5
     assert config.max_budget_per_message == 0.50
     assert config.claude_binary == "claude"
     assert config.permission_mode == "auto"

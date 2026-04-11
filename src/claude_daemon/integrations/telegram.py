@@ -76,6 +76,8 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("soul", self._cmd_soul))
         self._app.add_handler(CommandHandler("workflow", self._cmd_workflow))
         self._app.add_handler(CommandHandler("metrics", self._cmd_metrics))
+        self._app.add_handler(CommandHandler("spawn", self._cmd_spawn))
+        self._app.add_handler(CommandHandler("tasks", self._cmd_tasks))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -133,6 +135,11 @@ class TelegramIntegration(BaseIntegration):
         chat_id = update.effective_chat.id if update.effective_chat else user.id
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
+        # Check for per-channel agent binding
+        channel_agent = None
+        if self.daemon.config.telegram_agent_channels:
+            channel_agent = self.daemon.config.telegram_agent_channels.get(str(chat_id))
+
         # Send initial placeholder
         placeholder = await update.message.reply_text("...")
 
@@ -145,6 +152,7 @@ class TelegramIntegration(BaseIntegration):
                 prompt=update.message.text,
                 platform="telegram",
                 user_id=str(user.id),
+                agent_name=channel_agent,
             ):
                 if isinstance(chunk, str):
                     accumulated += chunk
@@ -469,3 +477,35 @@ class TelegramIntegration(BaseIntegration):
                 f"tokens={m.get('total_input', 0) + m.get('total_output', 0)}"
             )
         await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_spawn(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Spawn a background task: /spawn <agent> <prompt>"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        args = (update.message.text or "").split(maxsplit=2)
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: /spawn <agent> <task description>\n"
+                "Runs in background. Agent works on multiple tasks in parallel.\n"
+                "Example: /spawn albert refactor the auth service\n"
+                "Check status with /tasks"
+            )
+            return
+
+        result = self.daemon.spawn_task(args[1], args[2])
+        await update.message.reply_text(result)
+
+    async def _cmd_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """List spawned tasks: /tasks"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        result = self.daemon.list_tasks()
+        await update.message.reply_text(result)

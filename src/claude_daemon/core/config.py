@@ -37,7 +37,7 @@ class DaemonConfig:
 
     # Claude Code
     claude_binary: str = "claude"
-    max_concurrent_sessions: int = 3
+    max_concurrent_sessions: int = 5
     max_budget_per_message: float = 0.50
     default_model: str | None = None
     permission_mode: str = "auto"
@@ -75,8 +75,10 @@ class DaemonConfig:
     telegram_token: str | None = None
     telegram_allowed_users: list[int] = field(default_factory=list)
     telegram_polling: bool = True
+    telegram_agent_channels: dict[str, str] = field(default_factory=dict)  # chat_id -> agent_name
     discord_token: str | None = None
     discord_allowed_guilds: list[int] = field(default_factory=list)
+    discord_agent_channels: dict[str, str] = field(default_factory=dict)  # channel_id -> agent_name
     paperclip_url: str | None = None
     paperclip_api_key: str | None = None
     paperclip_poll_interval: int = 5
@@ -174,8 +176,14 @@ class DaemonConfig:
             telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),
             telegram_allowed_users=tg_cfg.get("allowed_user_ids", []),
             telegram_polling=tg_cfg.get("polling", True),
+            telegram_agent_channels={
+                str(k): v for k, v in tg_cfg.get("agent_channels", {}).items()
+            },
             discord_token=os.environ.get("DISCORD_BOT_TOKEN") or dc_cfg.get("token"),
             discord_allowed_guilds=dc_cfg.get("allowed_guild_ids", []),
+            discord_agent_channels={
+                str(k): v for k, v in dc_cfg.get("agent_channels", {}).items()
+            },
             paperclip_url=os.environ.get("PAPERCLIP_URL") or pc_cfg.get("url"),
             paperclip_api_key=os.environ.get("PAPERCLIP_API_KEY") or pc_cfg.get("api_key"),
             paperclip_poll_interval=int(pc_cfg.get("poll_interval", 5)),

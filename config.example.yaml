@@ -47,11 +47,20 @@ integrations:
     # Token loaded from TELEGRAM_BOT_TOKEN env var
     allowed_user_ids: []          # Empty = allow all (use with caution)
     polling: true                 # true=polling, false=webhook
+    # Map Telegram groups/chats to specific agents (chat_id -> agent_name)
+    # Messages in these chats go directly to the named agent.
+    # agent_channels:
+    #   "-1001234567890": "albert"     # Albert's dedicated group
+    #   "-1009876543210": "luna"        # Luna's dedicated group
 
   discord:
     enabled: false
     # Token loaded from DISCORD_BOT_TOKEN env var
     allowed_guild_ids: []
+    # Map Discord channels to specific agents (channel_id -> agent_name)
+    # agent_channels:
+    #   "1234567890123456": "albert"
+    #   "9876543210987654": "luna"
 
   paperclip:
     enabled: false
