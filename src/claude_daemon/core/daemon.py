@@ -1,7 +1,7 @@
 """ClaudeDaemon - the central orchestrator.
 
 Runs as a foreground process supervised by systemd/launchd.
-Manages the ProcessManager, memory subsystem, scheduler, and integrations.
+Manages the ProcessManager, multi-agent system, memory, scheduler, and integrations.
 Supports both buffered and streaming response modes.
 """
 
@@ -13,6 +13,8 @@ import os
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
+from claude_daemon.agents.orchestrator import Orchestrator
+from claude_daemon.agents.registry import AgentRegistry
 from claude_daemon.core.config import DaemonConfig
 from claude_daemon.core.process import ClaudeResponse, ProcessManager
 from claude_daemon.core.signals import install_signal_handlers
@@ -29,7 +31,7 @@ log = logging.getLogger(__name__)
 
 
 class ClaudeDaemon:
-    """Central daemon orchestrator with streaming support."""
+    """Central daemon orchestrator with multi-agent support."""
 
     def __init__(self, config: DaemonConfig) -> None:
         self.config = config
@@ -45,6 +47,8 @@ class ClaudeDaemon:
         self.scheduler: SchedulerEngine | None = None
         self.updater: Updater | None = None
         self.router = None
+        self.agent_registry: AgentRegistry | None = None
+        self.orchestrator: Orchestrator | None = None
 
     @property
     def is_shutting_down(self) -> bool:
@@ -65,19 +69,30 @@ class ClaudeDaemon:
         pathutil.ensure_dirs()
         setup_logging(self.config.log_level, self.config.log_dir)
 
-        log.info("Claude Daemon v0.2.0 starting...")
+        from claude_daemon import __version__
+        log.info("Claude Daemon v%s starting...", __version__)
         self._write_pid()
 
         # Initialize subsystems
         self.store = ConversationStore(self.config.db_path)
         self.durable = DurableMemory(self.config.memory_dir)
-        self.durable.ensure_soul()  # Create SOUL.md if missing
+        self.durable.ensure_soul()
         self.working = WorkingMemory(self.store, self.durable, self.config)
         self.process_manager = ProcessManager(self.config)
         self.compactor = ContextCompactor(
             self.store, self.durable, self.process_manager, self.config
         )
         self.updater = Updater(self.config, self.process_manager)
+
+        # Multi-agent system
+        agents_dir = self.config.data_dir / "agents"
+        self.agent_registry = AgentRegistry(agents_dir)
+        self.agent_registry.load_all()
+        self.orchestrator = Orchestrator(
+            self.agent_registry, self.process_manager, self.store,
+        )
+        log.info("Loaded %d agents: %s",
+                 len(self.agent_registry), self.agent_registry.agent_names())
 
         # Scheduler
         self.scheduler = SchedulerEngine(self.config, self)
@@ -128,24 +143,45 @@ class ClaudeDaemon:
     async def handle_message(
         self, prompt: str, session_id: str | None = None,
         platform: str = "cli", user_id: str = "local",
+        agent_name: str | None = None,
     ) -> str:
-        """Buffered message handler - returns complete response."""
+        """Buffered message handler with multi-agent routing.
+
+        If agent_name is provided, route directly to that agent.
+        If prompt starts with @agent_name or /agent_name, route to that agent.
+        Otherwise, the orchestrator decides.
+        """
         if self._shutting_down:
             return "Claude Daemon is shutting down. Please try again later."
 
-        assert self.store and self.process_manager and self.working and self.durable
+        assert self.store and self.process_manager and self.durable
 
+        # Multi-agent routing
+        if self.orchestrator and self.agent_registry and len(self.agent_registry) > 0:
+            agent, cleaned_prompt = self._resolve_agent(prompt, agent_name)
+            response = await self.orchestrator.send_to_agent(
+                agent=agent, prompt=cleaned_prompt,
+                session_id=session_id, platform=platform, user_id=user_id,
+            )
+
+            if self.config.daily_log_enabled:
+                summary = response.result[:200] + "..." if len(response.result) > 200 else response.result
+                self.durable.append_daily_log(
+                    f"[{agent.name}:{platform}:{user_id}] Q: {prompt[:100]} | A: {summary}"
+                )
+
+            return response.result
+
+        # Fallback: direct send without agents (legacy path)
+        assert self.working
         conv = self.store.get_or_create_conversation(
             session_id=session_id, platform=platform, user_id=user_id,
         )
-
         context = self.working.build_context(conv["session_id"])
         self.store.add_message(conv["id"], "user", prompt)
-
         response = await self.process_manager.send_message(
             prompt=prompt, session_id=conv["session_id"], system_context=context,
         )
-
         self.store.add_message(
             conv["id"], "assistant", response.result,
             tokens=response.output_tokens, cost=response.cost,
@@ -153,34 +189,41 @@ class ClaudeDaemon:
         self.store.update_conversation(
             conv["id"], session_id=response.session_id, cost=response.cost,
         )
-
-        if self.config.daily_log_enabled:
-            summary = response.result[:200] + "..." if len(response.result) > 200 else response.result
-            self.durable.append_daily_log(
-                f"[{platform}:{user_id}] Q: {prompt[:100]} | A: {summary}"
-            )
-
-        # Trigger light sleep signal detection in background (non-blocking)
-        if self.compactor and conv["message_count"] > 0 and conv["message_count"] % 5 == 0:
-            asyncio.create_task(self._safe_light_sleep(conv["session_id"]))
-
         return response.result
 
     async def handle_message_streaming(
         self, prompt: str, session_id: str | None = None,
         platform: str = "cli", user_id: str = "local",
+        agent_name: str | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
-        """Streaming message handler - yields text chunks, then final ClaudeResponse."""
+        """Streaming handler with multi-agent routing."""
         if self._shutting_down:
             yield "Claude Daemon is shutting down."
             return
 
-        assert self.store and self.process_manager and self.working and self.durable
+        assert self.store and self.process_manager and self.durable
 
+        # Multi-agent streaming
+        if self.orchestrator and self.agent_registry and len(self.agent_registry) > 0:
+            agent, cleaned_prompt = self._resolve_agent(prompt, agent_name)
+
+            async for chunk in self.orchestrator.stream_to_agent(
+                agent=agent, prompt=cleaned_prompt,
+                session_id=session_id, platform=platform, user_id=user_id,
+            ):
+                yield chunk
+
+            if self.config.daily_log_enabled:
+                self.durable.append_daily_log(
+                    f"[{agent.name}:{platform}:{user_id}] Streamed: {prompt[:100]}"
+                )
+            return
+
+        # Fallback: direct stream without agents
+        assert self.working
         conv = self.store.get_or_create_conversation(
             session_id=session_id, platform=platform, user_id=user_id,
         )
-
         context = self.working.build_context(conv["session_id"])
         self.store.add_message(conv["id"], "user", prompt)
 
@@ -198,7 +241,6 @@ class ClaudeDaemon:
                 if not accumulated and chunk.result:
                     accumulated = chunk.result
 
-        # Store the complete response
         resp = final_response or ClaudeResponse.error("No response received")
         self.store.add_message(
             conv["id"], "assistant", accumulated or resp.result,
@@ -207,14 +249,31 @@ class ClaudeDaemon:
         self.store.update_conversation(
             conv["id"], session_id=resp.session_id, cost=resp.cost,
         )
-
-        if self.config.daily_log_enabled:
-            summary = accumulated[:200] + "..." if len(accumulated) > 200 else accumulated
-            self.durable.append_daily_log(
-                f"[{platform}:{user_id}] Q: {prompt[:100]} | A: {summary}"
-            )
-
         yield resp
+
+    def _resolve_agent(self, prompt: str, agent_name: str | None = None):
+        """Resolve which agent handles a message. Returns (agent, cleaned_prompt)."""
+        from claude_daemon.agents.agent import Agent
+
+        # Explicit agent name
+        if agent_name:
+            agent = self.agent_registry.get(agent_name)
+            if agent:
+                return agent, prompt
+
+        # Check for @agent or /agent addressing in prompt
+        agent, cleaned = self.orchestrator.resolve_agent(prompt)
+        if agent:
+            return agent, cleaned
+
+        # Default to orchestrator (which may auto-route for complex messages)
+        orchestrator = self.agent_registry.get_orchestrator()
+        if orchestrator:
+            return orchestrator, prompt
+
+        # Last resort
+        agents = self.agent_registry.list_agents()
+        return agents[0] if agents else Agent(name="default", workspace=self.config.data_dir), prompt
 
     async def heartbeat(self) -> None:
         active = self.process_manager.active_count if self.process_manager else 0

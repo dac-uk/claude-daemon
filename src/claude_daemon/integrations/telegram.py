@@ -63,6 +63,7 @@ class TelegramIntegration(BaseIntegration):
 
         self._app.add_handler(CommandHandler("start", self._cmd_start))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
+        self._app.add_handler(CommandHandler("agents", self._cmd_agents))
         self._app.add_handler(CommandHandler("memory", self._cmd_memory))
         self._app.add_handler(CommandHandler("forget", self._cmd_forget))
         self._app.add_handler(CommandHandler("session", self._cmd_session))
@@ -194,17 +195,36 @@ class TelegramIntegration(BaseIntegration):
             return
         await update.message.reply_text(
             "Claude Daemon is running.\n\n"
-            "Send me any message and I'll respond with streaming.\n\n"
+            "Send any message to talk to the active agent.\n"
+            "Use @agent_name to address a specific agent.\n\n"
             "Commands:\n"
+            "/agents - List all agents\n"
             "/status - Daemon status and stats\n"
-            "/memory - View persistent memory (MEMORY.md)\n"
-            "/soul - View agent identity (SOUL.md)\n"
+            "/memory - View persistent memory\n"
+            "/soul - View agent identity\n"
             "/forget - Clear session, start fresh\n"
             "/session - Current session info\n"
             "/cost - Your usage costs\n"
             "/jobs - List scheduled jobs\n"
             "/dream - Trigger memory consolidation"
         )
+
+    async def _cmd_agents(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon or not self.daemon.agent_registry:
+            await update.message.reply_text("No agents loaded.")
+            return
+
+        lines = ["Agents:\n"]
+        for agent in self.daemon.agent_registry:
+            orch = " [orchestrator]" if agent.is_orchestrator else ""
+            role = f" - {agent.identity.role}" if agent.identity.role else ""
+            emoji = f"{agent.identity.emoji} " if agent.identity.emoji else ""
+            lines.append(f"  {emoji}{agent.name}{role}{orch}")
+        lines.append(f"\nUse @agent_name to talk to a specific agent.")
+        await update.message.reply_text("\n".join(lines))
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user

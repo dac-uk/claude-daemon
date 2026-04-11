@@ -239,6 +239,45 @@ def _cmd_install_service(args: argparse.Namespace) -> None:
         print("Enable with: systemctl --user enable --now claude-daemon")
 
 
+def _cmd_agents(args: argparse.Namespace) -> None:
+    """Manage agents."""
+    from claude_daemon.agents.registry import AgentRegistry
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+    agents_dir = config.data_dir / "agents"
+    registry = AgentRegistry(agents_dir)
+    registry.load_all()
+
+    action = getattr(args, "agents_action", None) or "list"
+
+    if action == "list":
+        if not len(registry):
+            print("No agents configured.")
+            return
+        print(f"Agents ({len(registry)}):\n")
+        for agent in registry:
+            orch = " [orchestrator]" if agent.is_orchestrator else ""
+            role = f" ({agent.identity.role})" if agent.identity.role else ""
+            emoji = f"{agent.identity.emoji} " if agent.identity.emoji else ""
+            print(f"  {emoji}{agent.name}{role}{orch}")
+            print(f"    workspace: {agent.workspace}")
+        print(f"\nAgent workspaces: {agents_dir}")
+
+    elif action == "create":
+        name = args.name.lower().replace(" ", "-")
+        agent = registry.create_agent(
+            name=name,
+            role=args.role,
+            emoji=args.emoji,
+            is_orchestrator=args.orchestrator,
+        )
+        print(f"Created agent: {name}")
+        print(f"  Workspace: {agent.workspace}")
+        print(f"  Files: SOUL.md, IDENTITY.md, MEMORY.md")
+        print(f"\nEdit the .md files in the workspace to customize this agent.")
+
+
 def _cmd_jobs(args: argparse.Namespace) -> None:
     """List scheduled jobs."""
     from claude_daemon.core.config import DaemonConfig
@@ -308,6 +347,16 @@ def main() -> None:
     # jobs
     sub.add_parser("jobs", help="List scheduled jobs")
 
+    # agents
+    p_agents = sub.add_parser("agents", help="Manage agents")
+    p_agents_sub = p_agents.add_subparsers(dest="agents_action")
+    p_agents_sub.add_parser("list", help="List all agents")
+    p_ag_create = p_agents_sub.add_parser("create", help="Create a new agent")
+    p_ag_create.add_argument("name", help="Agent name")
+    p_ag_create.add_argument("--role", default="", help="Agent role")
+    p_ag_create.add_argument("--emoji", default="", help="Agent emoji")
+    p_ag_create.add_argument("--orchestrator", action="store_true")
+
     args = parser.parse_args()
 
     commands = {
@@ -321,6 +370,7 @@ def main() -> None:
         "update": _cmd_update,
         "install-service": _cmd_install_service,
         "jobs": _cmd_jobs,
+        "agents": _cmd_agents,
     }
 
     handler = commands.get(args.command)
