@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
+from claude_daemon.agents.improvement import ImprovementPlanner
 from claude_daemon.agents.orchestrator import Orchestrator
 from claude_daemon.agents.registry import AgentRegistry
 from claude_daemon.agents.workflow import WorkflowEngine
@@ -51,6 +52,7 @@ class ClaudeDaemon:
         self.agent_registry: AgentRegistry | None = None
         self.orchestrator: Orchestrator | None = None
         self.workflow_engine: WorkflowEngine | None = None
+        self.improvement_planner: ImprovementPlanner | None = None
 
     @property
     def is_shutting_down(self) -> bool:
@@ -99,6 +101,10 @@ class ClaudeDaemon:
         )
         self.workflow_engine = WorkflowEngine(
             self.orchestrator, self.agent_registry,
+        )
+        self.improvement_planner = ImprovementPlanner(
+            self.agent_registry, self.process_manager,
+            self.store, shared_dir,
         )
         log.info("Loaded %d agents: %s",
                  len(self.agent_registry), self.agent_registry.agent_names())

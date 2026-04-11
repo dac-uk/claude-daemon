@@ -200,13 +200,38 @@ class SchedulerEngine:
                     log.exception("Per-agent memory compaction failed")
 
     async def _job_rem_sleep(self) -> None:
-        """Phase 3: Weekly REM sleep integration."""
+        """Phase 3: Weekly REM sleep integration + improvement cycle."""
         if self.daemon.compactor:
             try:
                 await self.daemon.compactor.rem_sleep()
             except Exception:
                 log.exception("REM sleep failed")
                 self._alert_failure("REM sleep integration failed")
+
+        # Per-agent self-assessments (update each agent's REFLECTIONS.md)
+        if self.daemon.improvement_planner:
+            try:
+                await self.daemon.improvement_planner.run_all_self_assessments()
+                log.info("Per-agent self-assessments complete")
+            except Exception:
+                log.exception("Per-agent self-assessments failed")
+
+            # Weekly improvement cycle (synthesise learnings, generate plan)
+            try:
+                plan = await self.daemon.improvement_planner.run_weekly_improvement_cycle()
+                log.info("Improvement cycle complete")
+
+                # Deliver improvement suggestions to user via all integrations
+                if plan and self.daemon.router:
+                    summary = "Weekly Improvement Plan:\n\n" + plan[:3000]
+                    for platform_name, integration in self.daemon.router.integrations.items():
+                        for chat_id in self._get_alert_targets(platform_name):
+                            try:
+                                await integration.send_response(chat_id, summary)
+                            except Exception:
+                                pass
+            except Exception:
+                log.exception("Improvement cycle failed")
 
     async def _job_session_cleanup(self) -> None:
         if self.daemon.store:
