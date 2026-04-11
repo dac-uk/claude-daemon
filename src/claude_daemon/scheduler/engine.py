@@ -44,6 +44,7 @@ class SchedulerEngine:
         self._loop = asyncio.get_event_loop()
         self._register_builtin_jobs()
         self._register_custom_jobs()
+        self._register_agent_heartbeats()
         self._scheduler.start()
         log.info("Scheduler started with %d jobs", len(self._scheduler.get_jobs()))
 
@@ -106,6 +107,35 @@ class SchedulerEngine:
             name="Heartbeat",
             replace_existing=True,
         )
+
+    def _register_agent_heartbeats(self) -> None:
+        """Parse each agent's HEARTBEAT.md and register their tasks as cron jobs."""
+        if not self.daemon.agent_registry:
+            return
+
+        count = 0
+        for agent in self.daemon.agent_registry:
+            tasks = agent.parse_heartbeat_tasks()
+            for task in tasks:
+                job_id = f"heartbeat:{agent.name}:{task.title.lower().replace(' ', '_')[:30]}"
+                try:
+                    cron_kwargs = _parse_cron(task.cron)
+                except ValueError as e:
+                    log.error("Invalid cron in %s HEARTBEAT.md: %s", agent.name, e)
+                    continue
+
+                self._scheduler.add_job(
+                    self._run_async,
+                    CronTrigger(**cron_kwargs),
+                    args=[self._job_agent_heartbeat, agent.name, task.prompt, task.model],
+                    id=job_id,
+                    name=f"Heartbeat: {agent.name} - {task.title}",
+                    replace_existing=True,
+                )
+                count += 1
+
+        if count:
+            log.info("Registered %d agent heartbeat tasks", count)
 
     def _register_custom_jobs(self) -> None:
         for job_def in self.config.custom_jobs:
@@ -177,6 +207,34 @@ class SchedulerEngine:
 
     async def _job_heartbeat(self) -> None:
         await self.daemon.heartbeat()
+
+    async def _job_agent_heartbeat(
+        self, agent_name: str, prompt: str, model: str,
+    ) -> None:
+        """Execute a single agent heartbeat task."""
+        if not self.daemon.orchestrator or not self.daemon.agent_registry:
+            return
+
+        agent = self.daemon.agent_registry.get(agent_name)
+        if not agent:
+            log.warning("Heartbeat: agent '%s' not found", agent_name)
+            return
+
+        log.info("Heartbeat: running '%s' task (model=%s)", agent_name, model)
+        try:
+            response = await self.daemon.orchestrator.send_to_agent(
+                agent=agent,
+                prompt=prompt,
+                platform="heartbeat",
+                user_id="scheduler",
+                task_type="scheduled",
+            )
+            if response.is_error:
+                log.error("Heartbeat %s failed: %s", agent_name, response.result[:200])
+            else:
+                log.info("Heartbeat %s complete: cost=$%.4f", agent_name, response.cost)
+        except Exception:
+            log.exception("Heartbeat task failed for %s", agent_name)
 
     async def _job_custom(self, prompt: str, platform: str, chat_id: str) -> None:
         log.info("Running custom job: prompt=%s..., platform=%s", prompt[:50], platform)

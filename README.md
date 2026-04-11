@@ -5,9 +5,16 @@ Persistent daemon wrapper for Claude Code. Runs a named team of AI agents with i
 ## Features
 
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
+- **Per-Agent MCP Tools** - Each agent gets their own MCP server config (GitHub, Slack, Gmail, Google Calendar, Supabase) so they can actually interact with the world
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
+- **Agent Heartbeats** - Each agent has autonomous recurring tasks defined in `HEARTBEAT.md` — Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings at 9am
+- **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
+- **HTTP REST API** - Programmatic access for external automation, GitHub/Stripe webhooks, and custom integrations
 - **Streaming Responses** - Live streaming to Telegram and Discord with throttled message edits
 - **Three-Phase Dreaming** - Light sleep (per-session signal detection), Deep sleep (nightly consolidation), REM sleep (weekly MEMORY.md rewrite + self-reflection)
+- **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs
+- **Full-Text Search** - FTS5-indexed conversation history for searching past interactions
+- **Agent Metrics** - Per-agent cost tracking, token usage, and performance metrics in SQLite
 - **Persistent Sessions** - Conversations survive restarts via Claude Code's `--resume`
 - **Three-Tier Memory** - Working memory, SQLite conversation store, and durable markdown (MEMORY.md + daily logs + REFLECTIONS.md)
 - **SOUL.md Identity** - Each agent has a personality file injected into every prompt
@@ -79,9 +86,11 @@ Each agent workspace at `~/.config/claude-daemon/agents/{name}/` contains:
 | File | Purpose |
 |------|---------|
 | `SOUL.md` | Personality, values, beliefs, communication style |
-| `IDENTITY.md` | Name, role, emoji, model configuration |
+| `IDENTITY.md` | Name, role, emoji, model + MCP configuration |
 | `AGENTS.md` | Operating rules, domain boundaries, procedures |
 | `MEMORY.md` | Per-agent persistent memory (grows over time) |
+| `HEARTBEAT.md` | Autonomous recurring tasks (cron + model + prompt) |
+| `tools.json` | MCP server configuration for this agent |
 | `memory/` | Daily activity logs |
 
 Shared workspace at `~/.config/claude-daemon/shared/`:
@@ -98,7 +107,7 @@ Edit any `.md` file directly to change an agent's behaviour. No restart needed �
 
 ## Model Routing
 
-Model is configured per agent in `IDENTITY.md`:
+Model and MCP tools are configured per agent in `IDENTITY.md`:
 
 ```
 Name: albert
@@ -108,6 +117,7 @@ Model: opus
 Planning-Model: opus
 Chat-Model: opus
 Scheduled-Model: haiku
+MCP-Config: tools.json
 ```
 
 | Field | Used for |
@@ -116,8 +126,58 @@ Scheduled-Model: haiku
 | `Planning-Model` | Architecture and strategy work |
 | `Chat-Model` | Interactive conversation |
 | `Scheduled-Model` | Heartbeat and cron tasks |
+| `MCP-Config` | Path to MCP server config JSON in agent workspace |
 
 Change any agent's model via chat: `/setagent penny model opus`
+
+## MCP Tool Assignments
+
+Each agent gets a `tools.json` in their workspace defining which MCP servers they can use:
+
+| Agent | MCP Servers | Why |
+|-------|-------------|-----|
+| **Johnny** | Slack, Gmail, Google Calendar, GitHub | Communications, scheduling, project oversight |
+| **Albert** | GitHub, Supabase, Slack | Code, databases, progress updates |
+| **Luna** | GitHub, Slack | UI code, design reviews |
+| **Max** | GitHub, Supabase, Slack | PR reviews, quality metrics, bug reports |
+| **Penny** | Supabase, Gmail, Slack | Financial data, cost reports, invoices |
+| **Jeremy** | GitHub, Supabase, Slack | Security scanning, audit queries, risk alerts |
+| **Sophie** | Gmail, Slack | Legal correspondence, compliance monitoring |
+
+To configure, edit `~/.config/claude-daemon/agents/{name}/tools.json` with your actual credentials.
+
+## Agent Heartbeats
+
+Each agent has autonomous recurring tasks in `HEARTBEAT.md`:
+
+```markdown
+## Morning Briefing
+Cron: 0 9 * * *
+Model: sonnet
+Check Gmail for urgent overnight emails. Check Google Calendar for today's meetings.
+Compile a concise briefing and send to Dave via Slack.
+
+## Weekly Financial Report
+Cron: 0 8 * * 1
+Model: sonnet
+Pull this week's API costs from Supabase. Compare to last week. Flag anomalies.
+```
+
+The scheduler parses these on startup and registers them as cron jobs. Each runs as that agent with their full identity, memory, and MCP tools.
+
+## Workflow Engine
+
+Multi-step agent orchestration with three execution patterns:
+
+- **Pipeline**: Sequential steps where each agent receives the previous result
+- **Parallel**: Fan-out to multiple agents simultaneously, collect all results
+- **Review Loop**: Build-review cycle (Albert builds, Max reviews, retry on failure)
+
+The build quality gate from Johnny's operating rules:
+1. Albert builds the backend
+2. Luna builds the UI
+3. Max reviews both for quality
+4. If Max says FAIL: route bugs to correct owner, repeat
 
 ## CLI Commands
 
@@ -178,10 +238,33 @@ Agents can be created, modified, or removed at runtime via chat or Telegram comm
 
 Agent workspace files (`SOUL.md`, `IDENTITY.md`, `AGENTS.md`) are preserved on deletion. Re-add the agent later and it picks up where it left off.
 
+## HTTP API
+
+Enable with `api_enabled: true` in config. Exposes the daemon for external automation.
+
+```
+GET  /api/health              — Health check (always public)
+GET  /api/agents              — List agents with roles, models, MCP status
+GET  /api/status              — Daemon status and metrics
+POST /api/message             — Send a message to an agent
+POST /api/webhook/github      — GitHub webhook (routes to Max/Albert/Johnny)
+POST /api/webhook/stripe      — Stripe webhook (routes to Penny)
+POST /api/webhook/{source}    — Generic webhook (routes to Johnny)
+```
+
+Authentication via `Authorization: Bearer <api_key>` header. Set in config or `CLAUDE_DAEMON_API_KEY` env var.
+
+```yaml
+daemon:
+  api_enabled: true
+  api_port: 8080
+  api_key: "your-secret-key"
+```
+
 ## Architecture
 
 ```
-Telegram / Discord / Paperclip
+Telegram / Discord / Paperclip / HTTP API / Webhooks
            |
            v
      MessageRouter
@@ -194,22 +277,31 @@ Telegram / Discord / Paperclip
     - Explicit: @albert or /luna prefix
     - Default: johnny (CEO/orchestrator)
            |
+     WorkflowEngine (for multi-step tasks)
+     - Pipeline / Parallel / Review Loop
+           |
            v
-  Orchestrator.send_to_agent(agent, model)
+  Orchestrator.send_to_agent(agent, model, mcp_config)
            |
     agent.build_system_context()
     SOUL + IDENTITY + AGENTS rules +
     USER context + MEMORY + REFLECTIONS
            |
            v
-  ProcessManager.send_message(model_override)
+  ProcessManager.send_message(model, mcp_config)
     claude --print --output-format stream-json
            --resume <session_id>
            --model <agent model>
+           --mcp-config <agent tools.json>
            --append-system-prompt <context>
            |
            v
-  ClaudeResponse → SQLite store → daily log → user
+  ClaudeResponse → SQLite + FTS5 → agent_metrics → daily log → user
+
+  Scheduler (APScheduler)
+    - Builtin jobs: update, deep sleep, REM sleep, cleanup
+    - Agent heartbeats: parsed from HEARTBEAT.md, runs as agent
+    - Custom jobs: YAML-defined cron + prompt
 ```
 
 ## Memory System
@@ -334,6 +426,8 @@ Everything lives in `~/.config/claude-daemon/`:
 │   │   ├── IDENTITY.md
 │   │   ├── AGENTS.md
 │   │   ├── MEMORY.md
+│   │   ├── HEARTBEAT.md
+│   │   ├── tools.json
 │   │   └── memory/
 │   ├── albert/
 │   ├── luna/

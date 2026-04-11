@@ -7,6 +7,7 @@ All configuration is in the .md files - this script just creates the initial sca
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 CSUITE_AGENTS = [
@@ -52,6 +53,21 @@ CSUITE_AGENTS = [
             "Every code change: git add, commit, push immediately. No batching.\n\n"
             "orchestrator: true\n"
         ),
+        "mcp_servers": ["slack", "gmail", "google-calendar", "github"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## Morning Briefing\n"
+            "Cron: 0 9 * * *\n"
+            "Model: sonnet\n"
+            "Check Gmail for urgent overnight emails. Check Google Calendar for today's meetings. "
+            "Check GitHub for PR status and CI results across all repos. "
+            "Compile a concise briefing and send it to Dave via Slack.\n\n"
+            "## Evening Wrap-up\n"
+            "Cron: 0 18 * * 1-5\n"
+            "Model: haiku\n"
+            "Summarise what the team accomplished today. Flag any blockers or decisions needed. "
+            "Post to Slack.\n"
+        ),
     },
     {
         "name": "albert",
@@ -72,6 +88,20 @@ CSUITE_AGENTS = [
             "- Atomic steps: implement, validate, commit, next (Ralph Loop)\n"
             "- Clean builds, no crashes, console clear of critical errors\n"
             "- Write reflections after every task\n"
+        ),
+        "mcp_servers": ["github", "supabase", "slack"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## PR Status Check\n"
+            "Cron: 0 10 * * *\n"
+            "Model: haiku\n"
+            "Check GitHub for open PRs that need review or have failing CI. "
+            "Flag any that are stale (>48h with no activity). Report to Slack.\n\n"
+            "## Database Health Check\n"
+            "Cron: 0 6 * * *\n"
+            "Model: haiku\n"
+            "Check Supabase for any error logs, slow queries, or storage warnings. "
+            "Report anomalies to Slack.\n"
         ),
     },
     {
@@ -94,6 +124,15 @@ CSUITE_AGENTS = [
             "- Compare against premium benchmarks (Monzo, Revolut level)\n"
             "- Dark mode and light mode are both first-class citizens\n"
         ),
+        "mcp_servers": ["github", "slack"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## Design Review Queue\n"
+            "Cron: 0 11 * * *\n"
+            "Model: haiku\n"
+            "Check GitHub for PRs tagged with 'design' or 'ui'. Review the changes "
+            "for visual quality and consistency. Report findings to Slack.\n"
+        ),
     },
     {
         "name": "max",
@@ -115,6 +154,19 @@ CSUITE_AGENTS = [
             "UI issues -> Luna. Logic issues -> Albert.\n"
             "Single pass/fail report with specific issues.\n"
         ),
+        "mcp_servers": ["github", "supabase", "slack"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## Daily PR Review\n"
+            "Cron: 0 10 * * *\n"
+            "Model: haiku\n"
+            "Check GitHub for open PRs awaiting review. Review for functional quality, "
+            "test coverage, and potential regressions. Post review comments on GitHub.\n\n"
+            "## Stale Issue Scan\n"
+            "Cron: 0 14 * * 1\n"
+            "Model: haiku\n"
+            "Check GitHub for issues with no activity in >7 days. Flag stale items to Slack.\n"
+        ),
     },
     {
         "name": "penny",
@@ -133,6 +185,20 @@ CSUITE_AGENTS = [
             "Data-driven: numbers first, narrative second.\n"
             "Proactive about flagging cost anomalies.\n"
             "Commercial pragmatism over penny-pinching.\n"
+        ),
+        "mcp_servers": ["supabase", "gmail", "slack"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## Daily Cost Audit\n"
+            "Cron: 0 8 * * *\n"
+            "Model: haiku\n"
+            "Query Supabase for today's API token spend across all agents. "
+            "Compare against daily average. Flag if >20% above normal. Report to Slack.\n\n"
+            "## Weekly Financial Report\n"
+            "Cron: 0 8 * * 1\n"
+            "Model: sonnet\n"
+            "Compile weekly cost report: total spend by agent, by model tier, "
+            "cost per conversation, week-over-week trend. Send to Dave via Slack.\n"
         ),
     },
     {
@@ -153,6 +219,20 @@ CSUITE_AGENTS = [
             "- Clear ratings: Critical / High / Medium / Low\n"
             "- Always provide mitigations alongside risk identification\n"
             "- Balance paranoia with pragmatism\n"
+        ),
+        "mcp_servers": ["github", "supabase", "slack"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## Nightly Security Scan\n"
+            "Cron: 0 2 * * *\n"
+            "Model: haiku\n"
+            "Run GitHub secret scanning across all repos. Check for exposed credentials, "
+            "API keys, or tokens. Report findings to Slack with severity rating.\n\n"
+            "## Weekly Risk Review\n"
+            "Cron: 0 9 * * 3\n"
+            "Model: sonnet\n"
+            "Review the week's activity for operational risks: failed deployments, "
+            "security advisories, compliance gaps. Compile risk register update for Slack.\n"
         ),
     },
     {
@@ -175,8 +255,50 @@ CSUITE_AGENTS = [
             "- Impact assessments include: risk level, mitigations, recommended actions\n"
             "- Compliance without killing velocity\n"
         ),
+        "mcp_servers": ["gmail", "slack"],
+        "heartbeat": (
+            "# Heartbeat Tasks\n\n"
+            "## Weekly Compliance Scan\n"
+            "Cron: 0 10 * * 2\n"
+            "Model: sonnet\n"
+            "Review recent Gmail for any legal correspondence, contract deadlines, "
+            "or regulatory notices. Flag upcoming deadlines and required actions to Slack.\n"
+        ),
     },
 ]
+
+# MCP server templates - users must fill in their actual credentials/endpoints.
+# These are scaffolds that show which servers each agent should have access to.
+MCP_SERVER_TEMPLATES: dict[str, dict] = {
+    "slack": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/claude-code-slack-mcp"],
+        "env": {"SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}", "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"},
+    },
+    "gmail": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/claude-code-gmail-mcp"],
+        "env": {"GMAIL_OAUTH_CREDENTIALS": "${GMAIL_OAUTH_CREDENTIALS}"},
+    },
+    "google-calendar": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/claude-code-google-calendar-mcp"],
+        "env": {"GCAL_OAUTH_CREDENTIALS": "${GCAL_OAUTH_CREDENTIALS}"},
+    },
+    "github": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/claude-code-github-mcp"],
+        "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+    },
+    "supabase": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/claude-code-supabase-mcp"],
+        "env": {
+            "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}",
+            "SUPABASE_PROJECT_REF": "${SUPABASE_PROJECT_REF}",
+        },
+    },
+}
 
 
 def create_csuite_workspaces(agents_dir: Path) -> int:
@@ -199,7 +321,8 @@ def create_csuite_workspaces(agents_dir: Path) -> int:
         # SOUL.md
         (workspace / "SOUL.md").write_text(agent_def.get("soul", f"# Soul\n\nI am {name}.\n"))
 
-        # IDENTITY.md
+        # IDENTITY.md (includes MCP config reference)
+        mcp_line = "MCP-Config: tools.json\n" if agent_def.get("mcp_servers") else ""
         (workspace / "IDENTITY.md").write_text(
             f"# Identity\n\n"
             f"Name: {name}\n"
@@ -209,12 +332,30 @@ def create_csuite_workspaces(agents_dir: Path) -> int:
             f"Planning-Model: {agent_def.get('planning_model', 'opus')}\n"
             f"Chat-Model: {agent_def.get('chat_model', 'sonnet')}\n"
             f"Scheduled-Model: {agent_def.get('scheduled_model', 'haiku')}\n"
+            f"{mcp_line}"
         )
 
         # AGENTS.md
         rules = agent_def.get("agents_rules", "")
         if rules:
             (workspace / "AGENTS.md").write_text(rules)
+
+        # tools.json (MCP server configuration)
+        mcp_servers = agent_def.get("mcp_servers", [])
+        if mcp_servers:
+            mcp_config = {"mcpServers": {}}
+            for server_name in mcp_servers:
+                template = MCP_SERVER_TEMPLATES.get(server_name)
+                if template:
+                    mcp_config["mcpServers"][server_name] = template
+            (workspace / "tools.json").write_text(
+                json.dumps(mcp_config, indent=2) + "\n"
+            )
+
+        # HEARTBEAT.md
+        heartbeat = agent_def.get("heartbeat", "")
+        if heartbeat:
+            (workspace / "HEARTBEAT.md").write_text(heartbeat)
 
         # MEMORY.md
         (workspace / "MEMORY.md").write_text(f"# {name} - Persistent Memory\n\n")

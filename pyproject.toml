@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-daemon"
-version = "0.3.0"
+version = "0.5.0"
 description = "Persistent daemon wrapper for Claude Code with memory, scheduling, and messaging integrations"
 readme = "README.md"
 license = "MIT"
@@ -19,9 +19,11 @@ dependencies = [
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=21.0"]
 discord = ["discord.py>=2.3"]
+api = ["aiohttp>=3.9"]
 all = [
     "python-telegram-bot>=21.0",
     "discord.py>=2.3",
+    "aiohttp>=3.9",
 ]
 dev = [
     "pytest>=7.0",

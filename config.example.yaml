@@ -3,7 +3,9 @@
 
 daemon:
   log_level: INFO
-  # health_port: 8080          # Uncomment to enable HTTP health endpoint
+  # api_enabled: true           # Enable HTTP REST API
+  # api_port: 8080              # API port
+  # api_key: ""                 # API auth key (or set CLAUDE_DAEMON_API_KEY env var)
 
 claude:
   binary: claude                # Path to Claude Code CLI

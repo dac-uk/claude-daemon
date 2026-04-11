@@ -40,3 +40,35 @@ CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_type
     ON memory_summaries(summary_type);
+
+-- Full-text search index on message content
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content,
+    content='messages',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS index in sync
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+END;
+
+-- Per-agent metrics for observability
+CREATE TABLE IF NOT EXISTS agent_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name TEXT NOT NULL,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    metric_type TEXT NOT NULL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0.0,
+    duration_ms INTEGER DEFAULT 0,
+    model TEXT,
+    platform TEXT,
+    success BOOLEAN DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_agent_metrics_name ON agent_metrics(agent_name);
+CREATE INDEX IF NOT EXISTS idx_agent_metrics_ts ON agent_metrics(timestamp);

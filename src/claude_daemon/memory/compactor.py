@@ -280,13 +280,14 @@ class ContextCompactor:
         # Version the old memory before overwriting
         self.durable.archive_memory()
 
-        # Write new memory
-        self.durable.update_memory(new_memory)
+        # Write new memory (with validation to prevent catastrophic data loss)
+        if not self.durable.update_memory(new_memory, validate=True):
+            self.durable.append_daily_log(
+                "REM sleep: MEMORY.md update REJECTED by validation. Archive preserved."
+            )
+            return
+
         self.store.add_summary(None, new_memory, "rem_sleep")
-        self.durable.append_daily_log(
-            f"REM sleep: MEMORY.md updated ({len(new_memory)} chars). "
-            f"Previous version archived."
-        )
 
         # Run self-reflection if enabled
         if self.config and self.config.self_improve:

@@ -142,6 +142,7 @@ class Orchestrator:
             platform=platform,
             user_id=user_id,
             model_override=model,
+            mcp_config_path=agent.mcp_config_path,
         )
 
         self.store.add_message(
@@ -187,6 +188,7 @@ class Orchestrator:
             platform=platform,
             user_id=user_id,
             model_override=model,
+            mcp_config_path=agent.mcp_config_path,
         ):
             if isinstance(chunk, str):
                 accumulated += chunk
@@ -209,6 +211,7 @@ class Orchestrator:
         from_agent: Agent,
         to_agent: Agent,
         message: str,
+        task_type: str = "default",
     ) -> str:
         """Enable one agent to send a message to another.
 
@@ -222,5 +225,6 @@ class Orchestrator:
             prompt=prompt,
             platform="intercom",
             user_id=f"agent:{from_agent.name}",
+            task_type=task_type,
         )
         return response.result

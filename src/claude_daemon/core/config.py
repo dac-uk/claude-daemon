@@ -62,6 +62,11 @@ class DaemonConfig:
     heartbeat_interval: int = 1800
     custom_jobs: list[dict] = field(default_factory=list)
 
+    # HTTP API
+    api_enabled: bool = False
+    api_port: int = 8080
+    api_key: str = ""  # Bearer token for API auth (empty = no auth)
+
     # Rate limiting
     rate_limit_per_user: int = 20  # Messages per minute per user
     rate_limit_window: int = 60  # Window in seconds
@@ -161,6 +166,9 @@ class DaemonConfig:
             dream_cron=sched_cfg.get("dream_cron", "0 5 * * 0"),
             heartbeat_interval=int(sched_cfg.get("heartbeat_interval", 1800)),
             custom_jobs=sched_cfg.get("custom_jobs", []),
+            api_enabled=daemon_cfg.get("api_enabled", False),
+            api_port=int(daemon_cfg.get("api_port", 8080)),
+            api_key=os.environ.get("CLAUDE_DAEMON_API_KEY") or daemon_cfg.get("api_key", ""),
             rate_limit_per_user=int(daemon_cfg.get("rate_limit_per_user", 20)),
             rate_limit_window=int(daemon_cfg.get("rate_limit_window", 60)),
             telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),

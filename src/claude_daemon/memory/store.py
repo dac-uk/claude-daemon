@@ -213,3 +213,70 @@ class ConversationStore:
             (user_id, platform),
         ).fetchone()
         return dict(row) if row else {}
+
+    # -- Full-Text Search --
+
+    def search_conversations(self, query: str, limit: int = 20) -> list[dict]:
+        """Search message content using FTS5. Returns matching messages with context."""
+        rows = self._db.execute(
+            "SELECT m.id, m.conversation_id, m.role, m.content, m.timestamp, "
+            "c.platform, c.user_id "
+            "FROM messages_fts fts "
+            "JOIN messages m ON m.id = fts.rowid "
+            "JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE messages_fts MATCH ? "
+            "ORDER BY m.timestamp DESC LIMIT ?",
+            (query, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Agent Metrics --
+
+    def record_agent_metric(
+        self,
+        agent_name: str,
+        metric_type: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float = 0.0,
+        duration_ms: int = 0,
+        model: str = "",
+        platform: str = "",
+        success: bool = True,
+    ) -> None:
+        """Record a metric for agent activity."""
+        self._db.execute(
+            "INSERT INTO agent_metrics "
+            "(agent_name, metric_type, input_tokens, output_tokens, cost_usd, "
+            "duration_ms, model, platform, success) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_name, metric_type, input_tokens, output_tokens,
+             cost_usd, duration_ms, model, platform, success),
+        )
+        self._db.commit()
+
+    def get_agent_metrics(
+        self, agent_name: str | None = None, days: int = 7,
+    ) -> list[dict]:
+        """Get agent metrics, optionally filtered by agent name."""
+        if agent_name:
+            rows = self._db.execute(
+                "SELECT agent_name, metric_type, "
+                "SUM(cost_usd) as total_cost, COUNT(*) as count, "
+                "SUM(input_tokens) as total_input, SUM(output_tokens) as total_output "
+                "FROM agent_metrics "
+                "WHERE agent_name = ? AND timestamp > datetime('now', ?) "
+                "GROUP BY metric_type",
+                (agent_name, f"-{days} days"),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT agent_name, "
+                "SUM(cost_usd) as total_cost, COUNT(*) as count, "
+                "SUM(input_tokens) as total_input, SUM(output_tokens) as total_output "
+                "FROM agent_metrics "
+                "WHERE timestamp > datetime('now', ?) "
+                "GROUP BY agent_name",
+                (f"-{days} days",),
+            ).fetchall()
+        return [dict(r) for r in rows]

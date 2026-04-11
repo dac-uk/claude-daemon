@@ -16,10 +16,21 @@ Each agent has its own set of identity files:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class HeartbeatTask:
+    """A single recurring task parsed from HEARTBEAT.md."""
+
+    title: str
+    cron: str
+    model: str = "haiku"
+    prompt: str = ""
 
 
 @dataclass
@@ -41,6 +52,9 @@ class AgentIdentity:
     planning_model: str = "opus"
     chat_model: str = "sonnet"
     scheduled_model: str = "haiku"
+
+    # Per-agent MCP tool configuration
+    mcp_config: str = ""  # Filename of MCP config JSON in workspace (e.g. "tools.json")
 
     @property
     def display_name(self) -> str:
@@ -97,6 +111,8 @@ class Agent:
                     self.identity.chat_model = val
                 elif key == "scheduled-model":
                     self.identity.scheduled_model = val
+                elif key == "mcp-config":
+                    self.identity.mcp_config = val
 
         # AGENTS.md
         agents_path = self.workspace / "AGENTS.md"
@@ -124,6 +140,16 @@ class Agent:
         hb_path = self.workspace / "HEARTBEAT.md"
         if hb_path.exists():
             self.identity.heartbeat_tasks = hb_path.read_text()
+
+    @property
+    def mcp_config_path(self) -> str | None:
+        """Resolve the full path to this agent's MCP config JSON, or None."""
+        if not self.identity.mcp_config:
+            return None
+        path = self.workspace / self.identity.mcp_config
+        if path.exists():
+            return str(path)
+        return None
 
     def get_model(self, task_type: str = "default") -> str:
         """Get the appropriate model for a task type.
@@ -192,6 +218,55 @@ class Agent:
             context = context[:max_chars]
 
         return context
+
+    def parse_heartbeat_tasks(self) -> list[HeartbeatTask]:
+        """Parse HEARTBEAT.md into structured tasks.
+
+        Format:
+            ## Task Title
+            Cron: 0 9 * * *
+            Model: haiku
+            The prompt text for this task (everything until the next ## heading).
+        """
+        hb_path = self.workspace / "HEARTBEAT.md"
+        if not hb_path.exists():
+            return []
+
+        content = hb_path.read_text()
+        tasks: list[HeartbeatTask] = []
+
+        # Split on ## headings
+        sections = re.split(r'^## ', content, flags=re.MULTILINE)
+        for section in sections:
+            section = section.strip()
+            if not section:
+                continue
+
+            lines = section.split("\n")
+            title = lines[0].strip()
+
+            cron = ""
+            model = "haiku"
+            prompt_lines: list[str] = []
+
+            for line in lines[1:]:
+                stripped = line.strip()
+                if stripped.lower().startswith("cron:"):
+                    cron = stripped.split(":", 1)[1].strip()
+                elif stripped.lower().startswith("model:"):
+                    model = stripped.split(":", 1)[1].strip()
+                elif stripped:
+                    prompt_lines.append(stripped)
+
+            if cron and prompt_lines:
+                tasks.append(HeartbeatTask(
+                    title=title,
+                    cron=cron,
+                    model=model,
+                    prompt="\n".join(prompt_lines),
+                ))
+
+        return tasks
 
     def ensure_defaults(self) -> None:
         """Create default identity files if they don't exist."""

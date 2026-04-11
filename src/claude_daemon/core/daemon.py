@@ -15,6 +15,7 @@ from typing import AsyncIterator
 
 from claude_daemon.agents.orchestrator import Orchestrator
 from claude_daemon.agents.registry import AgentRegistry
+from claude_daemon.agents.workflow import WorkflowEngine
 from claude_daemon.core.config import DaemonConfig
 from claude_daemon.core.process import ClaudeResponse, ProcessManager
 from claude_daemon.core.signals import install_signal_handlers
@@ -49,6 +50,7 @@ class ClaudeDaemon:
         self.router = None
         self.agent_registry: AgentRegistry | None = None
         self.orchestrator: Orchestrator | None = None
+        self.workflow_engine: WorkflowEngine | None = None
 
     @property
     def is_shutting_down(self) -> bool:
@@ -94,6 +96,9 @@ class ClaudeDaemon:
         self.agent_registry.load_all()
         self.orchestrator = Orchestrator(
             self.agent_registry, self.process_manager, self.store,
+        )
+        self.workflow_engine = WorkflowEngine(
+            self.orchestrator, self.agent_registry,
         )
         log.info("Loaded %d agents: %s",
                  len(self.agent_registry), self.agent_registry.agent_names())
@@ -415,6 +420,21 @@ class ClaudeDaemon:
                 log.info("Paperclip integration started")
             except Exception:
                 log.exception("Failed to start Paperclip")
+
+        if self.config.api_enabled:
+            try:
+                from claude_daemon.integrations.http_api import HttpApi
+                self._http_api = HttpApi(
+                    daemon=self,
+                    port=self.config.api_port,
+                    api_key=self.config.api_key,
+                )
+                await self._http_api.start()
+                log.info("HTTP API started on port %d", self.config.api_port)
+            except ImportError:
+                log.warning("aiohttp not available (pip install aiohttp)")
+            except Exception:
+                log.exception("Failed to start HTTP API")
 
     def _write_pid(self) -> None:
         pid_file = self.config.pid_path

@@ -74,9 +74,36 @@ class DurableMemory:
             return self.memory_file.read_text()
         return ""
 
-    def update_memory(self, content: str) -> None:
+    def update_memory(self, content: str, validate: bool = True) -> bool:
+        """Write new MEMORY.md content. Returns True if written, False if validation failed."""
+        if validate:
+            old = self.read_memory()
+            if old and content:
+                # Reject if new content is less than 30% the size of old (catastrophic loss)
+                if len(content) < len(old) * 0.3:
+                    log.warning(
+                        "Memory update rejected: new (%d chars) is <30%% of old (%d chars). "
+                        "This looks like data loss. Archive preserved.",
+                        len(content), len(old),
+                    )
+                    return False
+                # Log the diff summary
+                old_lines = set(old.strip().split("\n"))
+                new_lines = set(content.strip().split("\n"))
+                added = len(new_lines - old_lines)
+                removed = len(old_lines - new_lines)
+                if added or removed:
+                    self.append_daily_log(
+                        f"MEMORY.md updated: +{added} lines, -{removed} lines "
+                        f"({len(old)} -> {len(content)} chars)"
+                    )
+            elif not content.strip():
+                log.warning("Memory update rejected: empty content")
+                return False
+
         self.memory_file.write_text(content)
         log.info("Updated MEMORY.md (%d chars)", len(content))
+        return True
 
     def archive_memory(self) -> None:
         """Create a timestamped backup of MEMORY.md before overwriting."""
