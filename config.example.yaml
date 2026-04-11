@@ -1,0 +1,57 @@
+# Claude Daemon configuration
+# Copy to ~/.config/claude-daemon/config.yaml
+
+daemon:
+  log_level: INFO
+  # health_port: 8080          # Uncomment to enable HTTP health endpoint
+
+claude:
+  binary: claude                # Path to Claude Code CLI
+  max_concurrent: 3             # Max parallel Claude processes
+  max_budget_per_message: 0.50  # USD cost cap per message
+  # model: sonnet               # Override default model
+  permission_mode: auto         # auto, default, bypassPermissions
+
+memory:
+  daily_log: true               # Write daily markdown logs
+  compaction_threshold: 50000   # Characters before auto-compaction
+  max_session_age_hours: 72     # Archive sessions older than this
+  dream_enabled: true           # Enable weekly auto-dream consolidation
+
+scheduler:
+  update_cron: "0 3 * * *"      # Auto-update check (3 AM daily)
+  compaction_cron: "0 4 * * *"  # Memory compaction (4 AM daily)
+  dream_cron: "0 5 * * 0"      # Auto-dream (Sunday 5 AM)
+  heartbeat_interval: 1800      # Seconds (30 min)
+
+  # Custom scheduled jobs
+  custom_jobs: []
+  # custom_jobs:
+  #   - id: daily_standup
+  #     cron: "0 9 * * 1-5"
+  #     prompt: "Review recent git commits and write a standup summary"
+  #     target_platform: telegram
+  #     target_chat_id: "12345678"
+  #
+  #   - id: weekly_review
+  #     cron: "0 17 * * 5"
+  #     prompt: "Summarize what we accomplished this week"
+  #     target_platform: discord
+  #     target_channel_id: "987654321"
+
+integrations:
+  telegram:
+    enabled: true
+    # Token loaded from TELEGRAM_BOT_TOKEN env var
+    allowed_user_ids: []          # Empty = allow all (use with caution)
+    polling: true                 # true=polling, false=webhook
+
+  discord:
+    enabled: false
+    # Token loaded from DISCORD_BOT_TOKEN env var
+    allowed_guild_ids: []
+
+  paperclip:
+    enabled: false
+    # URL and API key loaded from env vars
+    poll_interval: 5              # Seconds between task polls
