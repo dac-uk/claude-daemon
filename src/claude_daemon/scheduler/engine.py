@@ -341,9 +341,11 @@ class SchedulerEngine:
             self.daemon.durable.append_daily_log(f"ALERT: {message}")
 
     def _get_alert_targets(self, platform: str) -> list[str]:
-        """Get configured alert target chat IDs for a platform."""
+        """Get configured alert target chat/channel IDs for a platform."""
         if platform == "telegram" and self.daemon.config.telegram_allowed_users:
             return [str(uid) for uid in self.daemon.config.telegram_allowed_users]
+        if platform == "discord" and self.daemon.config.discord_alert_channel_ids:
+            return list(self.daemon.config.discord_alert_channel_ids)
         return []
 
     def list_jobs(self) -> list[dict]:

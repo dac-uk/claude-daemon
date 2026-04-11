@@ -61,6 +61,9 @@ integrations:
     # agent_channels:
     #   "1234567890123456": "albert"
     #   "9876543210987654": "luna"
+    # Channels to receive heartbeat alerts, improvement plans, and system notifications
+    # alert_channel_ids:
+    #   - "1234567890123456"       # e.g. your #alerts or #agents channel
 
   paperclip:
     enabled: false

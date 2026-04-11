@@ -79,6 +79,7 @@ class DaemonConfig:
     discord_token: str | None = None
     discord_allowed_guilds: list[int] = field(default_factory=list)
     discord_agent_channels: dict[str, str] = field(default_factory=dict)  # channel_id -> agent_name
+    discord_alert_channel_ids: list[str] = field(default_factory=list)  # channel_ids for heartbeat/alert delivery
     paperclip_url: str | None = None
     paperclip_api_key: str | None = None
     paperclip_poll_interval: int = 5
@@ -184,6 +185,9 @@ class DaemonConfig:
             discord_agent_channels={
                 str(k): v for k, v in dc_cfg.get("agent_channels", {}).items()
             },
+            discord_alert_channel_ids=[
+                str(cid) for cid in dc_cfg.get("alert_channel_ids", [])
+            ],
             paperclip_url=os.environ.get("PAPERCLIP_URL") or pc_cfg.get("url"),
             paperclip_api_key=os.environ.get("PAPERCLIP_API_KEY") or pc_cfg.get("api_key"),
             paperclip_poll_interval=int(pc_cfg.get("poll_interval", 5)),
