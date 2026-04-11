@@ -64,6 +64,9 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("start", self._cmd_start))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("agents", self._cmd_agents))
+        self._app.add_handler(CommandHandler("newagent", self._cmd_newagent))
+        self._app.add_handler(CommandHandler("setagent", self._cmd_setagent))
+        self._app.add_handler(CommandHandler("delagent", self._cmd_delagent))
         self._app.add_handler(CommandHandler("memory", self._cmd_memory))
         self._app.add_handler(CommandHandler("forget", self._cmd_forget))
         self._app.add_handler(CommandHandler("session", self._cmd_session))
@@ -222,9 +225,73 @@ class TelegramIntegration(BaseIntegration):
             orch = " [orchestrator]" if agent.is_orchestrator else ""
             role = f" - {agent.identity.role}" if agent.identity.role else ""
             emoji = f"{agent.identity.emoji} " if agent.identity.emoji else ""
-            lines.append(f"  {emoji}{agent.name}{role}{orch}")
-        lines.append(f"\nUse @agent_name to talk to a specific agent.")
+            model = f" [{agent.identity.default_model}]"
+            lines.append(f"  {emoji}{agent.name}{role}{model}{orch}")
+        lines.append(
+            f"\nUse @agent_name to talk to a specific agent.\n"
+            f"/newagent name role emoji - create agent\n"
+            f"/setagent name field value - modify agent\n"
+            f"/delagent name - remove agent"
+        )
         await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_newagent(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Create a new agent: /newagent name role emoji"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        args = (update.message.text or "").split(maxsplit=3)
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: /newagent <name> <role> [emoji]\n"
+                "Example: /newagent analyst 'Data Analyst' 📊"
+            )
+            return
+
+        name = args[1]
+        role = args[2]
+        emoji = args[3] if len(args) > 3 else ""
+        result = self.daemon.create_agent(name, role=role, emoji=emoji)
+        await update.message.reply_text(result)
+
+    async def _cmd_setagent(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Modify an agent: /setagent name field value"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        args = (update.message.text or "").split(maxsplit=3)
+        if len(args) < 4:
+            await update.message.reply_text(
+                "Usage: /setagent <name> <field> <value>\n"
+                "Fields: role, emoji, model, soul, rules\n"
+                "Example: /setagent penny model opus"
+            )
+            return
+
+        result = self.daemon.update_agent(args[1], args[2], args[3])
+        await update.message.reply_text(result)
+
+    async def _cmd_delagent(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remove an agent: /delagent name"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        args = (update.message.text or "").split()
+        if len(args) < 2:
+            await update.message.reply_text("Usage: /delagent <name>")
+            return
+
+        result = self.daemon.delete_agent(args[1])
+        await update.message.reply_text(result)
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user

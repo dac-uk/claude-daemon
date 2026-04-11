@@ -85,8 +85,12 @@ class ClaudeDaemon:
         self.updater = Updater(self.config, self.process_manager)
 
         # Multi-agent system
+        from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
         agents_dir = self.config.data_dir / "agents"
-        self.agent_registry = AgentRegistry(agents_dir)
+        shared_dir = self.config.data_dir / "shared"
+        create_shared_workspace(self.config.data_dir)
+        create_csuite_workspaces(agents_dir)
+        self.agent_registry = AgentRegistry(agents_dir, shared_dir=shared_dir)
         self.agent_registry.load_all()
         self.orchestrator = Orchestrator(
             self.agent_registry, self.process_manager, self.store,
@@ -274,6 +278,71 @@ class ClaudeDaemon:
         # Last resort
         agents = self.agent_registry.list_agents()
         return agents[0] if agents else Agent(name="default", workspace=self.config.data_dir), prompt
+
+    # -- Dynamic Agent Management (callable from chat) --
+
+    def create_agent(self, name: str, role: str = "", emoji: str = "",
+                     model: str = "sonnet", soul: str = "") -> str:
+        """Create a new agent dynamically. Returns status message."""
+        if not self.agent_registry:
+            return "Agent registry not initialized."
+        name = name.lower().replace(" ", "-")
+        if self.agent_registry.get(name):
+            return f"Agent '{name}' already exists."
+        agent = self.agent_registry.create_agent(
+            name=name, role=role, emoji=emoji, is_orchestrator=False,
+        )
+        # Write model config to IDENTITY.md
+        id_path = agent.workspace / "IDENTITY.md"
+        id_path.write_text(
+            f"# Identity\n\nName: {name}\nRole: {role}\nEmoji: {emoji}\n"
+            f"Model: {model}\nPlanning-Model: opus\nChat-Model: {model}\nScheduled-Model: haiku\n"
+        )
+        if soul:
+            (agent.workspace / "SOUL.md").write_text(soul)
+        agent.load_identity()
+        return f"Created agent {agent.identity.display_name} ({role}) using {model}"
+
+    def update_agent(self, name: str, field: str, value: str) -> str:
+        """Update a field on an existing agent. Fields: role, emoji, model, soul."""
+        if not self.agent_registry:
+            return "Agent registry not initialized."
+        agent = self.agent_registry.get(name.lower())
+        if not agent:
+            return f"Agent '{name}' not found."
+
+        field = field.lower()
+        if field == "soul":
+            (agent.workspace / "SOUL.md").write_text(value)
+        elif field in ("role", "emoji", "model", "planning-model", "chat-model", "scheduled-model"):
+            id_path = agent.workspace / "IDENTITY.md"
+            content = id_path.read_text() if id_path.exists() else ""
+            # Update or append the field
+            lines = content.split("\n")
+            updated = False
+            for i, line in enumerate(lines):
+                if line.strip().lower().startswith(f"{field}:"):
+                    lines[i] = f"{field.title()}: {value}"
+                    updated = True
+                    break
+            if not updated:
+                lines.append(f"{field.title()}: {value}")
+            id_path.write_text("\n".join(lines))
+        elif field == "rules":
+            (agent.workspace / "AGENTS.md").write_text(value)
+        else:
+            return f"Unknown field '{field}'. Use: role, emoji, model, soul, rules"
+
+        agent.load_identity()
+        return f"Updated {name}.{field} = {value[:50]}{'...' if len(value) > 50 else ''}"
+
+    def delete_agent(self, name: str) -> str:
+        """Remove an agent from the registry (workspace files preserved)."""
+        if not self.agent_registry:
+            return "Agent registry not initialized."
+        if self.agent_registry.remove_agent(name.lower()):
+            return f"Agent '{name}' removed from registry. Workspace files preserved at agents/{name}/"
+        return f"Agent '{name}' not found."
 
     async def heartbeat(self) -> None:
         active = self.process_manager.active_count if self.process_manager else 0

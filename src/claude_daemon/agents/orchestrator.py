@@ -118,23 +118,22 @@ class Orchestrator:
         session_id: str | None = None,
         platform: str = "cli",
         user_id: str = "local",
+        task_type: str = "default",
     ) -> ClaudeResponse:
         """Send a message to a specific agent with its full identity context."""
-        # Build agent-specific context
         agent_context = agent.build_system_context()
-
-        # Add agent summary so this agent knows about its peers
         agent_context += f"\n\n{self.registry.get_agent_summary()}"
 
-        # Get or create agent-specific conversation
-        agent_session_id = session_id or None
         conv = self.store.get_or_create_conversation(
-            session_id=agent_session_id,
+            session_id=session_id,
             platform=platform,
             user_id=f"{user_id}:{agent.name}",
         )
 
         self.store.add_message(conv["id"], "user", prompt)
+
+        # Use agent's model for this task type
+        model = agent.get_model(task_type)
 
         response = await self.pm.send_message(
             prompt=prompt,
@@ -142,6 +141,7 @@ class Orchestrator:
             system_context=agent_context,
             platform=platform,
             user_id=user_id,
+            model_override=model,
         )
 
         self.store.add_message(
@@ -161,6 +161,7 @@ class Orchestrator:
         session_id: str | None = None,
         platform: str = "cli",
         user_id: str = "local",
+        task_type: str = "default",
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a message to a specific agent."""
         agent_context = agent.build_system_context()
@@ -177,12 +178,15 @@ class Orchestrator:
         accumulated = ""
         final_response = None
 
+        model = agent.get_model(task_type)
+
         async for chunk in self.pm.stream_message(
             prompt=prompt,
             session_id=conv["session_id"],
             system_context=agent_context,
             platform=platform,
             user_id=user_id,
+            model_override=model,
         ):
             if isinstance(chunk, str):
                 accumulated += chunk

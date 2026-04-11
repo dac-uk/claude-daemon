@@ -25,9 +25,10 @@ log = logging.getLogger(__name__)
 class AgentRegistry:
     """Manages the collection of named agents."""
 
-    def __init__(self, agents_dir: Path) -> None:
+    def __init__(self, agents_dir: Path, shared_dir: Path | None = None) -> None:
         self.agents_dir = agents_dir
         self.agents_dir.mkdir(parents=True, exist_ok=True)
+        self.shared_dir = shared_dir
         self._agents: dict[str, Agent] = {}
 
     def load_all(self) -> None:
@@ -70,6 +71,7 @@ class AgentRegistry:
             name=name,
             workspace=workspace,
             is_orchestrator=is_orchestrator,
+            shared_dir=self.shared_dir,
         )
         return agent
 

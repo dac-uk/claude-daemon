@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from claude_daemon.agents.agent import Agent, AgentIdentity
+from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
 from claude_daemon.agents.registry import AgentRegistry
 from claude_daemon.agents.orchestrator import Orchestrator, AGENT_ADDRESS_PATTERN
 
@@ -170,3 +171,96 @@ def test_orchestrator_resolve_explicit(agents_dir: Path):
     assert agent is None  # No explicit addressing
 
     store.close()
+
+
+# -- Model routing tests --
+
+def test_agent_model_from_identity(tmp_path: Path):
+    """Test that model config is read from IDENTITY.md."""
+    ws = tmp_path / "opus-agent"
+    ws.mkdir(parents=True)
+    (ws / "memory").mkdir()
+    (ws / "IDENTITY.md").write_text(
+        "Name: albert\nRole: CIO\nEmoji: 🧠\n"
+        "Model: opus\nPlanning-Model: opus\nChat-Model: opus\nScheduled-Model: haiku\n"
+    )
+
+    agent = Agent(name="albert", workspace=ws)
+    assert agent.get_model("default") == "opus"
+    assert agent.get_model("planning") == "opus"
+    assert agent.get_model("chat") == "opus"
+    assert agent.get_model("scheduled") == "haiku"
+
+
+def test_agent_model_defaults(tmp_path: Path):
+    """Test default model values when IDENTITY.md has no model config."""
+    ws = tmp_path / "basic-agent"
+    ws.mkdir(parents=True)
+    (ws / "memory").mkdir()
+
+    agent = Agent(name="basic", workspace=ws)
+    assert agent.get_model("default") == "sonnet"
+    assert agent.get_model("planning") == "opus"
+    assert agent.get_model("scheduled") == "haiku"
+
+
+# -- Bootstrap tests --
+
+def test_bootstrap_creates_csuite(tmp_path: Path):
+    """Test that bootstrap creates all 7 C-suite agents."""
+    agents_dir = tmp_path / "agents"
+    count = create_csuite_workspaces(agents_dir)
+    assert count == 7
+
+    names = sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
+    assert names == ["albert", "jeremy", "johnny", "luna", "max", "penny", "sophie"]
+
+    # Verify johnny is orchestrator
+    johnny_agents = (agents_dir / "johnny" / "AGENTS.md").read_text()
+    assert "orchestrator: true" in johnny_agents
+
+    # Verify model configs
+    albert_id = (agents_dir / "albert" / "IDENTITY.md").read_text()
+    assert "Model: opus" in albert_id
+
+    penny_id = (agents_dir / "penny" / "IDENTITY.md").read_text()
+    assert "Model: sonnet" in penny_id
+
+
+def test_bootstrap_skips_existing(tmp_path: Path):
+    """Test that bootstrap doesn't overwrite existing agents."""
+    agents_dir = tmp_path / "agents"
+    create_csuite_workspaces(agents_dir)
+
+    # Modify albert's soul
+    (agents_dir / "albert" / "SOUL.md").write_text("Custom soul")
+
+    # Re-run bootstrap
+    count = create_csuite_workspaces(agents_dir)
+    assert count == 0  # Nothing created
+
+    # Verify custom soul preserved
+    assert (agents_dir / "albert" / "SOUL.md").read_text() == "Custom soul"
+
+
+def test_shared_workspace(tmp_path: Path):
+    """Test shared workspace creation."""
+    create_shared_workspace(tmp_path)
+    shared = tmp_path / "shared"
+    assert shared.exists()
+    assert (shared / "USER.md").exists()
+    assert (shared / "playbooks").is_dir()
+    assert (shared / "steer").is_dir()
+    assert (shared / "reflections").is_dir()
+    assert "Dave" in (shared / "USER.md").read_text()
+
+
+def test_agent_reads_shared_user(tmp_path: Path):
+    """Test that agents read shared USER.md when no local one exists."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "USER.md").write_text("Name: Dave\nRole: Chairman")
+
+    ws = tmp_path / "agent"
+    agent = Agent(name="test", workspace=ws, shared_dir=shared)
+    assert "Dave" in agent.identity.user_context

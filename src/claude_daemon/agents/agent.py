@@ -1,10 +1,10 @@
 """Agent - represents a single named agent with its own identity and workspace.
 
-Each agent has its own set of OpenClaw-style identity files:
+Each agent has its own set of identity files:
 - SOUL.md: Core personality, values, beliefs, tone
-- IDENTITY.md: Public-facing name, role, emoji
+- IDENTITY.md: Public-facing name, role, emoji, model config
 - AGENTS.md: Operating procedures, workflow rules
-- USER.md: Context about the user(s) this agent serves
+- USER.md: Context about the user (or symlink to shared/USER.md)
 - TOOLS.md: Capabilities and tool guidance
 - MEMORY.md: Curated long-term knowledge
 - VISION.md: Long-term goals and roadmap
@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +36,12 @@ class AgentIdentity:
     vision: str = ""
     heartbeat_tasks: str = ""
 
+    # Per-agent model routing
+    default_model: str = "sonnet"
+    planning_model: str = "opus"
+    chat_model: str = "sonnet"
+    scheduled_model: str = "haiku"
+
     @property
     def display_name(self) -> str:
         prefix = f"{self.emoji} " if self.emoji else ""
@@ -51,6 +56,7 @@ class Agent:
     workspace: Path
     identity: AgentIdentity = field(default=None)
     is_orchestrator: bool = False
+    shared_dir: Path | None = None  # Path to shared/ workspace
 
     def __post_init__(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -68,27 +74,41 @@ class Agent:
         if soul_path.exists():
             self.identity.soul = soul_path.read_text()
 
-        # IDENTITY.md
+        # IDENTITY.md (includes model config)
         id_path = self.workspace / "IDENTITY.md"
         if id_path.exists():
-            content = id_path.read_text()
-            self.identity.soul = self.identity.soul  # soul is separate
-            for line in content.split("\n"):
+            for line in id_path.read_text().split("\n"):
                 line = line.strip()
-                if line.lower().startswith("role:"):
-                    self.identity.role = line.split(":", 1)[1].strip()
-                elif line.lower().startswith("emoji:"):
-                    self.identity.emoji = line.split(":", 1)[1].strip()
+                key_val = line.split(":", 1)
+                if len(key_val) != 2:
+                    continue
+                key, val = key_val[0].strip().lower(), key_val[1].strip()
+                if not val:
+                    continue
+                if key == "role":
+                    self.identity.role = val
+                elif key == "emoji":
+                    self.identity.emoji = val
+                elif key == "model":
+                    self.identity.default_model = val
+                elif key == "planning-model":
+                    self.identity.planning_model = val
+                elif key == "chat-model":
+                    self.identity.chat_model = val
+                elif key == "scheduled-model":
+                    self.identity.scheduled_model = val
 
         # AGENTS.md
         agents_path = self.workspace / "AGENTS.md"
         if agents_path.exists():
             self.identity.agents_rules = agents_path.read_text()
 
-        # USER.md
+        # USER.md (check agent workspace first, then shared)
         user_path = self.workspace / "USER.md"
         if user_path.exists():
             self.identity.user_context = user_path.read_text()
+        elif self.shared_dir and (self.shared_dir / "USER.md").exists():
+            self.identity.user_context = (self.shared_dir / "USER.md").read_text()
 
         # TOOLS.md
         tools_path = self.workspace / "TOOLS.md"
@@ -105,23 +125,36 @@ class Agent:
         if hb_path.exists():
             self.identity.heartbeat_tasks = hb_path.read_text()
 
+    def get_model(self, task_type: str = "default") -> str:
+        """Get the appropriate model for a task type.
+
+        task_type: 'default', 'planning', 'chat', 'scheduled'
+        """
+        models = {
+            "default": self.identity.default_model,
+            "planning": self.identity.planning_model,
+            "chat": self.identity.chat_model,
+            "scheduled": self.identity.scheduled_model,
+        }
+        return models.get(task_type, self.identity.default_model)
+
     def build_system_context(self, max_chars: int = 6000) -> str:
         """Build the full system prompt context for this agent.
 
-        Mirrors the OpenClaw boot sequence: SOUL -> IDENTITY -> AGENTS ->
-        USER -> TOOLS -> MEMORY -> REFLECTIONS -> recent logs.
+        Boot sequence: SOUL -> IDENTITY -> AGENTS -> USER -> TOOLS ->
+        MEMORY -> REFLECTIONS -> recent logs.
         """
         blocks = []
         ident = self.identity
 
         if ident.soul:
-            blocks.append(ident.soul[:1200])
+            blocks.append(ident.soul[:1500])
 
         if ident.role:
             blocks.append(f"Your name is {ident.name}. Role: {ident.role}")
 
         if ident.agents_rules:
-            blocks.append(f"## Operating Rules\n{ident.agents_rules[:800]}")
+            blocks.append(f"## Operating Rules\n{ident.agents_rules[:1000]}")
 
         if ident.user_context:
             blocks.append(f"## User Context\n{ident.user_context[:600]}")
@@ -145,6 +178,14 @@ class Agent:
             refl = refl_path.read_text()
             if refl:
                 blocks.append(f"## Self-Reflections\n{refl[:400]}")
+
+        # OTA logging convention
+        blocks.append(
+            "## Logging Convention\n"
+            "Tag key reasoning: [THOUGHT] [ACTION] [OBSERVATION] [REASONING]\n"
+            "Tag trimmable output: [TOOL-OUTPUT] [METADATA]\n"
+            "5-10 tags per task. Enables memory reconstruction."
+        )
 
         context = "\n\n".join(blocks)
         if len(context) > max_chars:
@@ -171,6 +212,10 @@ class Agent:
                 f"Name: {self.name}\n"
                 f"Role: {self.identity.role or 'General assistant'}\n"
                 f"Emoji: {self.identity.emoji or ''}\n"
+                f"Model: {self.identity.default_model}\n"
+                f"Planning-Model: {self.identity.planning_model}\n"
+                f"Chat-Model: {self.identity.chat_model}\n"
+                f"Scheduled-Model: {self.identity.scheduled_model}\n"
             )
 
         memory_path = self.workspace / "MEMORY.md"

@@ -95,6 +95,7 @@ class ProcessManager:
         system_context: str | None,
         max_budget: float,
         output_format: str = "json",
+        model_override: str | None = None,
     ) -> tuple[list[str], str]:
         """Build the claude CLI arguments. Returns (args, tracking_id)."""
         args = [
@@ -111,8 +112,10 @@ class ProcessManager:
         else:
             args.extend(["--session-id", tracking_id])
 
-        if self.config.default_model:
-            args.extend(["--model", self.config.default_model])
+        # Model: override > config default
+        model = model_override or self.config.default_model
+        if model:
+            args.extend(["--model", model])
 
         if max_budget > 0:
             args.extend(["--max-budget-usd", str(max_budget)])
@@ -134,22 +137,24 @@ class ProcessManager:
         max_budget: float | None = None,
         platform: str = "cli",
         user_id: str = "local",
+        model_override: str | None = None,
     ) -> ClaudeResponse:
         """Send a prompt and return the complete response (buffered mode)."""
         budget = max_budget if max_budget is not None else self.config.max_budget_per_message
 
-        # Lock per-session to prevent concurrent resume of same session
         if session_id:
             lock = self._get_session_lock(session_id)
             async with lock:
                 async with self._semaphore:
                     return await self._execute_buffered(
                         prompt, session_id, system_context, budget, platform, user_id,
+                        model_override,
                     )
         else:
             async with self._semaphore:
                 return await self._execute_buffered(
                     prompt, session_id, system_context, budget, platform, user_id,
+                    model_override,
                 )
 
     async def stream_message(
@@ -160,6 +165,7 @@ class ProcessManager:
         max_budget: float | None = None,
         platform: str = "cli",
         user_id: str = "local",
+        model_override: str | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a response token-by-token. Yields text chunks, then final ClaudeResponse.
 
@@ -172,10 +178,12 @@ class ProcessManager:
         """
         budget = max_budget if max_budget is not None else self.config.max_budget_per_message
         args, tracking_id = self._build_args(
-            prompt, session_id, system_context, budget, output_format="stream-json",
+            prompt, session_id, system_context, budget,
+            output_format="stream-json", model_override=model_override,
         )
 
-        log.debug("Streaming Claude: session=%s, prompt_len=%d", tracking_id, len(prompt))
+        log.debug("Streaming Claude: session=%s, model=%s, prompt_len=%d",
+                   tracking_id, model_override or "default", len(prompt))
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -250,10 +258,12 @@ class ProcessManager:
     async def _execute_buffered(
         self, prompt: str, session_id: str | None, system_context: str | None,
         max_budget: float, platform: str, user_id: str,
+        model_override: str | None = None,
     ) -> ClaudeResponse:
         """Execute claude CLI as a buffered subprocess."""
         args, tracking_id = self._build_args(
             prompt, session_id, system_context, max_budget,
+            model_override=model_override,
         )
 
         log.debug("Executing Claude: session=%s, prompt_len=%d", tracking_id, len(prompt))

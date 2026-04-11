@@ -241,12 +241,16 @@ def _cmd_install_service(args: argparse.Namespace) -> None:
 
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
+    from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.core.config import DaemonConfig
 
     config = DaemonConfig.load()
     agents_dir = config.data_dir / "agents"
-    registry = AgentRegistry(agents_dir)
+    shared_dir = config.data_dir / "shared"
+    create_shared_workspace(config.data_dir)
+    create_csuite_workspaces(agents_dir)
+    registry = AgentRegistry(agents_dir, shared_dir=shared_dir)
     registry.load_all()
 
     action = getattr(args, "agents_action", None) or "list"
