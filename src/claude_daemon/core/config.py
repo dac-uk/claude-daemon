@@ -41,12 +41,19 @@ class DaemonConfig:
     max_budget_per_message: float = 0.50
     default_model: str | None = None
     permission_mode: str = "auto"
+    process_timeout: int = 300
+    mcp_config: str | None = None  # Path to MCP server config JSON
+    streaming_enabled: bool = True  # Use stream-json for interactive responses
 
     # Memory
     daily_log_enabled: bool = True
     compaction_threshold: int = 50_000
     max_session_age_hours: int = 72
     dream_enabled: bool = True
+    max_context_chars: int = 5000
+    max_memory_chars: int = 3000
+    log_retention_days: int = 30  # Garbage collect daily logs older than this
+    self_improve: bool = True  # Enable reflexion/self-improvement feedback loop
 
     # Scheduler
     update_cron: str = "0 3 * * *"
@@ -54,6 +61,10 @@ class DaemonConfig:
     dream_cron: str = "0 5 * * 0"
     heartbeat_interval: int = 1800
     custom_jobs: list[dict] = field(default_factory=list)
+
+    # Rate limiting
+    rate_limit_per_user: int = 20  # Messages per minute per user
+    rate_limit_window: int = 60  # Window in seconds
 
     # Integrations (tokens from env, not YAML)
     telegram_token: str | None = None
@@ -82,16 +93,21 @@ class DaemonConfig:
     def pid_path(self) -> Path:
         return paths.pid_path()
 
+    @property
+    def soul_path(self) -> Path:
+        return self.data_dir / "SOUL.md"
+
+    @property
+    def reflections_path(self) -> Path:
+        return self.data_dir / "REFLECTIONS.md"
+
     @classmethod
     def load(cls, config_path: Path | None = None) -> DaemonConfig:
         """Load config from YAML, .env, and environment variables."""
         # Load .env first so env vars are available
-        dotenv_path = Path(".env")
-        if dotenv_path.exists():
-            load_dotenv(dotenv_path)
-        dotenv_data = paths.config_dir() / ".env"
-        if dotenv_data.exists():
-            load_dotenv(dotenv_data)
+        for dotenv in [Path(".env"), paths.config_dir() / ".env"]:
+            if dotenv.exists():
+                load_dotenv(dotenv)
 
         # Load YAML config
         yaml_data: dict[str, Any] = {}
@@ -121,28 +137,32 @@ class DaemonConfig:
         data_dir = Path(os.path.expanduser(data_dir_str)) if data_dir_str else paths.config_dir()
 
         return cls(
-            # Core
             data_dir=data_dir,
             log_level=_env("LOG_LEVEL") or daemon_cfg.get("log_level", "INFO"),
             health_port=int(hp) if (hp := daemon_cfg.get("health_port")) else None,
-            # Claude
             claude_binary=claude_cfg.get("binary", "claude"),
             max_concurrent_sessions=int(claude_cfg.get("max_concurrent", 3)),
             max_budget_per_message=float(claude_cfg.get("max_budget_per_message", 0.50)),
             default_model=claude_cfg.get("model"),
             permission_mode=claude_cfg.get("permission_mode", "auto"),
-            # Memory
+            process_timeout=int(claude_cfg.get("process_timeout", 300)),
+            mcp_config=claude_cfg.get("mcp_config"),
+            streaming_enabled=claude_cfg.get("streaming", True),
             daily_log_enabled=memory_cfg.get("daily_log", True),
             compaction_threshold=int(memory_cfg.get("compaction_threshold", 50_000)),
             max_session_age_hours=int(memory_cfg.get("max_session_age_hours", 72)),
             dream_enabled=memory_cfg.get("dream_enabled", True),
-            # Scheduler
+            max_context_chars=int(memory_cfg.get("max_context_chars", 5000)),
+            max_memory_chars=int(memory_cfg.get("max_memory_chars", 3000)),
+            log_retention_days=int(memory_cfg.get("log_retention_days", 30)),
+            self_improve=memory_cfg.get("self_improve", True),
             update_cron=sched_cfg.get("update_cron", "0 3 * * *"),
             compaction_cron=sched_cfg.get("compaction_cron", "0 4 * * *"),
             dream_cron=sched_cfg.get("dream_cron", "0 5 * * 0"),
             heartbeat_interval=int(sched_cfg.get("heartbeat_interval", 1800)),
             custom_jobs=sched_cfg.get("custom_jobs", []),
-            # Integrations
+            rate_limit_per_user=int(daemon_cfg.get("rate_limit_per_user", 20)),
+            rate_limit_window=int(daemon_cfg.get("rate_limit_window", 60)),
             telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),
             telegram_allowed_users=tg_cfg.get("allowed_user_ids", []),
             telegram_polling=tg_cfg.get("polling", True),

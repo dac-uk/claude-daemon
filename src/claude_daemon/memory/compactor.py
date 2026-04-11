@@ -1,157 +1,349 @@
-"""ContextCompactor - summarization, daily compaction, and auto-dream.
+"""Three-phase dreaming system inspired by OpenClaw.
 
-Uses Claude itself (via ProcessManager) to summarize conversations
-and consolidate memory.
+Dreaming is a memory consolidation pipeline with three distinct phases:
+
+1. LIGHT SLEEP (hourly) - Signal detection
+   Scans recent activity for noteworthy signals (decisions, preferences, facts).
+   Cheap, fast, runs frequently. Tags signals with importance scores.
+
+2. DEEP SLEEP (nightly) - Consolidation
+   Summarizes active sessions, merges related signals, deduplicates.
+   Writes daily log summaries. Archives expired sessions.
+
+3. REM SLEEP (weekly) - Integration
+   Reads accumulated signals + existing MEMORY.md + SOUL.md learnings.
+   Extracts cross-session patterns. Updates persistent memory.
+   Generates self-reflections for the improvement loop.
+
+Each phase produces explainable output: what was promoted, why, and what was discarded.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from claude_daemon.core.config import DaemonConfig
     from claude_daemon.core.process import ProcessManager
     from claude_daemon.memory.durable import DurableMemory
     from claude_daemon.memory.store import ConversationStore
 
 log = logging.getLogger(__name__)
 
-SUMMARIZE_PROMPT = """\
-Summarize the following conversation concisely. Focus on:
-- Key decisions made
-- Important facts learned about the user
-- Tasks completed or in progress
-- User preferences discovered
+# -- Phase 1: Light Sleep --
 
-Keep the summary under 500 characters.
+LIGHT_SLEEP_PROMPT = """\
+You are scanning recent conversation activity for noteworthy signals.
+Extract ONLY genuinely important items from this conversation. For each signal, provide:
+- The signal (fact, preference, decision, or pattern)
+- Why it matters (one sentence)
+- Importance: HIGH, MEDIUM, or LOW
+
+Be selective. Most conversations contain 0-2 signals worth remembering.
+Output format - one signal per line:
+[HIGH] Signal text | Why it matters
+[MEDIUM] Signal text | Why it matters
+
+If nothing noteworthy, respond with exactly: NO_SIGNALS
 
 Conversation:
 {conversation}
 """
 
-DREAM_PROMPT = """\
-You are consolidating your memory. Below are your recent daily activity logs
-and current persistent memory. Your task:
+# -- Phase 2: Deep Sleep --
 
-1. Extract recurring patterns, preferences, and important facts
-2. Remove outdated or redundant information
-3. Write a clean, updated persistent memory document
+DEEP_SLEEP_PROMPT = """\
+You are consolidating today's memory signals. Below are signals detected from conversations today,
+plus the current persistent memory. Your tasks:
 
-Keep it concise (under 1500 characters). Use markdown headers to organize.
+1. Remove duplicate or redundant signals
+2. Merge related signals into coherent insights
+3. Summarize the day's key activity
+4. Note any contradictions with existing memory
+
+Output a concise daily summary (under 800 chars) with sections:
+## Key Insights
+## Patterns Noticed
+## Contradictions (if any)
+
+Today's signals:
+{signals}
+
+Current persistent memory:
+{memory}
+"""
+
+# -- Phase 3: REM Sleep --
+
+REM_SLEEP_PROMPT = """\
+You are performing deep memory integration. You have access to:
+1. Your persistent memory (accumulated knowledge about the user)
+2. Recent daily summaries (last 7 days of consolidated insights)
+3. Your soul/identity document (who you are)
+4. Your self-reflections (what you've learned about being effective)
+
+Your task is to produce an updated persistent memory document that:
+- Integrates new patterns discovered this week
+- Removes information that's no longer relevant or accurate
+- Resolves contradictions (prefer recent evidence)
+- Organizes knowledge into clear categories
+- Preserves the user's core preferences and facts
+- Stays under {max_chars} characters
+
+For each major change, add a brief annotation: <!-- promoted from [date] --> or <!-- removed: outdated -->
 
 Current persistent memory:
 {memory}
 
-Recent activity logs (last 7 days):
-{logs}
+Recent daily summaries:
+{summaries}
+
+Soul/Identity:
+{soul}
+
+Self-reflections:
+{reflections}
 
 Write the updated persistent memory document:
 """
 
+# -- Self-reflection --
+
+REFLECTION_PROMPT = """\
+Review these recent interactions and reflect on your effectiveness as an assistant.
+Consider:
+- What responses worked well? What made them effective?
+- Where did you fall short? What could you do differently?
+- What patterns in the user's requests suggest about their needs?
+- Are there tools, approaches, or knowledge areas you should prioritize?
+
+Keep reflections actionable and specific (under 600 chars).
+Format: bullet points starting with what you learned.
+
+Recent interactions:
+{interactions}
+
+Previous reflections:
+{reflections}
+"""
+
 
 class ContextCompactor:
-    """Manages memory summarization and consolidation."""
+    """Three-phase dreaming system for memory consolidation."""
 
     def __init__(
         self,
         store: ConversationStore,
         durable: DurableMemory,
         process_manager: ProcessManager,
+        config: DaemonConfig | None = None,
     ) -> None:
         self.store = store
         self.durable = durable
         self.pm = process_manager
+        self.config = config
 
-    async def compact_session(self, session_id: str) -> str | None:
-        """Summarize a conversation and store the summary."""
-        # Find conversation
-        row = self.store._db.execute(
-            "SELECT id FROM conversations WHERE session_id = ?", (session_id,)
-        ).fetchone()
-        if not row:
-            return None
+    # ------------------------------------------------------------------ #
+    # Phase 1: LIGHT SLEEP - Signal detection (runs frequently)
+    # ------------------------------------------------------------------ #
 
-        conv_id = row["id"]
-        text = self.store.get_conversation_text(conv_id, limit=30)
-        if not text or len(text) < 100:
-            return None
+    async def light_sleep(self, session_id: str) -> list[str]:
+        """Scan a single conversation for noteworthy signals.
 
-        prompt = SUMMARIZE_PROMPT.format(conversation=text)
+        Called after each message exchange or periodically.
+        Returns list of detected signals.
+        """
+        conv = self.store.get_conversation_by_session(session_id)
+        if not conv:
+            return []
+
+        text = self.store.get_conversation_text(conv["id"], limit=15)
+        if not text or len(text) < 200:
+            return []
+
+        prompt = LIGHT_SLEEP_PROMPT.format(conversation=text)
         response = await self.pm.send_message(
-            prompt=prompt,
-            max_budget=0.10,
-            platform="system",
-            user_id="compactor",
+            prompt=prompt, max_budget=0.05, platform="system", user_id="dreamer",
         )
 
-        if response.is_error:
-            log.error("Compaction failed: %s", response.result)
-            return None
+        if response.is_error or "NO_SIGNALS" in response.result:
+            return []
 
-        summary = response.result
-        self.store.add_summary(conv_id, summary, "session")
-        log.info("Compacted session %s: %d chars", session_id, len(summary))
-        return summary
+        # Parse signals
+        signals = []
+        for line in response.result.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("[HIGH]") or line.startswith("[MEDIUM]") or line.startswith("[LOW]"):
+                signals.append(line)
 
-    async def daily_compaction(self) -> None:
-        """Scheduled job: summarize all active sessions and write daily log."""
-        log.info("Running daily compaction...")
+        if signals:
+            # Store signals as a summary for later consolidation
+            self.store.add_summary(conv["id"], "\n".join(signals), "light_sleep")
+            self.durable.append_daily_log(
+                f"Light sleep: {len(signals)} signals from session {session_id[:8]}"
+            )
+            log.info("Light sleep: %d signals from session %s", len(signals), session_id[:8])
 
-        conversations = self.store.get_active_conversations()
-        compacted = 0
+        return signals
 
-        for conv in conversations:
-            if conv["message_count"] > 5:  # Only compact conversations with activity
-                result = await self.compact_session(conv["session_id"])
-                if result:
-                    compacted += 1
+    # ------------------------------------------------------------------ #
+    # Phase 2: DEEP SLEEP - Consolidation (runs nightly)
+    # ------------------------------------------------------------------ #
 
-        # Write summary to daily log
-        self.durable.append_daily_log(
-            f"Daily compaction: {compacted}/{len(conversations)} conversations summarized."
+    async def deep_sleep(self) -> None:
+        """Nightly consolidation: merge signals, summarize sessions, clean up.
+
+        This replaces the old daily_compaction method.
+        """
+        log.info("Deep sleep starting...")
+
+        # Gather all light_sleep signals from today
+        today_signals = self.store.get_summaries_by_type("light_sleep", limit=50)
+        all_signals = "\n".join(today_signals) if today_signals else "(no signals detected today)"
+
+        memory = self.durable.read_memory()
+
+        # Ask Claude to consolidate
+        prompt = DEEP_SLEEP_PROMPT.format(
+            signals=all_signals,
+            memory=memory or "(empty)",
+        )
+        response = await self.pm.send_message(
+            prompt=prompt, max_budget=0.10, platform="system", user_id="dreamer",
         )
 
-        # Clean up old sessions
-        archived = self.store.cleanup_expired()
+        if not response.is_error and len(response.result) > 30:
+            # Store daily summary
+            self.store.add_summary(None, response.result, "deep_sleep")
+            self.durable.append_daily_log(f"Deep sleep summary:\n{response.result[:500]}")
+            log.info("Deep sleep: daily summary written (%d chars)", len(response.result))
+        else:
+            log.warning("Deep sleep: consolidation failed or empty")
+
+        # Archive expired sessions
+        archived = self.store.cleanup_expired(
+            self.config.max_session_age_hours if self.config else 72
+        )
         if archived:
             self.durable.append_daily_log(f"Archived {archived} expired conversations.")
 
-        log.info("Daily compaction complete: %d compacted, %d archived", compacted, archived)
+        # Garbage collect old daily logs
+        if self.config:
+            self.durable.cleanup_old_logs(self.config.log_retention_days)
 
-    async def auto_dream(self) -> None:
-        """KAIROS-inspired: consolidate weekly memories into MEMORY.md.
+        log.info("Deep sleep complete")
 
-        Reads recent daily logs and current MEMORY.md, asks Claude to
-        extract patterns and preferences, then updates MEMORY.md.
+    # ------------------------------------------------------------------ #
+    # Phase 3: REM SLEEP - Integration (runs weekly)
+    # ------------------------------------------------------------------ #
+
+    async def rem_sleep(self) -> None:
+        """Weekly deep integration: update MEMORY.md with accumulated insights.
+
+        This replaces the old auto_dream method.
         """
-        log.info("Running auto-dream memory consolidation...")
+        log.info("REM sleep starting...")
 
         memory = self.durable.read_memory()
-        logs = self.durable.read_recent_logs(days=7)
+        soul = self.durable.read_soul()
+        reflections = self.durable.read_reflections()
 
-        if not logs and not memory:
-            log.info("No memory content to consolidate")
-            return
+        # Gather deep_sleep summaries from the last 7 days
+        summaries = self.store.get_summaries_by_type("deep_sleep", limit=7)
+        summaries_text = "\n---\n".join(summaries) if summaries else "(no daily summaries)"
 
-        prompt = DREAM_PROMPT.format(memory=memory or "(empty)", logs=logs or "(no recent logs)")
+        max_chars = self.config.max_memory_chars if self.config else 3000
+
+        prompt = REM_SLEEP_PROMPT.format(
+            memory=memory or "(empty)",
+            summaries=summaries_text,
+            soul=soul or "(no soul document)",
+            reflections=reflections or "(no reflections yet)",
+            max_chars=max_chars,
+        )
         response = await self.pm.send_message(
-            prompt=prompt,
-            max_budget=0.15,
-            platform="system",
-            user_id="dreamer",
+            prompt=prompt, max_budget=0.15, platform="system", user_id="dreamer",
         )
 
         if response.is_error:
-            log.error("Auto-dream failed: %s", response.result)
+            log.error("REM sleep failed: %s", response.result[:200])
+            self.durable.append_daily_log("REM sleep: FAILED - " + response.result[:100])
             return
 
-        # Update MEMORY.md with consolidated memory
         new_memory = response.result
-        if len(new_memory) > 50:  # Sanity check
-            self.durable.update_memory(new_memory)
-            self.store.add_summary(None, new_memory, "dream")
-            self.durable.append_daily_log("Auto-dream: persistent memory consolidated.")
-            log.info("Auto-dream complete: MEMORY.md updated (%d chars)", len(new_memory))
-        else:
-            log.warning("Auto-dream produced suspiciously short output, skipping update")
+        if len(new_memory) < 50:
+            log.warning("REM sleep produced suspiciously short output, skipping")
+            return
+
+        # Version the old memory before overwriting
+        self.durable.archive_memory()
+
+        # Write new memory
+        self.durable.update_memory(new_memory)
+        self.store.add_summary(None, new_memory, "rem_sleep")
+        self.durable.append_daily_log(
+            f"REM sleep: MEMORY.md updated ({len(new_memory)} chars). "
+            f"Previous version archived."
+        )
+
+        # Run self-reflection if enabled
+        if self.config and self.config.self_improve:
+            await self._reflect()
+
+        log.info("REM sleep complete: MEMORY.md updated (%d chars)", len(new_memory))
+
+    # ------------------------------------------------------------------ #
+    # Self-improvement: Reflexion
+    # ------------------------------------------------------------------ #
+
+    async def _reflect(self) -> None:
+        """Generate self-reflections on recent performance.
+
+        Produces actionable insights stored in REFLECTIONS.md.
+        """
+        log.info("Generating self-reflections...")
+
+        # Get recent conversation excerpts
+        convos = self.store.get_active_conversations()
+        interaction_texts = []
+        for conv in convos[:5]:
+            text = self.store.get_conversation_text(conv["id"], limit=10)
+            if text:
+                interaction_texts.append(text[:500])
+
+        if not interaction_texts:
+            return
+
+        reflections = self.durable.read_reflections()
+
+        prompt = REFLECTION_PROMPT.format(
+            interactions="\n---\n".join(interaction_texts),
+            reflections=reflections or "(first reflection)",
+        )
+        response = await self.pm.send_message(
+            prompt=prompt, max_budget=0.08, platform="system", user_id="reflector",
+        )
+
+        if not response.is_error and len(response.result) > 30:
+            self.durable.update_reflections(response.result)
+            self.durable.append_daily_log("Self-reflection updated.")
+            log.info("Self-reflection complete")
+
+    # ------------------------------------------------------------------ #
+    # Legacy API compatibility
+    # ------------------------------------------------------------------ #
+
+    async def compact_session(self, session_id: str) -> str | None:
+        """Legacy: runs light_sleep on a single session."""
+        signals = await self.light_sleep(session_id)
+        return "\n".join(signals) if signals else None
+
+    async def daily_compaction(self) -> None:
+        """Legacy: runs deep_sleep."""
+        await self.deep_sleep()
+
+    async def auto_dream(self) -> None:
+        """Legacy: runs rem_sleep."""
+        await self.rem_sleep()

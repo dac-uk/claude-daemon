@@ -6,9 +6,7 @@ import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from importlib import resources
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +23,6 @@ class ConversationStore:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        """Run the schema SQL to create tables if needed."""
         schema_path = Path(__file__).parent / "schema.sql"
         schema = schema_path.read_text()
         self._db.executescript(schema)
@@ -38,8 +35,7 @@ class ConversationStore:
 
     def get_or_create_conversation(
         self, session_id: str | None, platform: str, user_id: str
-    ) -> dict[str, Any]:
-        """Find active conversation for user+platform, or create a new one."""
+    ) -> dict:
         if session_id:
             row = self._db.execute(
                 "SELECT * FROM conversations WHERE session_id = ?", (session_id,)
@@ -78,10 +74,16 @@ class ConversationStore:
             "status": "active",
         }
 
+    def get_conversation_by_session(self, session_id: str) -> dict | None:
+        """Look up a conversation by its Claude session ID."""
+        row = self._db.execute(
+            "SELECT * FROM conversations WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
     def update_conversation(
         self, conv_id: int, session_id: str | None = None, cost: float = 0
     ) -> None:
-        """Update conversation metadata after a message exchange."""
         now = datetime.now(timezone.utc).isoformat()
         if session_id:
             self._db.execute(
@@ -100,21 +102,18 @@ class ConversationStore:
         self._db.commit()
 
     def archive_conversation(self, conv_id: int) -> None:
-        """Mark a conversation as archived."""
         self._db.execute(
             "UPDATE conversations SET status = 'archived' WHERE id = ?", (conv_id,)
         )
         self._db.commit()
 
     def get_active_conversations(self) -> list[dict]:
-        """Get all active conversations."""
         rows = self._db.execute(
             "SELECT * FROM conversations WHERE status = 'active' ORDER BY last_active DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 
     def cleanup_expired(self, max_age_hours: int = 72) -> int:
-        """Archive conversations older than max_age_hours. Returns count archived."""
         cur = self._db.execute(
             "UPDATE conversations SET status = 'archived' "
             "WHERE status = 'active' AND last_active < datetime('now', ? || ' hours')",
@@ -124,7 +123,6 @@ class ConversationStore:
         return cur.rowcount
 
     def reset_conversation(self, user_id: str, platform: str) -> None:
-        """Archive all active conversations for a user, forcing a fresh start."""
         self._db.execute(
             "UPDATE conversations SET status = 'archived' "
             "WHERE user_id = ? AND platform = ? AND status = 'active'",
@@ -138,7 +136,6 @@ class ConversationStore:
         self, conv_id: int, role: str, content: str,
         tokens: int = 0, cost: float = 0
     ) -> int:
-        """Store a message in the conversation."""
         now = datetime.now(timezone.utc).isoformat()
         cur = self._db.execute(
             "INSERT INTO messages (conversation_id, role, content, timestamp, tokens_used, cost_usd) "
@@ -149,7 +146,6 @@ class ConversationStore:
         return cur.lastrowid
 
     def get_recent_messages(self, conv_id: int, limit: int = 50) -> list[dict]:
-        """Get the most recent messages for a conversation."""
         rows = self._db.execute(
             "SELECT * FROM messages WHERE conversation_id = ? "
             "ORDER BY timestamp DESC LIMIT ?",
@@ -158,13 +154,11 @@ class ConversationStore:
         return [dict(r) for r in reversed(rows)]
 
     def get_conversation_text(self, conv_id: int, limit: int = 20) -> str:
-        """Get a formatted text representation of recent conversation."""
         messages = self.get_recent_messages(conv_id, limit)
         lines = []
         for msg in messages:
             role = "User" if msg["role"] == "user" else "Assistant"
-            content = msg["content"][:300]
-            lines.append(f"{role}: {content}")
+            lines.append(f"{role}: {msg['content']}")
         return "\n".join(lines)
 
     # -- Summaries --
@@ -172,7 +166,6 @@ class ConversationStore:
     def add_summary(
         self, conv_id: int | None, summary: str, summary_type: str
     ) -> int:
-        """Store a memory summary."""
         now = datetime.now(timezone.utc).isoformat()
         cur = self._db.execute(
             "INSERT INTO memory_summaries (conversation_id, summary, summary_type, created_at) "
@@ -183,7 +176,6 @@ class ConversationStore:
         return cur.lastrowid
 
     def get_latest_summary(self, conv_id: int) -> str | None:
-        """Get the most recent summary for a conversation."""
         row = self._db.execute(
             "SELECT summary FROM memory_summaries "
             "WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
@@ -192,7 +184,6 @@ class ConversationStore:
         return row["summary"] if row else None
 
     def get_summaries_by_type(self, summary_type: str, limit: int = 5) -> list[str]:
-        """Get recent summaries of a given type."""
         rows = self._db.execute(
             "SELECT summary FROM memory_summaries "
             "WHERE summary_type = ? ORDER BY created_at DESC LIMIT ?",
@@ -203,12 +194,22 @@ class ConversationStore:
     # -- Stats --
 
     def get_stats(self) -> dict:
-        """Get overall statistics."""
         row = self._db.execute(
             "SELECT COUNT(*) as total, "
             "SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active, "
-            "SUM(total_cost_usd) as total_cost, "
-            "SUM(message_count) as total_messages "
+            "COALESCE(SUM(total_cost_usd), 0) as total_cost, "
+            "COALESCE(SUM(message_count), 0) as total_messages "
             "FROM conversations"
+        ).fetchone()
+        return dict(row) if row else {}
+
+    def get_user_stats(self, user_id: str, platform: str) -> dict:
+        """Get per-user statistics."""
+        row = self._db.execute(
+            "SELECT COUNT(*) as sessions, "
+            "COALESCE(SUM(total_cost_usd), 0) as total_cost, "
+            "COALESCE(SUM(message_count), 0) as total_messages "
+            "FROM conversations WHERE user_id = ? AND platform = ?",
+            (user_id, platform),
         ).fetchone()
         return dict(row) if row else {}

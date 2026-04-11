@@ -1,12 +1,17 @@
-"""Telegram bot integration using python-telegram-bot."""
+"""Telegram bot integration with streaming responses and real commands."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
 
 from claude_daemon.integrations.base import BaseIntegration, NormalizedMessage
+from claude_daemon.core.process import ClaudeResponse
+
+if TYPE_CHECKING:
+    from claude_daemon.core.daemon import ClaudeDaemon
 
 log = logging.getLogger(__name__)
 
@@ -24,15 +29,19 @@ try:
 except ImportError:
     HAS_TELEGRAM = False
 
+# Minimum interval between message edits (seconds) to avoid rate limiting
+STREAM_EDIT_INTERVAL = 1.5
+
 
 class TelegramIntegration(BaseIntegration):
-    """Telegram bot integration with polling support."""
+    """Telegram bot with streaming responses and real working commands."""
 
     def __init__(
         self,
         token: str,
         allowed_users: list[int] | None = None,
         polling: bool = True,
+        daemon: ClaudeDaemon | None = None,
     ) -> None:
         super().__init__()
 
@@ -45,33 +54,32 @@ class TelegramIntegration(BaseIntegration):
         self.token = token
         self.allowed_users = set(allowed_users) if allowed_users else set()
         self.polling = polling
+        self.daemon = daemon
         self._app: Application | None = None
 
     async def start(self) -> None:
-        """Start the Telegram bot."""
         builder = Application.builder().token(self.token)
         self._app = builder.build()
 
-        # Register handlers
         self._app.add_handler(CommandHandler("start", self._cmd_start))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("memory", self._cmd_memory))
         self._app.add_handler(CommandHandler("forget", self._cmd_forget))
         self._app.add_handler(CommandHandler("session", self._cmd_session))
+        self._app.add_handler(CommandHandler("cost", self._cmd_cost))
         self._app.add_handler(CommandHandler("jobs", self._cmd_jobs))
         self._app.add_handler(CommandHandler("dream", self._cmd_dream))
+        self._app.add_handler(CommandHandler("soul", self._cmd_soul))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
 
-        # Initialize and start polling in background
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
         log.info("Telegram bot started (polling mode)")
 
     async def stop(self) -> None:
-        """Stop the Telegram bot."""
         if self._app:
             await self._app.updater.stop()
             await self._app.stop()
@@ -79,27 +87,22 @@ class TelegramIntegration(BaseIntegration):
             log.info("Telegram bot stopped")
 
     async def send_response(self, channel_id: str, content: str, **kwargs: Any) -> None:
-        """Send a message to a Telegram chat."""
         if not self._app:
             return
-
         try:
             await self._app.bot.send_message(
-                chat_id=int(channel_id),
-                text=content,
-                parse_mode=None,  # Let Telegram auto-detect
+                chat_id=int(channel_id), text=content, parse_mode=None,
             )
         except Exception:
             log.exception("Failed to send Telegram message to %s", channel_id)
 
     def _is_allowed(self, user_id: int) -> bool:
-        """Check if a user is allowed to interact with the bot."""
         if not self.allowed_users:
-            return True  # No allowlist = allow all
+            return True
         return user_id in self.allowed_users
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text messages."""
+        """Handle incoming messages with streaming response."""
         if not update.message or not update.message.text:
             return
 
@@ -108,48 +111,97 @@ class TelegramIntegration(BaseIntegration):
             await update.message.reply_text("You are not authorized to use this bot.")
             return
 
-        if not self._handler:
-            await update.message.reply_text("Bot is not fully initialized yet.")
+        if not self.daemon:
+            if self._handler:
+                msg = NormalizedMessage(
+                    platform="telegram", user_id=str(user.id),
+                    user_name=user.first_name or str(user.id),
+                    content=update.message.text,
+                    message_id=str(update.message.message_id),
+                    channel_id=str(update.effective_chat.id) if update.effective_chat else None,
+                )
+                await self._handler(msg)
             return
 
-        msg = NormalizedMessage(
-            platform="telegram",
-            user_id=str(user.id),
-            user_name=user.first_name or user.username or str(user.id),
-            content=update.message.text,
-            message_id=str(update.message.message_id),
-            channel_id=str(update.effective_chat.id) if update.effective_chat else None,
-        )
+        # Streaming mode: send placeholder, then edit with incoming chunks
+        chat_id = update.effective_chat.id if update.effective_chat else user.id
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-        # Send typing indicator
-        if update.effective_chat:
-            await context.bot.send_chat_action(
-                chat_id=update.effective_chat.id, action="typing"
-            )
+        # Send initial placeholder
+        placeholder = await update.message.reply_text("...")
+
+        accumulated = ""
+        last_edit = time.monotonic()
+        dirty = False
 
         try:
-            await self._handler(msg)
-        except Exception:
-            log.exception("Error handling Telegram message")
-            await update.message.reply_text(
-                "Sorry, an error occurred processing your message."
-            )
+            async for chunk in self.daemon.handle_message_streaming(
+                prompt=update.message.text,
+                platform="telegram",
+                user_id=str(user.id),
+            ):
+                if isinstance(chunk, str):
+                    accumulated += chunk
+                    dirty = True
 
-    # -- Command handlers --
+                    # Throttled editing to respect Telegram rate limits
+                    now = time.monotonic()
+                    if now - last_edit >= STREAM_EDIT_INTERVAL and dirty:
+                        display = accumulated if len(accumulated) <= 4096 else accumulated[-4096:]
+                        try:
+                            await placeholder.edit_text(display)
+                            dirty = False
+                            last_edit = now
+                        except Exception:
+                            pass  # Edit can fail if content unchanged
+
+                elif isinstance(chunk, ClaudeResponse):
+                    # Final result - do one last edit with complete text
+                    final = accumulated or chunk.result
+                    if final:
+                        display = final if len(final) <= 4096 else final[-4096:]
+                        try:
+                            await placeholder.edit_text(display)
+                        except Exception:
+                            pass
+
+                        # Send overflow as separate messages
+                        if len(final) > 4096:
+                            rest = final[:-4096]
+                            while rest:
+                                part = rest[:4096]
+                                rest = rest[4096:]
+                                await self._app.bot.send_message(
+                                    chat_id=chat_id, text=part, parse_mode=None,
+                                )
+
+            # If we never got content, update placeholder
+            if not accumulated:
+                await placeholder.edit_text("(No response received)")
+
+        except Exception:
+            log.exception("Error in streaming response")
+            try:
+                await placeholder.edit_text("Sorry, an error occurred.")
+            except Exception:
+                pass
+
+    # -- Working command handlers --
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
-
         await update.message.reply_text(
             "Claude Daemon is running.\n\n"
-            "Send me any message and I'll respond using Claude Code.\n\n"
+            "Send me any message and I'll respond with streaming.\n\n"
             "Commands:\n"
-            "/status - Daemon status\n"
-            "/memory - View persistent memory\n"
-            "/forget - Start a fresh session\n"
+            "/status - Daemon status and stats\n"
+            "/memory - View persistent memory (MEMORY.md)\n"
+            "/soul - View agent identity (SOUL.md)\n"
+            "/forget - Clear session, start fresh\n"
             "/session - Current session info\n"
+            "/cost - Your usage costs\n"
             "/jobs - List scheduled jobs\n"
             "/dream - Trigger memory consolidation"
         )
@@ -158,75 +210,121 @@ class TelegramIntegration(BaseIntegration):
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
+        if not self.daemon or not self.daemon.store or not self.daemon.process_manager:
+            await update.message.reply_text("Daemon not fully initialized.")
+            return
 
-        # Access daemon via handler's closure - we get stats from the store
-        status = "Claude Daemon: running\n"
-        await update.message.reply_text(status)
+        stats = self.daemon.store.get_stats()
+        active = self.daemon.process_manager.active_count
+        text = (
+            f"Claude Daemon: running\n"
+            f"Active processes: {active}\n"
+            f"Total sessions: {stats.get('total', 0)}\n"
+            f"Active sessions: {stats.get('active', 0)}\n"
+            f"Total messages: {stats.get('total_messages', 0)}\n"
+            f"Total cost: ${stats.get('total_cost', 0):.4f}\n"
+            f"Streaming: {'enabled' if self.daemon.config.streaming_enabled else 'disabled'}"
+        )
+        await update.message.reply_text(text)
 
     async def _cmd_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
-
-        if not self._handler:
+        if not self.daemon or not self.daemon.durable:
             return
 
-        # Send the memory content as a message via Claude
-        msg = NormalizedMessage(
-            platform="telegram",
-            user_id=str(user.id),
-            user_name=user.first_name or str(user.id),
-            content="Show me your current persistent memory (MEMORY.md contents).",
-            message_id=str(update.message.message_id),
-            channel_id=str(update.effective_chat.id) if update.effective_chat else None,
-        )
-        await self._handler(msg)
+        memory = self.daemon.durable.read_memory()
+        if memory:
+            # Split if too long
+            for i in range(0, len(memory), 4096):
+                await update.message.reply_text(memory[i:i + 4096])
+        else:
+            await update.message.reply_text("No persistent memory yet. It builds over time.")
+
+    async def _cmd_soul(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon or not self.daemon.durable:
+            return
+
+        soul = self.daemon.durable.read_soul()
+        if soul:
+            for i in range(0, len(soul), 4096):
+                await update.message.reply_text(soul[i:i + 4096])
+        else:
+            await update.message.reply_text("No SOUL.md found.")
 
     async def _cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
+        if not self.daemon or not self.daemon.store:
+            return
 
-        # This will be handled by the router which resets the session
-        msg = NormalizedMessage(
-            platform="telegram",
-            user_id=str(user.id),
-            user_name=user.first_name or str(user.id),
-            content="/forget",
-            message_id=str(update.message.message_id),
-            channel_id=str(update.effective_chat.id) if update.effective_chat else None,
-            metadata={"command": "forget"},
-        )
-
-        # Reset the session in the store
+        self.daemon.store.reset_conversation(str(user.id), "telegram")
         await update.message.reply_text("Session cleared. Starting fresh!")
 
     async def _cmd_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
-        await update.message.reply_text("Session info coming soon.")
+        if not self.daemon or not self.daemon.store:
+            return
+
+        conv = self.daemon.store.get_or_create_conversation(
+            None, "telegram", str(user.id),
+        )
+        text = (
+            f"Session ID: {conv['session_id'][:12]}...\n"
+            f"Messages: {conv['message_count']}\n"
+            f"Cost: ${conv['total_cost_usd']:.4f}\n"
+            f"Started: {conv['started_at']}\n"
+            f"Last active: {conv['last_active']}\n"
+            f"Status: {conv['status']}"
+        )
+        await update.message.reply_text(text)
+
+    async def _cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon or not self.daemon.store:
+            return
+
+        stats = self.daemon.store.get_user_stats(str(user.id), "telegram")
+        text = (
+            f"Your usage (Telegram):\n"
+            f"Sessions: {stats.get('sessions', 0)}\n"
+            f"Messages: {stats.get('total_messages', 0)}\n"
+            f"Total cost: ${stats.get('total_cost', 0):.4f}"
+        )
+        await update.message.reply_text(text)
 
     async def _cmd_jobs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
-        await update.message.reply_text("Use 'claude-daemon jobs' CLI command to view scheduled jobs.")
+        if not self.daemon or not self.daemon.scheduler:
+            return
+
+        jobs = self.daemon.scheduler.list_jobs()
+        lines = ["Scheduled jobs:\n"]
+        for job in jobs:
+            lines.append(f"  {job['id']:20s} next: {job['next_run']}")
+        await update.message.reply_text("\n".join(lines))
 
     async def _cmd_dream(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         if not user or not self._is_allowed(user.id):
             return
-        await update.message.reply_text("Triggering memory consolidation... This may take a moment.")
+        if not self.daemon or not self.daemon.compactor:
+            return
 
-        msg = NormalizedMessage(
-            platform="telegram",
-            user_id=str(user.id),
-            user_name=user.first_name or str(user.id),
-            content="Consolidate and summarize your memories from recent sessions.",
-            message_id=str(update.message.message_id),
-            channel_id=str(update.effective_chat.id) if update.effective_chat else None,
-            metadata={"command": "dream"},
-        )
-        if self._handler:
-            await self._handler(msg)
+        await update.message.reply_text("Triggering deep sleep consolidation...")
+        try:
+            await self.daemon.compactor.deep_sleep()
+            await update.message.reply_text("Deep sleep complete. Memory consolidated.")
+        except Exception as e:
+            await update.message.reply_text(f"Dream failed: {str(e)[:200]}")

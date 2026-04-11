@@ -1,8 +1,14 @@
-"""MessageRouter - routes messages between integrations and the daemon core."""
+"""MessageRouter - routes messages between integrations and the daemon core.
+
+Includes rate limiting, streaming dispatch, and error alerting.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from claude_daemon.integrations.base import BaseIntegration, NormalizedMessage
@@ -12,7 +18,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Platform-specific message length limits
 MAX_LENGTHS = {
     "telegram": 4096,
     "discord": 2000,
@@ -21,62 +26,87 @@ MAX_LENGTHS = {
 }
 
 
+class RateLimiter:
+    """Simple per-user rate limiter using a sliding window."""
+
+    def __init__(self, max_requests: int = 20, window_seconds: int = 60) -> None:
+        self.max_requests = max_requests
+        self.window = window_seconds
+        self._timestamps: dict[str, list[float]] = defaultdict(list)
+
+    def is_allowed(self, user_key: str) -> bool:
+        now = time.monotonic()
+        timestamps = self._timestamps[user_key]
+        # Prune old entries
+        self._timestamps[user_key] = [t for t in timestamps if now - t < self.window]
+        if len(self._timestamps[user_key]) >= self.max_requests:
+            return False
+        self._timestamps[user_key].append(now)
+        return True
+
+
 class MessageRouter:
     """Routes messages between messaging platforms and the daemon."""
 
     def __init__(self, daemon: ClaudeDaemon) -> None:
         self.daemon = daemon
         self.integrations: dict[str, BaseIntegration] = {}
+        self._rate_limiter = RateLimiter(
+            max_requests=daemon.config.rate_limit_per_user,
+            window_seconds=daemon.config.rate_limit_window,
+        )
 
     def register(self, name: str, integration: BaseIntegration) -> None:
-        """Register a messaging integration."""
         self.integrations[name] = integration
         log.info("Registered integration: %s", name)
 
     async def handle_incoming(self, message: NormalizedMessage) -> str:
-        """Handle an incoming message from any platform.
-
-        1. Route to daemon.handle_message
-        2. Format response for the originating platform
-        3. Send response back
-        """
+        """Handle an incoming message with rate limiting and error alerting."""
         log.info(
             "Incoming [%s] from %s (%s): %s",
-            message.platform,
-            message.user_name,
-            message.user_id,
+            message.platform, message.user_name, message.user_id,
             message.content[:100],
         )
 
-        # Get response from Claude
-        response = await self.daemon.handle_message(
-            prompt=message.content,
-            platform=message.platform,
-            user_id=message.user_id,
-        )
+        # Rate limiting
+        user_key = f"{message.platform}:{message.user_id}"
+        if not self._rate_limiter.is_allowed(user_key):
+            integration = self.integrations.get(message.platform)
+            if integration:
+                channel = message.channel_id or message.user_id
+                await integration.send_response(
+                    channel, "Rate limited. Please wait a moment before sending more messages."
+                )
+            return "rate_limited"
 
-        # Send response back via the originating integration
-        integration = self.integrations.get(message.platform)
-        if integration:
-            channel = message.channel_id or message.user_id
-            formatted = self._format_response(response, message.platform)
+        try:
+            # Get response from Claude (streaming is handled by the integration directly)
+            response = await self.daemon.handle_message(
+                prompt=message.content,
+                platform=message.platform,
+                user_id=message.user_id,
+            )
 
-            # Split long messages
-            chunks = self._split_message(formatted, message.platform)
-            for chunk in chunks:
-                await integration.send_response(channel, chunk, reply_to=message.message_id)
+            # Send response back via the originating integration
+            integration = self.integrations.get(message.platform)
+            if integration:
+                channel = message.channel_id or message.user_id
+                chunks = self._split_message(response, message.platform)
+                for chunk in chunks:
+                    await integration.send_response(channel, chunk)
 
-        return response
+            return response
 
-    def _format_response(self, content: str, platform: str) -> str:
-        """Apply platform-specific formatting to response content."""
-        if platform == "telegram":
-            # Telegram uses MarkdownV2 - escape special chars if needed
-            return content
-        elif platform == "discord":
-            # Discord supports standard markdown
-            return content
-        return content
+        except Exception as e:
+            log.exception("Error handling message from %s", user_key)
+            # Alert the user about the error
+            integration = self.integrations.get(message.platform)
+            if integration:
+                channel = message.channel_id or message.user_id
+                await integration.send_response(
+                    channel, f"An error occurred: {str(e)[:200]}"
+                )
+            return f"error: {e}"
 
     def _split_message(self, content: str, platform: str) -> list[str]:
         """Split a message into chunks respecting platform limits."""
@@ -91,13 +121,10 @@ class MessageRouter:
                 chunks.append(content)
                 break
 
-            # Try to split at a newline
             split_at = content.rfind("\n", 0, max_len)
             if split_at < max_len // 2:
-                # No good newline, split at space
                 split_at = content.rfind(" ", 0, max_len)
             if split_at < max_len // 2:
-                # No good space either, hard split
                 split_at = max_len
 
             chunks.append(content[:split_at])

@@ -1,10 +1,11 @@
 """WorkingMemory - assembles context for injection into Claude prompts.
 
 Builds the --append-system-prompt content from:
-1. MEMORY.md (persistent facts and preferences)
-2. Recent daily logs (last 3 days)
-3. Conversation summary (if available)
-4. Session metadata
+1. SOUL.md (identity and personality)
+2. MEMORY.md (persistent knowledge)
+3. REFLECTIONS.md (self-improvement insights)
+4. Recent daily logs (last 3 days)
+5. Conversation summary (if available)
 """
 
 from __future__ import annotations
@@ -13,71 +14,50 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from claude_daemon.core.config import DaemonConfig
     from claude_daemon.memory.durable import DurableMemory
     from claude_daemon.memory.store import ConversationStore
 
 log = logging.getLogger(__name__)
 
-MAX_CONTEXT_CHARS = 5000
-
 
 class WorkingMemory:
     """Assembles context for Claude prompt injection."""
 
-    def __init__(self, store: ConversationStore, durable: DurableMemory) -> None:
+    def __init__(
+        self,
+        store: ConversationStore,
+        durable: DurableMemory,
+        config: DaemonConfig | None = None,
+    ) -> None:
         self.store = store
         self.durable = durable
+        self.config = config
 
     def build_context(self, session_id: str) -> str:
-        """Build context string for a given session.
+        """Build context string for a given session."""
+        max_chars = self.config.max_context_chars if self.config else 5000
 
-        Returns a string suitable for --append-system-prompt.
-        """
-        blocks = []
+        # Use the durable memory's comprehensive context builder
+        context = self.durable.get_context_block(recent_days=3, max_chars=max_chars - 500)
 
-        # 1. Persistent memory (MEMORY.md)
-        memory = self.durable.read_memory()
-        if memory:
-            blocks.append(f"## Your Persistent Memory\n{memory}")
-
-        # 2. Recent daily logs
-        recent = self.durable.read_recent_logs(days=3)
-        if recent:
-            if len(recent) > 1500:
-                recent = recent[-1500:]
-            blocks.append(f"## Recent Activity (last 3 days)\n{recent}")
-
-        # 3. Conversation summary (if this session has been compacted)
-        try:
-            # Find conversation by session_id
-            rows = self.store._db.execute(
-                "SELECT c.id FROM conversations c WHERE c.session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if rows:
-                summary = self.store.get_latest_summary(rows["id"])
-                if summary:
-                    blocks.append(f"## Conversation Summary\n{summary}")
-        except Exception:
-            pass  # Non-critical
-
-        context = "\n\n".join(blocks)
+        # Add conversation-specific summary if available
+        conv = self.store.get_conversation_by_session(session_id)
+        if conv:
+            summary = self.store.get_latest_summary(conv["id"])
+            if summary:
+                context += f"\n\n## Conversation Context\n{summary[:500]}"
 
         # Enforce size limit
-        if len(context) > MAX_CONTEXT_CHARS:
-            context = context[-MAX_CONTEXT_CHARS:]
-            log.debug("Context truncated to %d chars", MAX_CONTEXT_CHARS)
+        if len(context) > max_chars:
+            context = context[:max_chars]
 
         if context:
             header = (
                 "You are running as Claude Daemon, a persistent background assistant. "
-                "Below is your accumulated context from previous sessions and recent activity. "
-                "Use this to maintain continuity.\n\n"
+                "You maintain continuity across conversations and platforms. "
+                "Below is your accumulated context.\n\n"
             )
             context = header + context
 
         return context
-
-    def estimate_tokens(self, text: str) -> int:
-        """Rough token estimation (chars / 4)."""
-        return len(text) // 4
