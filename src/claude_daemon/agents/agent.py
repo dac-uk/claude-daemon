@@ -205,6 +205,22 @@ class Agent:
             if refl:
                 blocks.append(f"## Self-Reflections\n{refl[:400]}")
 
+        # Steering (mid-task redirection from orchestrator)
+        if self.shared_dir:
+            steer_path = self.shared_dir / "steer" / f"{self.name}.md"
+            if steer_path.exists():
+                steer = steer_path.read_text().strip()
+                if steer:
+                    blocks.append(f"## STEERING (priority instructions)\n{steer[:500]}")
+
+            # Shared event log for inter-agent awareness
+            events_path = self.shared_dir / "events.md"
+            if events_path.exists():
+                events = events_path.read_text()
+                if events:
+                    # Only include last 500 chars to keep context bounded
+                    blocks.append(f"## Recent Agent Activity\n{events[-500:]}")
+
         # OTA logging convention
         blocks.append(
             "## Logging Convention\n"

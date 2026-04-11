@@ -348,3 +348,78 @@ class ContextCompactor:
     async def auto_dream(self) -> None:
         """Legacy: runs rem_sleep."""
         await self.rem_sleep()
+
+    # ------------------------------------------------------------------ #
+    # Per-agent memory compaction
+    # ------------------------------------------------------------------ #
+
+    async def compact_agent_memory(self, agent) -> None:
+        """Run memory compaction for a specific agent's MEMORY.md.
+
+        Reads the agent's recent conversations and consolidates them
+        into the agent's own MEMORY.md file.
+        """
+        from claude_daemon.agents.agent import Agent
+
+        memory_path = agent.workspace / "MEMORY.md"
+        current_memory = memory_path.read_text() if memory_path.exists() else ""
+
+        # Get recent conversations for this agent
+        convos = self.store.get_active_conversations()
+        agent_convos = [
+            c for c in convos
+            if c.get("user_id", "").endswith(f":{agent.name}")
+        ]
+
+        if not agent_convos:
+            return
+
+        interaction_texts = []
+        for conv in agent_convos[:10]:
+            text = self.store.get_conversation_text(conv["id"], limit=15)
+            if text:
+                interaction_texts.append(text[:800])
+
+        if not interaction_texts:
+            return
+
+        prompt = (
+            f"You are {agent.name} ({agent.identity.role}). "
+            f"Update your persistent memory based on recent conversations.\n\n"
+            f"Current memory:\n{current_memory[:2000]}\n\n"
+            f"Recent conversations:\n{'---'.join(interaction_texts)}\n\n"
+            f"Write the complete updated memory. Preserve all important facts, "
+            f"preferences, and decisions. Add new learnings. Remove outdated info. "
+            f"Keep it concise and actionable."
+        )
+
+        response = await self.pm.send_message(
+            prompt=prompt, max_budget=0.10,
+            platform="system", user_id=f"compactor:{agent.name}",
+            model_override=agent.get_model("scheduled"),
+        )
+
+        if response.is_error or len(response.result) < 30:
+            log.warning("Agent memory compaction for %s produced bad output", agent.name)
+            return
+
+        new_memory = response.result
+
+        # Validate — don't clobber with much smaller content
+        if current_memory and len(new_memory) < len(current_memory) * 0.3:
+            log.warning(
+                "Agent %s memory update rejected: %d -> %d chars (too much loss)",
+                agent.name, len(current_memory), len(new_memory),
+            )
+            return
+
+        memory_path.write_text(new_memory)
+        log.info("Agent %s MEMORY.md updated (%d chars)", agent.name, len(new_memory))
+
+    async def compact_all_agent_memories(self, registry) -> None:
+        """Run memory compaction for all agents in the registry."""
+        for agent in registry:
+            try:
+                await self.compact_agent_memory(agent)
+            except Exception:
+                log.exception("Failed to compact memory for agent %s", agent.name)

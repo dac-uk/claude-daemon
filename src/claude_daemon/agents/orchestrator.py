@@ -28,6 +28,11 @@ AGENT_ADDRESS_PATTERN = re.compile(
     r'^(?:@|/)(\w+)\b\s*(.*)', re.DOTALL
 )
 
+# Pattern to detect delegation requests in agent responses: [DELEGATE:agent_name] message
+DELEGATION_PATTERN = re.compile(
+    r'\[DELEGATE:(\w+)\]\s*(.*?)(?=\[DELEGATE:|\Z)', re.DOTALL
+)
+
 ROUTING_PROMPT = """\
 You are the orchestrator. A message has arrived that needs routing to the right agent.
 
@@ -153,6 +158,56 @@ class Orchestrator:
             conv["id"], session_id=response.session_id, cost=response.cost,
         )
 
+        # Record per-agent metrics
+        self.store.record_agent_metric(
+            agent_name=agent.name, metric_type="message",
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cost_usd=response.cost,
+            duration_ms=response.duration_ms,
+            model=model, platform=platform,
+            success=not response.is_error,
+        )
+
+        # Process delegation tags in response
+        if not response.is_error:
+            response = await self._process_delegations(agent, response)
+
+        return response
+
+    async def _process_delegations(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Scan agent response for [DELEGATE:name] tags and execute inter-agent calls.
+
+        Appends delegation results to the response text.
+        """
+        delegations = DELEGATION_PATTERN.findall(response.result)
+        if not delegations:
+            return response
+
+        appended = []
+        for target_name, message in delegations:
+            target = self.registry.get(target_name.lower())
+            if not target:
+                appended.append(f"\n[Delegation to '{target_name}' failed: agent not found]")
+                continue
+
+            log.info("Delegation: %s -> %s", from_agent.name, target_name)
+            try:
+                result = await self.agent_to_agent(
+                    from_agent, target, message.strip(),
+                )
+                appended.append(
+                    f"\n\n--- Response from {target.identity.display_name} ---\n{result}"
+                )
+            except Exception:
+                log.exception("Delegation from %s to %s failed", from_agent.name, target_name)
+                appended.append(f"\n[Delegation to '{target_name}' failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+
         return response
 
     async def stream_to_agent(
@@ -204,6 +259,17 @@ class Orchestrator:
         self.store.update_conversation(
             conv["id"], session_id=resp.session_id, cost=resp.cost,
         )
+
+        self.store.record_agent_metric(
+            agent_name=agent.name, metric_type="stream",
+            input_tokens=resp.input_tokens,
+            output_tokens=resp.output_tokens,
+            cost_usd=resp.cost,
+            duration_ms=resp.duration_ms,
+            model=model, platform=platform,
+            success=not resp.is_error,
+        )
+
         yield resp
 
     async def agent_to_agent(

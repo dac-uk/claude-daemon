@@ -182,13 +182,22 @@ class SchedulerEngine:
                         pass
 
     async def _job_deep_sleep(self) -> None:
-        """Phase 2: Nightly deep sleep consolidation."""
+        """Phase 2: Nightly deep sleep consolidation + per-agent compaction."""
         if self.daemon.compactor:
             try:
                 await self.daemon.compactor.deep_sleep()
             except Exception:
                 log.exception("Deep sleep failed")
                 self._alert_failure("Deep sleep consolidation failed")
+
+            # Per-agent memory compaction
+            if self.daemon.agent_registry:
+                try:
+                    await self.daemon.compactor.compact_all_agent_memories(
+                        self.daemon.agent_registry,
+                    )
+                except Exception:
+                    log.exception("Per-agent memory compaction failed")
 
     async def _job_rem_sleep(self) -> None:
         """Phase 3: Weekly REM sleep integration."""
@@ -211,7 +220,7 @@ class SchedulerEngine:
     async def _job_agent_heartbeat(
         self, agent_name: str, prompt: str, model: str,
     ) -> None:
-        """Execute a single agent heartbeat task."""
+        """Execute a single agent heartbeat task and deliver results."""
         if not self.daemon.orchestrator or not self.daemon.agent_registry:
             return
 
@@ -231,8 +240,40 @@ class SchedulerEngine:
             )
             if response.is_error:
                 log.error("Heartbeat %s failed: %s", agent_name, response.result[:200])
-            else:
-                log.info("Heartbeat %s complete: cost=$%.4f", agent_name, response.cost)
+                return
+
+            log.info("Heartbeat %s complete: cost=$%.4f", agent_name, response.cost)
+
+            # Record metric
+            if self.daemon.store:
+                self.daemon.store.record_agent_metric(
+                    agent_name=agent_name, metric_type="heartbeat",
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    cost_usd=response.cost, model=model,
+                    platform="heartbeat", success=True,
+                )
+
+            # Log to daily log
+            if self.daemon.durable:
+                self.daemon.durable.append_daily_log(
+                    f"[heartbeat:{agent_name}] {response.result[:200]}"
+                )
+
+            # Log to shared event log for inter-agent awareness
+            self._write_event(agent_name, "heartbeat", response.result[:500])
+
+            # Deliver result to all configured alert targets
+            if self.daemon.router and response.result.strip():
+                display = agent.identity.display_name
+                text = f"[{display} heartbeat]\n\n{response.result}"
+                for platform_name, integration in self.daemon.router.integrations.items():
+                    for chat_id in self._get_alert_targets(platform_name):
+                        try:
+                            await integration.send_response(chat_id, text)
+                        except Exception:
+                            pass
+
         except Exception:
             log.exception("Heartbeat task failed for %s", agent_name)
 
@@ -248,6 +289,25 @@ class SchedulerEngine:
                     await integration.send_response(chat_id, response)
                 except Exception:
                     log.exception("Failed to deliver custom job result")
+
+    def _write_event(self, agent_name: str, event_type: str, summary: str) -> None:
+        """Write to the shared event log so other agents can see activity."""
+        if not self.daemon.config:
+            return
+        events_file = self.daemon.config.data_dir / "shared" / "events.md"
+        events_file.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        entry = f"- [{ts}] **{agent_name}** ({event_type}): {summary[:200]}\n"
+
+        # Keep event log bounded (last 100 entries)
+        lines = []
+        if events_file.exists():
+            lines = events_file.read_text().split("\n")
+        lines.append(entry.strip())
+        if len(lines) > 100:
+            lines = lines[-100:]
+        events_file.write_text("# Agent Events\n\n" + "\n".join(lines) + "\n")
 
     def _alert_failure(self, message: str) -> None:
         """Log failure and attempt to notify via daily log."""

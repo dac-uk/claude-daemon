@@ -34,6 +34,8 @@ class HttpApi:
         self._app.router.add_get("/api/agents", self._handle_agents)
         self._app.router.add_get("/api/status", self._handle_status)
         self._app.router.add_post("/api/message", self._handle_message)
+        self._app.router.add_post("/api/workflow", self._handle_workflow)
+        self._app.router.add_get("/api/metrics", self._handle_metrics)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
 
     @web.middleware
@@ -142,6 +144,42 @@ class HttpApi:
                 {"error": f"Internal error: {e}"}, status=500,
             )
 
+    async def _handle_workflow(self, request: web.Request) -> web.Response:
+        """Run the build quality gate workflow.
+
+        POST /api/workflow
+        {"request": "build a settings page"}
+        """
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        request_text = body.get("request", "").strip()
+        if not request_text:
+            return web.json_response({"error": "Missing 'request' field"}, status=400)
+
+        try:
+            result = await self.daemon.run_build_workflow(request_text)
+            return web.json_response({"result": result})
+        except Exception as e:
+            log.exception("Workflow API error")
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_metrics(self, request: web.Request) -> web.Response:
+        """Get per-agent metrics.
+
+        GET /api/metrics?agent=albert&days=7
+        """
+        agent = request.query.get("agent")
+        days = int(request.query.get("days", "7"))
+
+        if not self.daemon.store:
+            return web.json_response({"metrics": []})
+
+        metrics = self.daemon.store.get_agent_metrics(agent_name=agent, days=days)
+        return web.json_response({"metrics": metrics})
+
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Receive external webhooks and route to appropriate agent.
 
@@ -200,7 +238,11 @@ class HttpApi:
                     user_id=f"webhook:{source}",
                     agent_name=agent_name,
                 )
-                return web.json_response({"status": "processed", "agent": agent_name})
+                return web.json_response({
+                    "status": "processed",
+                    "agent": agent_name,
+                    "result": result[:5000] if result else "",
+                })
             except Exception as e:
                 log.exception("Webhook handler error")
                 return web.json_response(

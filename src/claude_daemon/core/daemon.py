@@ -126,6 +126,14 @@ class ClaudeDaemon:
     async def stop(self) -> None:
         log.info("Shutting down...")
 
+        # Stop HTTP API
+        if hasattr(self, "_http_api") and self._http_api:
+            try:
+                await self._http_api.stop()
+                log.info("Stopped HTTP API")
+            except Exception:
+                log.exception("Error stopping HTTP API")
+
         if self.router:
             for name, integration in self.router.integrations.items():
                 try:
@@ -348,6 +356,65 @@ class ClaudeDaemon:
         if self.agent_registry.remove_agent(name.lower()):
             return f"Agent '{name}' removed from registry. Workspace files preserved at agents/{name}/"
         return f"Agent '{name}' not found."
+
+    async def run_build_workflow(self, request: str) -> str:
+        """Run the 2-stage build quality gate workflow.
+
+        Albert builds backend → Luna builds UI → Max reviews → retry on failure.
+        """
+        if not self.workflow_engine or not self.agent_registry:
+            return "Workflow engine not initialized."
+
+        from claude_daemon.agents.workflow import WorkflowStep
+
+        build_steps = []
+        if self.agent_registry.get("albert"):
+            build_steps.append(WorkflowStep(
+                agent_name="albert",
+                prompt_template=(
+                    "Build the backend for this request: {original_request}\n\n"
+                    "Implement the core logic, data models, and API endpoints needed."
+                ),
+                label="backend",
+            ))
+        if self.agent_registry.get("luna"):
+            build_steps.append(WorkflowStep(
+                agent_name="luna",
+                prompt_template=(
+                    "Build the UI for this request: {original_request}\n\n"
+                    "Previous backend work:\n{prev_result}\n\n"
+                    "Create the views, layouts, and visual components."
+                ),
+                label="frontend",
+            ))
+
+        if not build_steps:
+            return "No build agents (albert/luna) found."
+
+        reviewer = self.agent_registry.get("max")
+        if reviewer:
+            review_step = WorkflowStep(
+                agent_name="max",
+                prompt_template=(
+                    "Review this build for quality. Original request: {original_request}\n\n"
+                    "Build output:\n{build_output}\n\n"
+                    "Check functional correctness, code quality, and completeness. "
+                    "Respond with PASS if acceptable, or FAIL with specific issues."
+                ),
+                label="review",
+            )
+            result = await self.workflow_engine.execute_review_loop(
+                build_steps, review_step, request, max_iterations=3,
+            )
+        else:
+            result = await self.workflow_engine.execute_pipeline(
+                build_steps, request,
+            )
+
+        summary = f"Workflow {'PASSED' if result.success else 'FAILED'}\n"
+        summary += result.summary()
+        summary += f"\n\nFinal output:\n{result.final_result[:2000]}"
+        return summary
 
     async def heartbeat(self) -> None:
         active = self.process_manager.active_count if self.process_manager else 0

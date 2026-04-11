@@ -74,6 +74,8 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("jobs", self._cmd_jobs))
         self._app.add_handler(CommandHandler("dream", self._cmd_dream))
         self._app.add_handler(CommandHandler("soul", self._cmd_soul))
+        self._app.add_handler(CommandHandler("workflow", self._cmd_workflow))
+        self._app.add_handler(CommandHandler("metrics", self._cmd_metrics))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -415,3 +417,55 @@ class TelegramIntegration(BaseIntegration):
             await update.message.reply_text("Deep sleep complete. Memory consolidated.")
         except Exception as e:
             await update.message.reply_text(f"Dream failed: {str(e)[:200]}")
+
+    async def _cmd_workflow(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Run the build quality gate workflow: /workflow <request>"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        text = (update.message.text or "").split(maxsplit=1)
+        if len(text) < 2:
+            await update.message.reply_text(
+                "Usage: /workflow <description>\n"
+                "Runs: Albert (backend) -> Luna (UI) -> Max (review)\n"
+                "Example: /workflow build a user settings page"
+            )
+            return
+
+        request = text[1]
+        await update.message.reply_text(f"Starting build workflow: {request[:100]}...")
+        try:
+            result = await self.daemon.run_build_workflow(request)
+            for i in range(0, len(result), 4096):
+                await update.message.reply_text(result[i:i + 4096])
+        except Exception as e:
+            await update.message.reply_text(f"Workflow failed: {str(e)[:200]}")
+
+    async def _cmd_metrics(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show per-agent cost metrics: /metrics [agent_name]"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon or not self.daemon.store:
+            return
+
+        args = (update.message.text or "").split()
+        agent_name = args[1] if len(args) > 1 else None
+
+        metrics = self.daemon.store.get_agent_metrics(agent_name=agent_name, days=7)
+        if not metrics:
+            await update.message.reply_text("No agent metrics in the last 7 days.")
+            return
+
+        lines = ["Agent metrics (last 7 days):\n"]
+        for m in metrics:
+            lines.append(
+                f"  {m.get('agent_name', '?'):12s} "
+                f"calls={m.get('count', 0):4d} "
+                f"cost=${m.get('total_cost', 0):.4f} "
+                f"tokens={m.get('total_input', 0) + m.get('total_output', 0)}"
+            )
+        await update.message.reply_text("\n".join(lines))
