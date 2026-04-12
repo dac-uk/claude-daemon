@@ -713,6 +713,12 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Daemon self-update** | Editable git installs: `git pull --ff-only` + `pip install -e ".[all]"` runs automatically alongside `claude update`. New dependencies are always installed. |
 | **Correlation IDs** | Every agent call is tagged with a short UUID in logs for end-to-end tracing. |
 | **Bearer auth** | All API endpoints (except `/api/health` and `/`) require `Authorization: Bearer <api_key>` when `api_key` is set. |
+| **Agent name sanitization** | Agent names are validated against `^[a-z0-9_-]{1,30}$` before any filesystem operations. Prevents path traversal attacks via crafted agent names. |
+| **Rate limiting on all paths** | The rate limiter in MessageRouter is enforced on both direct chat paths and the streaming (Telegram/Discord long-poll) paths. No bypass by using a different message delivery method. |
+| **Zombie process prevention** | Timed-out Claude subprocesses are killed cleanly with `SIGTERM` followed by `await proc.wait()` to reap the zombie. No lingering undead processes accumulating over time. |
+| **Session lock eviction** | Per-session asyncio locks are bounded (`max 500`). When the ceiling is hit, idle locks are evicted to prevent unbounded memory growth in long-running instances. |
+| **Background task cleanup** | Spawned background tasks are tracked and cleaned up on each new spawn. Completed tasks are pruned (capped at 100 finished entries) so the task registry doesn't grow forever. |
+| **Managed Agents fallback** | If the Managed Agents API fails (network, quota, beta issues), the daemon automatically falls back to CLI subprocess with a warning log. No user-visible failure for backend outages. |
 
 ## Architecture
 
@@ -745,6 +751,10 @@ Telegram / Discord / CLI / HTTP API / Webhooks
               |
               v
   ProcessManager (model, mcp_config, --resume)
+    _should_use_managed(task_type)?
+    ├── chat/heartbeat/routing → CLI subprocess (fast, local)
+    └── planning/workflow/rem_sleep/improvement → Managed Agents API
+                                                  └── fallback → CLI on failure
               |
               v
   ClaudeResponse → SQLite + FTS5 → agent_metrics → daily log → user
@@ -782,6 +792,12 @@ claude:
   # disabled_mcp_servers:          # MCP servers to exclude even if configured
   #   - snowflake
   #   - bigquery
+  managed_agents_enabled: false    # Opt-in (requires ANTHROPIC_API_KEY)
+  managed_agents_task_types:       # Which task types route to Managed Agents API
+    - planning
+    - workflow
+    - rem_sleep
+    - improvement
 
 memory:
   daily_log: true
