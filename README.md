@@ -18,6 +18,11 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
 - **Live Agent Dashboard** - Browser-based D3 force graph showing all agents, real-time status, streaming thought output, and event log. Accessible over Tailscale/ZeroTier.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
+- **Hardened Webhooks** - GitHub and Stripe webhooks verify HMAC-SHA256 signatures. Invalid requests get 403. Handlers run async (202 Accepted) so webhooks never block the HTTP server.
+- **Resilient Heartbeats** - Circuit breaker pauses autonomous jobs after 3 consecutive failures. Auto-resumes on success. All delivery failures are logged — no silent drops.
+- **Context Priority** - SOUL and steering instructions are never truncated. Low-priority blocks (vision, playbooks) are trimmed first when context budget is tight.
+- **MCP Health Checks** - `/api/agents` reports per-server MCP status, detecting unresolved `${ENV_VAR}` placeholders in `tools.json` so misconfigured tools surface immediately.
+- **DB Integrity** - SQLite `PRAGMA integrity_check` runs on startup. Corrupt databases are flagged in logs before any data is written.
 - **Streaming Responses** - Live streaming to Telegram and Discord with throttled message edits
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs
@@ -194,6 +199,8 @@ Agents continuously learn and improve without being prompted:
 - Jeremy: Monthly threat landscape (15th)
 - Sophie: Monthly regulatory review (1st)
 
+**Circuit breaker:** If a heartbeat job fails 3 times consecutively, it is paused and a warning is logged. It auto-resumes once a run succeeds again. This prevents a broken credential or unreachable service from flooding logs.
+
 **Knowledge compounding:** Every playbook written to `shared/playbooks/` is indexed and shown to all agents. Luna solves a dark mode problem → writes playbook → Albert reads it when doing related work.
 
 ## MCP Tool Assignments
@@ -252,13 +259,42 @@ GET  /api/tasks               — Spawned background tasks
 GET  /api/metrics             — Per-agent cost/token metrics
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow
-POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny)
-POST /api/webhook/stripe      — Stripe webhook (→ Penny)
-POST /api/webhook/{source}    — Generic webhook (→ Johnny)
+POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
+POST /api/webhook/stripe      — Stripe webhook (→ Penny) — 202 Accepted
+POST /api/webhook/{source}    — Generic webhook (→ Johnny) — 202 Accepted
 WS   /ws                      — WebSocket event bus (live dashboard)
 ```
 
 Auth: `Authorization: Bearer <api_key>` header (or `?key=` query param for WebSocket).
+
+### Webhook Signature Verification
+
+GitHub and Stripe webhooks are verified before processing. Set secrets in your environment:
+
+```
+GITHUB_WEBHOOK_SECRET=whsec_...      # GitHub webhook secret from repo/org settings
+STRIPE_WEBHOOK_SECRET=whsec_...      # Stripe webhook endpoint secret
+```
+
+- **GitHub**: verifies `X-Hub-Signature-256` header (HMAC-SHA256). Requests without a valid signature get `403 Forbidden`.
+- **Stripe**: verifies `Stripe-Signature` header using the `t=...,v1=...` format. Invalid signatures get `403 Forbidden`.
+- If no secret is configured, verification is skipped (useful for development). Set the secret to enforce it in production.
+
+All webhook handlers return `202 Accepted` immediately and process asynchronously — so slow agent responses never block the webhook server.
+
+## Reliability & Security
+
+| Feature | Behaviour |
+|---------|-----------|
+| **Webhook auth** | GitHub verifies `X-Hub-Signature-256`; Stripe verifies `t=...,v1=...` — both HMAC-SHA256. 403 on failure. |
+| **Async webhooks** | All webhook handlers return 202 immediately; agent processing happens in a background task. |
+| **Circuit breaker** | Heartbeat jobs pause after 3 consecutive failures; resume automatically on next success. |
+| **DB integrity** | `PRAGMA integrity_check` runs on startup before any schema init. Errors logged clearly. |
+| **Log retention** | Daily agent logs older than `log_retention_days` (default: 30) are garbage-collected nightly. |
+| **Context priority** | SOUL + steering always included. Low-priority blocks (vision, playbooks) trimmed first when tight. |
+| **MCP health** | `/api/agents` includes `mcp_health` for each agent — detects unresolved `${ENV_VAR}` placeholders. |
+| **Correlation IDs** | Every agent call is tagged with a short UUID in logs for end-to-end tracing. |
+| **Bearer auth** | All API endpoints (except `/api/health` and `/`) require `Authorization: Bearer <api_key>` when `api_key` is set. |
 
 ## Architecture
 
@@ -309,10 +345,12 @@ daemon:
   log_level: INFO
   api_enabled: true
   api_port: 8080
+  api_bind: "0.0.0.0"             # All interfaces (Tailscale/ZeroTier/LAN). Use 127.0.0.1 to restrict to localhost.
+  dashboard_enabled: false         # Serve live agent graph at /
 
 claude:
   binary: claude
-  max_concurrent: 5               # Parallel task limit
+  max_concurrent: 5               # Parallel task limit (global)
   max_budget_per_message: 0.50
   permission_mode: auto
 
@@ -322,6 +360,7 @@ memory:
   max_session_age_hours: 72
   dream_enabled: true
   self_improve: true               # Enable self-assessment cycle
+  log_retention_days: 30           # Delete daily logs older than this
 
 integrations:
   telegram:
@@ -336,6 +375,8 @@ integrations:
     allowed_guild_ids: []
     agent_channels:                # Optional per-agent channels
       "1234567890123456": "albert"
+    alert_channel_ids:             # Channel IDs for heartbeat alerts and improvements
+      - "1234567890123456"
 ```
 
 Environment variables (`.env`):
@@ -344,8 +385,11 @@ TELEGRAM_BOT_TOKEN=your_token
 DISCORD_BOT_TOKEN=your_token
 CLAUDE_DAEMON_API_KEY=your_api_key
 GITHUB_TOKEN=ghp_...
-SLACK_BOT_TOKEN=xoxb-...
 SUPABASE_ACCESS_TOKEN=sbp_...
+
+# Webhook signature secrets (set to enforce verification in production)
+GITHUB_WEBHOOK_SECRET=whsec_...
+STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 
 ## Data Directory
