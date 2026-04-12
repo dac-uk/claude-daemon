@@ -118,24 +118,115 @@ All commands are available on **both** Telegram and Discord with full feature pa
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
-## Per-Agent Channels
+## Channel Setup Guide
 
-Bind Telegram groups or Discord channels directly to an agent. Messages in bound channels go to that agent without needing `@agent_name`.
+### How routing works
 
-```yaml
-integrations:
-  telegram:
-    agent_channels:
-      "-1001234567890": "albert"     # Albert's dedicated group
-      "-1009876543210": "luna"       # Luna's dedicated group
+Messages flow through a routing chain:
 
-  discord:
-    agent_channels:
-      "1234567890123456": "albert"   # #albert-cio channel
-      "9876543210987654": "luna"     # #luna-design channel
+1. **Channel binding** — if the message arrives in a channel mapped to a specific agent in config, that agent handles it directly
+2. **@agent addressing** — `@albert build the API` routes to Albert regardless of which channel you're in
+3. **Auto-routing** — if neither of the above, Johnny (the orchestrator) decides who should handle it
+
+In **DMs**, the bot always listens. In **groups/channels**, the bot only responds when mentioned or when the channel is bound to an agent.
+
+### Telegram setup
+
+**1. Create a bot** via [@BotFather](https://t.me/BotFather) on Telegram. Copy the token to your `.env`:
+
+```
+TELEGRAM_BOT_TOKEN=bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
 ```
 
-This is ideal for Discord servers where each agent gets their own channel. In agent-bound channels, the bot responds to all messages (no @mention needed).
+**2. Main channel (Johnny / orchestrator):** Just DM the bot or add it to any group. Unbound groups route through Johnny, who auto-routes to the right agent. No config needed.
+
+**3. Direct agent channels:** Create a Telegram group per agent, add the bot, then get the chat ID. The easiest way to find it: add [@userinfobot](https://t.me/userinfobot) to the group, or send a message and check the bot's log output. Group IDs are negative numbers.
+
+```yaml
+# ~/.config/claude-daemon/config.yaml
+integrations:
+  telegram:
+    allowed_user_ids: []           # Empty = allow all (restrict in production)
+    agent_channels:
+      "-1001234567890": "albert"   # "Albert CIO" group → Albert handles all messages
+      "-1009876543210": "luna"     # "Luna Design" group → Luna handles all messages
+      "-1001111111111": "max"      # "Max QA" group → Max handles all messages
+      "-1002222222222": "penny"    # "Penny Finance" group → Penny handles all messages
+```
+
+**4. Restrict access** (recommended): Set `allowed_user_ids` to your Telegram user ID(s). Only listed users can interact with the bot.
+
+```yaml
+    allowed_user_ids:
+      - 123456789                  # Your Telegram user ID
+```
+
+In any channel (bound or not), you can still override with `@agent_name`:
+
+```
+@luna redesign the login page     # Routes to Luna even in Albert's group
+```
+
+### Discord setup
+
+**1. Create a bot** in the [Discord Developer Portal](https://discord.com/developers/applications). Enable MESSAGE CONTENT intent. Copy the token to your `.env`:
+
+```
+DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.AbCdEf.GhIjKlMnOpQrStUvWxYz
+```
+
+**2. Invite the bot** to your server with the OAuth2 URL from the portal. It needs: Send Messages, Read Message History, and Embed Links permissions.
+
+**3. Main channel (Johnny / orchestrator):** In any channel, @mention the bot. Unbound channels route through Johnny. In DMs, the bot always listens — no mention needed.
+
+**4. Direct agent channels:** Create text channels for each agent. Right-click the channel → Copy Channel ID (enable Developer Mode in Discord settings first).
+
+```yaml
+# ~/.config/claude-daemon/config.yaml
+integrations:
+  discord:
+    allowed_guild_ids: []          # Empty = allow all guilds
+    agent_channels:
+      "1100000000000000001": "albert"   # #albert-cio → Albert
+      "1100000000000000002": "luna"     # #luna-design → Luna
+      "1100000000000000003": "max"      # #max-qa → Max
+      "1100000000000000004": "penny"    # #penny-finance → Penny
+      "1100000000000000005": "jeremy"   # #jeremy-security → Jeremy
+      "1100000000000000006": "sophie"   # #sophie-legal → Sophie
+```
+
+**5. Alert channel** (optional): Designate a channel for heartbeat results, improvement plans, and system notifications:
+
+```yaml
+    alert_channel_ids:
+      - "1100000000000000007"      # #agent-alerts channel
+```
+
+**6. Restrict to your server** (recommended):
+
+```yaml
+    allowed_guild_ids:
+      - 987654321098765432         # Your server ID
+```
+
+In agent-bound channels, the bot responds to **all messages** — no @mention needed. In unbound channels, @mention the bot to talk to Johnny, or use `@agent_name` to address a specific agent.
+
+### Recommended server layout
+
+For a full Discord setup with all agents:
+
+```
+#general            → Unbound (mention bot → Johnny routes)
+#albert-cio         → Bound to albert (architecture, backend)
+#luna-design        → Bound to luna (UI, design systems)
+#max-qa             → Bound to max (testing, quality)
+#penny-finance      → Bound to penny (costs, budgets)
+#jeremy-security    → Bound to jeremy (security, compliance)
+#sophie-legal       → Bound to sophie (legal, regulatory)
+#agent-alerts       → Alert channel (heartbeat results, improvements)
+```
+
+The same structure works with Telegram groups — one group per agent, plus one general group for Johnny.
 
 ## Auto-Parallel Execution
 
