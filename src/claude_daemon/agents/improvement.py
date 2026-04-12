@@ -37,6 +37,9 @@ reflections and metrics into concrete improvement actions.
 ## Current Playbooks (accumulated lessons)
 {playbook_index}
 
+## Failure Patterns (last 7 days)
+{failure_patterns}
+
 ## Previous Improvement Plan
 {previous_plan}
 
@@ -112,11 +115,13 @@ class ImprovementPlanner:
         pm: ProcessManager,
         store: ConversationStore,
         shared_dir: Path,
+        evolution_actuator=None,
     ) -> None:
         self.registry = registry
         self.pm = pm
         self.store = store
         self.shared_dir = shared_dir
+        self._evolution_actuator = evolution_actuator
 
     async def run_weekly_improvement_cycle(self) -> str:
         """The main improvement loop. Run weekly after REM sleep.
@@ -153,7 +158,18 @@ class ImprovementPlanner:
 
         plan_path.write_text(f"# Improvement Plan — {date.today().isoformat()}\n\n{plan}")
 
+        # Step 5: Self-evolution — turn plan into prompt mutations
+        evolution_summary = ""
+        if self._evolution_actuator:
+            try:
+                evolution_summary = await self._evolution_actuator.run(plan)
+                log.info("Evolution actuator: %s", evolution_summary[:200])
+            except Exception:
+                log.exception("Evolution actuator failed")
+
         log.info("Improvement cycle complete. Plan written to %s", plan_path)
+        if evolution_summary:
+            plan += f"\n\n---\n## Self-Evolution Results\n{evolution_summary}"
         return plan
 
     async def run_agent_self_assessment(self, agent) -> None:
@@ -285,10 +301,24 @@ class ImprovementPlanner:
         plan_path = playbooks_dir / "improvement-plan.md"
         previous = plan_path.read_text()[:1500] if plan_path.exists() else "(first improvement plan)"
 
+        # Failure patterns
+        failure_lines = []
+        try:
+            patterns = self.store.get_failure_patterns(days=7)
+            for p in patterns:
+                failure_lines.append(
+                    f"- {p.get('category', '?')} ({p.get('occurrences', 0)}x): "
+                    f"{p.get('root_cause', '?')} → {p.get('lesson', '?')}"
+                )
+        except Exception:
+            pass
+        failure_str = "\n".join(failure_lines) if failure_lines else "(no failures recorded)"
+
         prompt = IMPROVEMENT_PLAN_PROMPT.format(
             agent_reflections=agent_reflections,
             metrics_summary=metrics_summary,
             playbook_index=playbook_str,
+            failure_patterns=failure_str,
             previous_plan=previous,
         )
 

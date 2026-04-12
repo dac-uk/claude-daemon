@@ -401,3 +401,132 @@ class ConversationStore:
         params.extend([limit, offset])
         rows = self._db.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    # -- Task Queue --
+
+    def create_task(
+        self, task_id: str, agent_name: str, prompt: str,
+        task_type: str = "default", platform: str = "spawn", user_id: str = "local",
+    ) -> None:
+        self._db.execute(
+            "INSERT INTO task_queue (id, agent_name, prompt, status, task_type, platform, user_id) "
+            "VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+            (task_id, agent_name, prompt, task_type, platform, user_id),
+        )
+        self._db.commit()
+
+    def update_task_status(
+        self, task_id: str, status: str,
+        result: str | None = None, error: str | None = None, cost_usd: float = 0.0,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        if status == "running":
+            self._db.execute(
+                "UPDATE task_queue SET status = ?, started_at = ? WHERE id = ?",
+                (status, now, task_id),
+            )
+        elif status in ("completed", "failed"):
+            self._db.execute(
+                "UPDATE task_queue SET status = ?, result = ?, error = ?, cost_usd = ?, "
+                "completed_at = ? WHERE id = ?",
+                (status, result, error, cost_usd, now, task_id),
+            )
+        else:
+            self._db.execute(
+                "UPDATE task_queue SET status = ? WHERE id = ?",
+                (status, task_id),
+            )
+        self._db.commit()
+
+    def get_pending_tasks(self) -> list[dict]:
+        rows = self._db.execute(
+            "SELECT * FROM task_queue WHERE status IN ('pending', 'running') "
+            "ORDER BY created_at",
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_task(self, task_id: str) -> dict | None:
+        row = self._db.execute(
+            "SELECT * FROM task_queue WHERE id = ?", (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_recent_tasks(self, limit: int = 50) -> list[dict]:
+        rows = self._db.execute(
+            "SELECT * FROM task_queue ORDER BY created_at DESC LIMIT ?", (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Failure Analyses --
+
+    def record_failure(
+        self, agent_name: str, task_type: str, category: str,
+        root_cause: str, lesson: str, severity: str,
+        recurrence_risk: str, error_hash: str,
+    ) -> None:
+        self._db.execute(
+            "INSERT INTO failure_analyses "
+            "(agent_name, task_type, category, root_cause, lesson, severity, "
+            "recurrence_risk, error_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_name, task_type, category, root_cause, lesson, severity,
+             recurrence_risk, error_hash),
+        )
+        self._db.commit()
+
+    def get_failure_patterns(self, days: int = 7) -> list[dict]:
+        rows = self._db.execute(
+            "SELECT category, root_cause, lesson, severity, COUNT(*) as occurrences "
+            "FROM failure_analyses "
+            "WHERE timestamp >= datetime('now', ?)"
+            "GROUP BY error_hash ORDER BY occurrences DESC LIMIT 20",
+            (f"-{days} days",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_recent_failures(self, agent_name: str | None = None, limit: int = 20) -> list[dict]:
+        if agent_name:
+            rows = self._db.execute(
+                "SELECT * FROM failure_analyses WHERE agent_name = ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (agent_name, limit),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM failure_analyses ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Evolution Log --
+
+    def record_evolution(
+        self, agent_name: str, file_changed: str, operation: str,
+        section_heading: str | None = None, rationale: str | None = None,
+        old_content_hash: str | None = None, new_content_hash: str | None = None,
+        dry_run: bool = False,
+    ) -> None:
+        self._db.execute(
+            "INSERT INTO evolution_log "
+            "(agent_name, file_changed, operation, section_heading, rationale, "
+            "old_content_hash, new_content_hash, dry_run) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_name, file_changed, operation, section_heading, rationale,
+             old_content_hash, new_content_hash, dry_run),
+        )
+        self._db.commit()
+
+    def get_evolution_history(
+        self, agent_name: str | None = None, limit: int = 50,
+    ) -> list[dict]:
+        if agent_name:
+            rows = self._db.execute(
+                "SELECT * FROM evolution_log WHERE agent_name = ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (agent_name, limit),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM evolution_log ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]

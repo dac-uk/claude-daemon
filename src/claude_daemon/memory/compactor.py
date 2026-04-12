@@ -139,11 +139,13 @@ class ContextCompactor:
         durable: DurableMemory,
         process_manager: ProcessManager,
         config: DaemonConfig | None = None,
+        embedding_store=None,
     ) -> None:
         self.store = store
         self.durable = durable
         self.pm = process_manager
         self.config = config
+        self._embedding_store = embedding_store
 
     # ------------------------------------------------------------------ #
     # Phase 1: LIGHT SLEEP - Signal detection (runs frequently)
@@ -232,6 +234,18 @@ class ContextCompactor:
         # Garbage collect old daily logs
         if self.config:
             self.durable.cleanup_old_logs(self.config.log_retention_days)
+
+        # Reindex semantic memory embeddings
+        if self._embedding_store and self._embedding_store.available:
+            try:
+                agents_dir = self.config.data_dir / "agents" if self.config else None
+                shared_dir = self.config.data_dir / "shared" if self.config else None
+                if agents_dir and shared_dir:
+                    count = await self._embedding_store.reindex_all(agents_dir, shared_dir)
+                    if count:
+                        log.info("Deep sleep: reindexed %d memory chunks", count)
+            except Exception:
+                log.debug("Embedding reindex failed during deep sleep")
 
         log.info("Deep sleep complete")
 

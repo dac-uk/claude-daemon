@@ -217,7 +217,7 @@ class Agent:
         }
         return models.get(task_type, self.identity.default_model)
 
-    def build_system_context(self, max_chars: int = 8000) -> str:
+    def build_system_context(self, max_chars: int = 8000, semantic_matches: list[dict] | None = None) -> str:
         """Build the full system prompt context for this agent.
 
         Priority-ordered: critical blocks are never truncated, lower-priority
@@ -283,6 +283,14 @@ class Agent:
             mem = memory_path.read_text()
             if mem:
                 high.append(f"## Memory\n{mem}")
+
+        # Semantic memory matches (from vector search on user's message)
+        if semantic_matches:
+            relevant = "\n".join(
+                f"- [{m.get('source', '?')}] {m['chunk'][:300]}"
+                for m in semantic_matches[:3]
+            )
+            high.append(f"## Related Context (semantic search)\n{relevant}")
 
         # -- Tier 3: Medium priority --
         medium: list[str] = []

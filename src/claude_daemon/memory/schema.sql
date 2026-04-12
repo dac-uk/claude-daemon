@@ -88,3 +88,51 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent_name);
+
+-- Persistent task queue (survives daemon restarts)
+CREATE TABLE IF NOT EXISTS task_queue (
+    id TEXT PRIMARY KEY,
+    agent_name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    error TEXT,
+    cost_usd REAL DEFAULT 0.0,
+    task_type TEXT DEFAULT 'default',
+    platform TEXT DEFAULT 'spawn',
+    user_id TEXT DEFAULT 'local',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status);
+
+-- Failure analysis records for lesson extraction
+CREATE TABLE IF NOT EXISTS failure_analyses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    agent_name TEXT,
+    task_type TEXT,
+    category TEXT,
+    root_cause TEXT,
+    lesson TEXT,
+    severity TEXT,
+    recurrence_risk TEXT,
+    error_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_failure_category ON failure_analyses(category);
+
+-- Evolution log tracking self-applied prompt mutations
+CREATE TABLE IF NOT EXISTS evolution_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    agent_name TEXT NOT NULL,
+    file_changed TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    section_heading TEXT,
+    rationale TEXT,
+    old_content_hash TEXT,
+    new_content_hash TEXT,
+    dry_run BOOLEAN DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_evolution_agent ON evolution_log(agent_name);
