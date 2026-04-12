@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -117,21 +118,68 @@ class Updater:
             )
 
     async def self_update(self) -> UpdateResult:
-        """Update claude-daemon itself via pip."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "pip", "install", "--upgrade", "claude-daemon",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        """Update claude-daemon itself.
 
-            if proc.returncode == 0:
-                log.info("claude-daemon self-update complete")
-                return UpdateResult(current_version="0.1.0", updated=True, new_version="latest")
+        Detects editable git installs (the common case) and does git pull +
+        pip install. Falls back to PyPI upgrade for non-git installs.
+        """
+        from claude_daemon import __version__
+        current = __version__
+
+        try:
+            # Detect if we're an editable git install
+            package_dir = Path(__file__).resolve().parent.parent.parent.parent
+            git_dir = package_dir / ".git"
+
+            if git_dir.is_dir():
+                # Editable git install — pull and reinstall
+                log.info("Self-update: detected editable git install at %s", package_dir)
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "-C", str(package_dir), "pull", "--ff-only",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+                pull_output = stdout.decode().strip()
+
+                if proc.returncode != 0:
+                    err = stderr.decode().strip()
+                    log.warning("git pull failed: %s", err)
+                    return UpdateResult(current_version=current, updated=False, error=err)
+
+                already_up_to_date = "already up to date" in pull_output.lower()
+
+                # Always re-install to pick up new dependencies
+                proc = await asyncio.create_subprocess_exec(
+                    "pip", "install", "-e", f"{package_dir}[all]", "--quiet",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=120)
+
+                if already_up_to_date:
+                    return UpdateResult(current_version=current, updated=False)
+
+                log.info("claude-daemon self-update complete (git pull + pip install)")
+                return UpdateResult(current_version=current, updated=True, new_version="latest")
+
             else:
-                err = stderr.decode().strip()
-                return UpdateResult(current_version="0.1.0", updated=False, error=err)
+                # Non-git install — try PyPI
+                proc = await asyncio.create_subprocess_exec(
+                    "pip", "install", "--upgrade", "claude-daemon",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+
+                if proc.returncode == 0:
+                    log.info("claude-daemon self-update complete (PyPI)")
+                    return UpdateResult(
+                        current_version=current, updated=True, new_version="latest",
+                    )
+                else:
+                    err = stderr.decode().strip()
+                    return UpdateResult(current_version=current, updated=False, error=err)
 
         except Exception as e:
-            return UpdateResult(current_version="0.1.0", updated=False, error=str(e))
+            return UpdateResult(current_version=current, updated=False, error=str(e))

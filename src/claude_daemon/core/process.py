@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,6 +19,21 @@ if TYPE_CHECKING:
     from claude_daemon.core.config import DaemonConfig
 
 log = logging.getLogger(__name__)
+
+# Patterns that indicate a rate limit or model unavailability error
+_RATE_LIMIT_PATTERNS = re.compile(
+    r"rate.?limit|429|overloaded|capacity|unavailable|too many requests|quota.?exceeded",
+    re.IGNORECASE,
+)
+
+
+def _is_rate_limit_error(stderr_text: str, response: "ClaudeResponse | None" = None) -> bool:
+    """Detect rate limit / model unavailability in stderr or error response."""
+    if _RATE_LIMIT_PATTERNS.search(stderr_text):
+        return True
+    if response and response.is_error and _RATE_LIMIT_PATTERNS.search(response.result):
+        return True
+    return False
 
 
 @dataclass
@@ -32,6 +48,7 @@ class ClaudeResponse:
     num_turns: int
     duration_ms: int
     is_error: bool
+    model_used: str = ""
     raw: dict = field(repr=False, default_factory=dict)
 
     @classmethod
@@ -293,13 +310,63 @@ class ProcessManager:
             log.exception("Streaming error")
             yield ClaudeResponse.error(f"Streaming error: {e}")
 
+    def _build_fallback_chain(self, model_override: str | None) -> list[str]:
+        """Build a deduplicated model fallback chain: [requested] + config chain."""
+        chain: list[str] = []
+        if model_override:
+            chain.append(model_override)
+        for m in self.config.model_fallback_chain:
+            if m not in chain:
+                chain.append(m)
+        return chain if chain else ["sonnet"]
+
     async def _execute_buffered(
         self, prompt: str, session_id: str | None, system_context: str | None,
         max_budget: float, platform: str, user_id: str,
         model_override: str | None = None,
         mcp_config_path: str | None = None,
     ) -> ClaudeResponse:
-        """Execute claude CLI as a buffered subprocess."""
+        """Execute claude CLI with automatic model fallback on rate limit errors."""
+        max_retries = self.config.model_max_retries
+        if max_retries <= 0:
+            # Fallback disabled — single attempt
+            response, _ = await self._execute_buffered_once(
+                prompt, session_id, system_context, max_budget, platform, user_id,
+                model_override, mcp_config_path,
+            )
+            response.model_used = model_override or ""
+            return response
+
+        chain = self._build_fallback_chain(model_override)
+        last_response: ClaudeResponse | None = None
+
+        for i, model in enumerate(chain[:max_retries + 1]):
+            response, stderr_text = await self._execute_buffered_once(
+                prompt, session_id, system_context, max_budget, platform, user_id,
+                model, mcp_config_path,
+            )
+            response.model_used = model
+            last_response = response
+
+            if not _is_rate_limit_error(stderr_text, response):
+                return response
+
+            log.warning(
+                "Model '%s' hit rate limit (attempt %d/%d), trying next fallback",
+                model, i + 1, len(chain),
+            )
+            if i < len(chain) - 1:
+                await asyncio.sleep(self.config.model_retry_delay)
+
+        return last_response or ClaudeResponse.error("All models exhausted")
+
+    async def _execute_buffered_once(
+        self, prompt: str, session_id: str | None, system_context: str | None,
+        max_budget: float, platform: str, user_id: str,
+        model_override: str | None = None,
+        mcp_config_path: str | None = None,
+    ) -> tuple[ClaudeResponse, str]:
+        """Execute a single buffered Claude CLI call. Returns (response, stderr_text)."""
         args, tracking_id = self._build_args(
             prompt, session_id, system_context, max_budget,
             model_override=model_override, mcp_config_path=mcp_config_path,
@@ -328,14 +395,16 @@ class ProcessManager:
             finally:
                 self._active.pop(tracking_id, None)
 
+            stderr_text = stderr.decode().strip() if stderr else ""
+
             if proc.returncode != 0 and not stdout:
-                err_msg = stderr.decode().strip() if stderr else f"Exit code {proc.returncode}"
+                err_msg = stderr_text or f"Exit code {proc.returncode}"
                 log.error("Claude CLI error: %s", err_msg)
-                return ClaudeResponse.error(f"Claude Code error: {err_msg}")
+                return ClaudeResponse.error(f"Claude Code error: {err_msg}"), stderr_text
 
             raw = stdout.decode().strip()
             if not raw:
-                return ClaudeResponse.error("Empty response from Claude Code")
+                return ClaudeResponse.error("Empty response from Claude Code"), stderr_text
 
             data = json.loads(raw)
             response = ClaudeResponse.from_json(data)
@@ -346,7 +415,7 @@ class ProcessManager:
                 response.cost, response.num_turns,
             )
 
-            return response
+            return response, stderr_text
 
         except asyncio.TimeoutError:
             log.error("Claude CLI timed out after %ds", self.config.process_timeout)
@@ -359,19 +428,19 @@ class ProcessManager:
                 self._active.pop(tracking_id, None)
             return ClaudeResponse.error(
                 f"Claude Code timed out after {self.config.process_timeout}s"
-            )
+            ), ""
         except json.JSONDecodeError as e:
             log.error("Failed to parse Claude response: %s", e)
-            return ClaudeResponse.error(f"Failed to parse response: {e}")
+            return ClaudeResponse.error(f"Failed to parse response: {e}"), ""
         except FileNotFoundError:
             log.error("Claude binary not found: %s", self.config.claude_binary)
             return ClaudeResponse.error(
                 f"Claude Code not found at '{self.config.claude_binary}'. "
                 "Install with: npm install -g @anthropic-ai/claude-code"
-            )
+            ), ""
         except Exception as e:
             log.exception("Unexpected error running Claude")
-            return ClaudeResponse.error(f"Unexpected error: {e}")
+            return ClaudeResponse.error(f"Unexpected error: {e}"), ""
 
     async def drain_all(self, timeout: float = 60) -> None:
         """Wait for all active Claude processes to finish."""

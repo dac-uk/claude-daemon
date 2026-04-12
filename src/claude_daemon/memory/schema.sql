@@ -72,3 +72,19 @@ CREATE TABLE IF NOT EXISTS agent_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_metrics_name ON agent_metrics(agent_name);
 CREATE INDEX IF NOT EXISTS idx_agent_metrics_ts ON agent_metrics(timestamp);
+
+-- Structured audit log for every significant daemon action
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    action TEXT NOT NULL,
+    agent_name TEXT,
+    user_id TEXT,
+    platform TEXT,
+    details TEXT,
+    cost_usd REAL DEFAULT 0.0,
+    success BOOLEAN DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent_name);

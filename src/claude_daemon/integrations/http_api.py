@@ -49,6 +49,7 @@ class HttpApi:
         self._app.router.add_post("/api/workflow", self._handle_workflow)
         self._app.router.add_get("/api/metrics", self._handle_metrics)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
+        self._app.router.add_get("/api/audit", self._handle_audit)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -209,8 +210,12 @@ class HttpApi:
         if not request_text:
             return web.json_response({"error": "Missing 'request' field"}, status=400)
 
+        max_cost = float(body.get("max_cost", 0.0))
+
         try:
-            result = await self.daemon.run_build_workflow(request_text)
+            result = await self.daemon.run_build_workflow(
+                request_text, max_total_cost=max_cost,
+            )
             return web.json_response({"result": result})
         except Exception:
             log.exception("Workflow API error")
@@ -332,6 +337,13 @@ class HttpApi:
         if not prompt:
             return web.json_response({"status": "ignored"})
 
+        # Audit incoming webhook
+        if self.daemon.store:
+            self.daemon.store.record_audit(
+                action="webhook_receive", platform=f"webhook:{source}",
+                details=f"agent={agent_name}",
+            )
+
         # Process asynchronously — return 202 immediately
         async def _process():
             try:
@@ -348,3 +360,16 @@ class HttpApi:
         return web.json_response(
             {"status": "accepted", "agent": agent_name}, status=202,
         )
+
+    async def _handle_audit(self, request: web.Request) -> web.Response:
+        """GET /api/audit?action=agent_message&agent=albert&limit=50&offset=0"""
+        if not self.daemon.store:
+            return web.json_response({"audit": []})
+        action = request.query.get("action")
+        agent = request.query.get("agent")
+        limit = int(request.query.get("limit", "100"))
+        offset = int(request.query.get("offset", "0"))
+        entries = self.daemon.store.get_audit_log(
+            action=action, agent_name=agent, limit=limit, offset=offset,
+        )
+        return web.json_response({"audit": entries})

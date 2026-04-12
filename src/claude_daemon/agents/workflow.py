@@ -200,11 +200,29 @@ class WorkflowEngine:
         original_request: str,
         platform: str = "workflow",
         user_id: str = "workflow",
+        max_total_cost: float = 0.0,
     ) -> WorkflowResult:
-        """Run steps in parallel. All receive the original request. Per-step timeout enforced."""
-        result = WorkflowResult()
+        """Run steps in parallel. All receive the original request. Per-step timeout enforced.
+
+        Cost cap: a shared accumulator prevents new steps from starting once
+        the budget is exceeded. Steps already in-flight are not cancelled.
+        """
+        result = WorkflowResult(max_total_cost=max_total_cost)
+        cost_lock = asyncio.Lock()
+        accumulated_cost = 0.0
 
         async def _run_step(step: WorkflowStep) -> StepResult:
+            nonlocal accumulated_cost
+            # Pre-check budget before invoking the agent
+            if max_total_cost > 0:
+                async with cost_lock:
+                    if accumulated_cost >= max_total_cost:
+                        return StepResult(
+                            agent_name=step.agent_name, label=step.label,
+                            result=f"Workflow cost cap exceeded (${accumulated_cost:.2f} / ${max_total_cost:.2f})",
+                            is_error=True,
+                        )
+
             agent = self.registry.get(step.agent_name)
             if not agent:
                 return StepResult(
@@ -230,6 +248,11 @@ class WorkflowEngine:
                     duration_ms=duration, is_error=True,
                 )
             duration = int((time.monotonic() - start) * 1000)
+
+            # Post-update accumulated cost
+            async with cost_lock:
+                accumulated_cost += response.cost
+
             return StepResult(
                 agent_name=step.agent_name, label=step.label,
                 result=response.result, cost=response.cost,
@@ -250,26 +273,41 @@ class WorkflowEngine:
         pass_keyword: str = "PASS",
         platform: str = "workflow",
         user_id: str = "workflow",
+        max_total_cost: float = 0.0,
     ) -> WorkflowResult:
         """Build-review loop: execute build steps, then review. Retry on failure.
 
         The reviewer's response is checked for pass_keyword (case-insensitive).
         If not found, the build steps are re-run with the review feedback appended.
+        Cost cap is checked before each iteration and before the review step.
         """
-        all_results = WorkflowResult()
+        all_results = WorkflowResult(max_total_cost=max_total_cost)
 
         for iteration in range(1, max_iterations + 1):
+            # Cost cap check before each iteration
+            if all_results.is_over_budget():
+                log.warning("Review loop cost cap reached: $%.2f", all_results.total_cost)
+                all_results.success = False
+                break
+
             log.info("Review loop iteration %d/%d", iteration, max_iterations)
 
-            # Run build pipeline
+            # Run build pipeline (pass remaining budget)
             build_result = await self.execute_pipeline(
                 build_steps, original_request, platform, user_id,
+                max_total_cost=max_total_cost,
             )
             all_results.steps.extend(build_result.steps)
 
             if not build_result.success:
                 all_results.success = False
                 log.error("Build failed in review loop iteration %d", iteration)
+                break
+
+            # Cost cap check before review
+            if all_results.is_over_budget():
+                log.warning("Review loop cost cap reached before review: $%.2f", all_results.total_cost)
+                all_results.success = False
                 break
 
             # Run review

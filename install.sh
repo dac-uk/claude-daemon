@@ -7,8 +7,19 @@
 #   git clone git@github.com:dac-uk/claude-daemon.git && cd claude-daemon && ./install.sh
 #
 # Idempotent: safe to run multiple times. Never overwrites existing config or .env.
+#
+# Flags:
+#   --update    Skip interactive prompts, just pull + reinstall + re-patch service
 
 set -euo pipefail
+
+# Parse flags
+UPDATE_ONLY=false
+for arg in "$@"; do
+    case "$arg" in
+        --update) UPDATE_ONLY=true ;;
+    esac
+done
 
 # -- Colours ------------------------------------------------------------------
 RED='\033[0;31m'
@@ -167,9 +178,9 @@ _set_env() {
     fi
 }
 
-# Only run interactive setup if stdin is a terminal (not piped) AND .env is fresh
+# Only run interactive setup if stdin is a terminal (not piped) and not --update
 INTERACTIVE=false
-if [ -t 0 ]; then
+if [ -t 0 ] && [ "$UPDATE_ONLY" = false ]; then
     INTERACTIVE=true
 fi
 

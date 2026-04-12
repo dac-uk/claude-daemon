@@ -241,6 +241,14 @@ class Orchestrator:
 
         log.info("[%s] %s -> cost=$%.4f tokens=%d/%d", correlation_id, agent.name, response.cost, response.input_tokens, response.output_tokens)
 
+        # Audit log
+        self.store.record_audit(
+            action="agent_message", agent_name=agent.name,
+            user_id=user_id, platform=platform,
+            details=f"prompt_len={len(prompt)}, result_len={len(response.result)}, model={model}",
+            cost_usd=response.cost, success=not response.is_error,
+        )
+
         # Process delegation tags in response
         if not response.is_error:
             response = await self._process_delegations(agent, response)
@@ -266,6 +274,10 @@ class Orchestrator:
                 continue
 
             log.info("Delegation: %s -> %s", from_agent.name, target_name)
+            self.store.record_audit(
+                action="agent_delegation", agent_name=from_agent.name,
+                details=f"delegated to {target_name}: {message.strip()[:200]}",
+            )
             try:
                 result = await self.agent_to_agent(
                     from_agent, target, message.strip(),

@@ -7,6 +7,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
 - **Per-Agent MCP Tools** - Each agent gets their own MCP server config (GitHub, Slack, Gmail, Google Calendar, Supabase) so they can actually interact with the world
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
+- **Graceful Model Degradation** - If Opus is rate-limited or unavailable, automatically falls back to Sonnet, then Haiku. Configurable fallback chain — no failed requests from transient capacity issues.
 - **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
 - **Fuzzy Agent Matching** - Type `@jony` and it routes to `johnny`. Close-enough name typos resolved automatically with no error or fallback to the wrong agent.
 - **Per-Agent Channels** - Bind Telegram groups or Discord channels to specific agents. Dedicated channels for Albert, Luna, etc.
@@ -28,7 +29,11 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
 - **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.
+- **Agent Hot-Reload** - Edit SOUL.md, IDENTITY.md, or AGENTS.md and changes take effect automatically within seconds. No restart needed. File watcher polls every 10s (configurable).
+- **Alert Webhooks** - Send heartbeat results, circuit breaker alerts, and update notifications to arbitrary HTTP endpoints (Slack incoming webhooks, PagerDuty, custom URLs). Not just Telegram/Discord.
+- **Audit Log** - Every agent action recorded in a structured SQLite table: who did what, when, what it cost. Queryable via `/api/audit`. Covers messages, delegations, workflows, heartbeats, config reloads, and webhooks.
 - **Agent Metrics** - Per-agent cost tracking, token usage, and performance metrics
+- **Self-Updating Daemon** - The daemon auto-updates its own code (git pull + pip install) alongside the Claude CLI binary. No manual maintenance for editable git installs.
 - **Service Files** - systemd and launchd support for true daemon operation
 
 ## Quick Install
@@ -45,6 +50,14 @@ Or if you've already cloned the repo:
 ```
 
 The script handles everything: Python package, config templates, systemd/launchd service. Idempotent — safe to run again. After install, edit `~/.config/claude-daemon/.env` with your tokens and you're live.
+
+To update an existing install (pull latest code, reinstall deps, re-patch service):
+
+```bash
+./install.sh --update
+```
+
+The daemon also self-updates automatically via its nightly scheduler — new code and dependencies are installed alongside Claude CLI updates.
 
 ## Manual Setup
 
@@ -454,8 +467,9 @@ GET  /api/status              — Daemon status and metrics
 GET  /api/sessions            — Active Claude subprocesses
 GET  /api/tasks               — Spawned background tasks
 GET  /api/metrics             — Per-agent cost/token metrics
+GET  /api/audit               — Structured audit log (filter by action, agent, paginate)
 POST /api/message             — Send a message to an agent
-POST /api/workflow            — Trigger build quality gate workflow
+POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
 POST /api/webhook/stripe      — Stripe webhook (→ Penny) — 202 Accepted
 POST /api/webhook/{source}    — Generic webhook (→ Johnny) — 202 Accepted
@@ -495,6 +509,12 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Log retention** | Daily agent logs older than `log_retention_days` (default: 30) are garbage-collected nightly. |
 | **Context priority** | SOUL + steering always included. Low-priority blocks (vision, playbooks) trimmed first when tight. |
 | **MCP health** | `/api/agents` includes `mcp_health` for each agent — detects unresolved `${ENV_VAR}` placeholders. |
+| **Model fallback** | Rate-limited or unavailable models automatically retry with the next model in the chain (default: opus -> sonnet -> haiku). Configurable via `model_fallback_chain`. |
+| **Agent hot-reload** | File watcher polls every 10s for changes to IDENTITY.md, SOUL.md, AGENTS.md. Edits take effect on the next message — no daemon restart needed. |
+| **Alert webhooks** | Failures, circuit breaker events, and updates are POSTed as JSON to configured webhook URLs (Slack, PagerDuty, custom). Fire-and-forget with timeout — never blocks the scheduler. |
+| **Audit log** | Every significant action (messages, delegations, workflows, heartbeats, config reloads, webhook receives) recorded in a structured `audit_log` SQLite table. Queryable via `GET /api/audit`. |
+| **Schema migration** | On startup, `_migrate_schema()` detects and applies missing tables/columns. Upgrading the daemon never breaks the database. |
+| **Daemon self-update** | Editable git installs: `git pull --ff-only` + `pip install -e ".[all]"` runs automatically alongside `claude update`. New dependencies are always installed. |
 | **Correlation IDs** | Every agent call is tagged with a short UUID in logs for end-to-end tracing. |
 | **Bearer auth** | All API endpoints (except `/api/health` and `/`) require `Authorization: Bearer <api_key>` when `api_key` is set. |
 
@@ -549,12 +569,19 @@ daemon:
   api_port: 8080
   api_bind: "0.0.0.0"             # All interfaces (Tailscale/ZeroTier/LAN). Use 127.0.0.1 to restrict to localhost.
   dashboard_enabled: false         # Serve live agent graph at /
+  agent_hot_reload: true           # Auto-detect agent config file changes
+  agent_reload_interval: 10        # Seconds between file change polls
+  alert_webhook_urls:              # URLs to receive alert POSTs
+    - "https://hooks.slack.com/services/T.../B.../xxx"
 
 claude:
   binary: claude
   max_concurrent: 5               # Parallel task limit (global)
   max_budget_per_message: 0.50
   per_agent_daily_budget: 0.0     # Max USD per agent per day. 0 = unlimited.
+  model_fallback_chain:            # Fallback on rate limit (Opus -> Sonnet -> Haiku)
+    - sonnet
+    - haiku
   permission_mode: auto
 
 memory:

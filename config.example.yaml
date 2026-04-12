@@ -8,6 +8,12 @@ daemon:
   # api_key: ""                 # API auth key (or set CLAUDE_DAEMON_API_KEY env var)
   # dashboard_enabled: true     # Serve live agent dashboard at http://host:port/
   # api_bind: "0.0.0.0"        # Bind address (0.0.0.0 for LAN/Tailscale/ZeroTier access)
+  # agent_hot_reload: true      # Auto-detect agent config file changes (IDENTITY.md, SOUL.md, etc.)
+  # agent_reload_interval: 10   # Seconds between file change polls
+  # alert_webhook_urls:         # URLs to receive alert POSTs (Slack, PagerDuty, etc.)
+  #   - "https://hooks.slack.com/services/T.../B.../xxx"
+  #   - "https://your-server.com/webhook/alerts"
+  # alert_webhook_timeout: 10   # HTTP timeout for webhook calls (seconds)
 
 claude:
   binary: claude                # Path to Claude Code CLI
@@ -15,6 +21,12 @@ claude:
   max_budget_per_message: 0.50  # USD cost cap per message
   # model: sonnet               # Override default model
   permission_mode: auto         # auto, default, bypassPermissions
+  # per_agent_daily_budget: 0.0 # Max USD per agent per day (0 = unlimited)
+  # model_fallback_chain:       # Fallback models on rate limit (Opus → Sonnet → Haiku)
+  #   - sonnet
+  #   - haiku
+  # model_retry_delay: 2.0      # Seconds between fallback retries
+  # model_max_retries: 2        # Max fallback attempts (0 disables)
 
 memory:
   daily_log: true               # Write daily markdown logs

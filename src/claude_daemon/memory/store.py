@@ -22,6 +22,7 @@ class ConversationStore:
         self._db.execute("PRAGMA foreign_keys=ON")
         self._check_integrity()
         self._init_schema()
+        self._migrate_schema()
 
     def _check_integrity(self) -> None:
         """Run integrity check on startup. Log warning if database is corrupted."""
@@ -39,6 +40,36 @@ class ConversationStore:
         schema = schema_path.read_text()
         self._db.executescript(schema)
         self._db.commit()
+
+    def _migrate_schema(self) -> None:
+        """Apply incremental schema migrations for upgrades.
+
+        CREATE TABLE IF NOT EXISTS handles new tables, but not new columns on
+        existing tables. This method checks for missing structures and applies
+        ALTER TABLE statements as needed.
+        """
+        try:
+            # Check if audit_log table exists (added in v0.6)
+            self._db.execute("SELECT 1 FROM audit_log LIMIT 0")
+        except sqlite3.OperationalError:
+            log.info("Migrating schema: creating audit_log table")
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    action TEXT NOT NULL,
+                    agent_name TEXT,
+                    user_id TEXT,
+                    platform TEXT,
+                    details TEXT,
+                    cost_usd REAL DEFAULT 0.0,
+                    success BOOLEAN DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent_name);
+            """)
+            self._db.commit()
 
     def close(self) -> None:
         self._db.close()
@@ -327,4 +358,46 @@ class ConversationStore:
                 "GROUP BY agent_name",
                 (f"-{days} days",),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Audit Log --
+
+    def record_audit(
+        self,
+        action: str,
+        agent_name: str = "",
+        user_id: str = "",
+        platform: str = "",
+        details: str = "",
+        cost_usd: float = 0.0,
+        success: bool = True,
+    ) -> None:
+        """Record a structured audit log entry."""
+        self._db.execute(
+            "INSERT INTO audit_log "
+            "(action, agent_name, user_id, platform, details, cost_usd, success) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (action, agent_name, user_id, platform, details[:5000], cost_usd, success),
+        )
+        self._db.commit()
+
+    def get_audit_log(
+        self,
+        action: str | None = None,
+        agent_name: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Query audit log entries with optional filters."""
+        query = "SELECT * FROM audit_log WHERE 1=1"
+        params: list = []
+        if action:
+            query += " AND action = ?"
+            params.append(action)
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = self._db.execute(query, params).fetchall()
         return [dict(r) for r in rows]

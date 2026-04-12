@@ -185,8 +185,20 @@ class SchedulerEngine:
         if self.daemon.updater:
             result = await self.daemon.updater.check_and_update()
             log.info("Auto-update: %s", result)
+
+            # Self-update the daemon's own code alongside Claude CLI
+            try:
+                self_result = await self.daemon.updater.self_update()
+                if self_result.updated:
+                    log.info("Daemon self-update: %s", self_result)
+            except Exception:
+                log.exception("Daemon self-update failed")
+
             # Alert on all integrations
             if result.updated and self.daemon.router:
+                await self._send_webhook_alerts(
+                    "update", f"Claude Code updated: {result}",
+                )
                 for name, integ in self.daemon.router.integrations.items():
                     for chat_id in self._get_alert_targets(name):
                         try:
@@ -296,6 +308,14 @@ class SchedulerEngine:
                 self._save_failure_counts()
             log.info("Heartbeat %s complete: cost=$%.4f", agent_name, response.cost)
 
+            # Audit log
+            if self.daemon.store:
+                self.daemon.store.record_audit(
+                    action="heartbeat_execute", agent_name=agent_name,
+                    details=f"model={model}", cost_usd=response.cost,
+                    success=not response.is_error,
+                )
+
             # Record metric
             if self.daemon.store:
                 self.daemon.store.record_agent_metric(
@@ -385,10 +405,51 @@ class SchedulerEngine:
         events_file.write_text("# Agent Events\n\n" + "\n".join(lines) + "\n")
 
     def _alert_failure(self, message: str) -> None:
-        """Log failure and attempt to notify via daily log."""
+        """Log failure and attempt to notify via daily log and webhooks."""
         log.error(message)
         if self.daemon.durable:
             self.daemon.durable.append_daily_log(f"ALERT: {message}")
+        if self.daemon.store:
+            self.daemon.store.record_audit(
+                action="alert_failure", details=message, success=False,
+            )
+        # Outbound webhook alerts
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._send_webhook_alerts("failure", message), self._loop,
+            )
+
+    async def _send_webhook_alerts(
+        self, event_type: str, message: str, metadata: dict | None = None,
+    ) -> None:
+        """POST alert payload to all configured webhook URLs (fire-and-forget)."""
+        urls = self.config.alert_webhook_urls
+        if not urls:
+            return
+        from datetime import datetime, timezone
+        import httpx
+        payload: dict = {
+            "event": event_type,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": "claude-daemon",
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        timeout = self.config.alert_webhook_timeout
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                for url in urls:
+                    try:
+                        resp = await client.post(url, json=payload)
+                        if resp.status_code >= 400:
+                            log.warning("Webhook alert to %s returned %d", url, resp.status_code)
+                        else:
+                            log.debug("Webhook alert delivered to %s", url)
+                    except Exception:
+                        log.warning("Failed to deliver webhook alert to %s", url, exc_info=True)
+        except Exception:
+            log.warning("Failed to create HTTP client for webhook alerts", exc_info=True)
 
     def _get_alert_targets(self, platform: str) -> list[str]:
         """Get configured alert target chat/channel IDs for a platform."""

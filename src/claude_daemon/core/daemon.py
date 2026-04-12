@@ -53,6 +53,7 @@ class ClaudeDaemon:
         self.orchestrator: Orchestrator | None = None
         self.workflow_engine: WorkflowEngine | None = None
         self.improvement_planner: ImprovementPlanner | None = None
+        self._file_watcher = None  # AgentFileWatcher (lazy import)
 
     @property
     def is_shutting_down(self) -> bool:
@@ -70,6 +71,8 @@ class ClaudeDaemon:
             if self.agent_registry:
                 for agent in self.agent_registry:
                     agent.load_identity()
+            if self.store:
+                self.store.record_audit(action="config_reload", details="Configuration reloaded")
             log.info("Configuration reloaded successfully")
             return "Configuration reloaded. Agent identities refreshed."
         except Exception:
@@ -117,6 +120,15 @@ class ClaudeDaemon:
         log.info("Loaded %d agents: %s",
                  len(self.agent_registry), self.agent_registry.agent_names())
 
+        # Agent hot-reload file watcher
+        if self.config.agent_hot_reload and self.agent_registry:
+            from claude_daemon.agents.watcher import AgentFileWatcher
+            self._file_watcher = AgentFileWatcher(
+                self.agent_registry, self.config.agent_reload_interval,
+            )
+            self._file_watcher.start()
+            log.info("Agent hot-reload enabled (polling every %ds)", self.config.agent_reload_interval)
+
         # Scheduler
         self.scheduler = SchedulerEngine(self.config, self)
         self.scheduler.start()
@@ -155,6 +167,9 @@ class ClaudeDaemon:
                     log.info("Stopped integration: %s", name)
                 except Exception:
                     log.exception("Error stopping integration: %s", name)
+
+        if self._file_watcher:
+            self._file_watcher.stop()
 
         if self.scheduler:
             self.scheduler.stop()
@@ -328,6 +343,11 @@ class ClaudeDaemon:
         if soul:
             (agent.workspace / "SOUL.md").write_text(soul)
         agent.load_identity()
+        if self.store:
+            self.store.record_audit(
+                action="agent_create", agent_name=name,
+                details=f"role={role}, model={model}",
+            )
         return f"Created agent {agent.identity.display_name} ({role}) using {model}"
 
     def update_agent(self, name: str, field: str, value: str) -> str:
@@ -393,16 +413,25 @@ class ClaudeDaemon:
         if not self.agent_registry:
             return "Agent registry not initialized."
         if self.agent_registry.remove_agent(name.lower()):
+            if self.store:
+                self.store.record_audit(action="agent_delete", agent_name=name.lower())
             return f"Agent '{name}' removed from registry. Workspace files preserved at agents/{name}/"
         return f"Agent '{name}' not found."
 
-    async def run_build_workflow(self, request: str) -> str:
+    async def run_build_workflow(
+        self, request: str, max_total_cost: float = 0.0,
+    ) -> str:
         """Run the 2-stage build quality gate workflow.
 
         Albert builds backend → Luna builds UI → Max reviews → retry on failure.
         """
         if not self.workflow_engine or not self.agent_registry:
             return "Workflow engine not initialized."
+
+        if self.store:
+            self.store.record_audit(
+                action="workflow_start", details=f"request={request[:200]}"
+            )
 
         from claude_daemon.agents.workflow import WorkflowStep
 
@@ -444,10 +473,18 @@ class ClaudeDaemon:
             )
             result = await self.workflow_engine.execute_review_loop(
                 build_steps, review_step, request, max_iterations=3,
+                max_total_cost=max_total_cost,
             )
         else:
             result = await self.workflow_engine.execute_pipeline(
-                build_steps, request,
+                build_steps, request, max_total_cost=max_total_cost,
+            )
+
+        if self.store:
+            self.store.record_audit(
+                action="workflow_complete",
+                details=f"success={result.success}, steps={len(result.steps)}, cost=${result.total_cost:.4f}",
+                cost_usd=result.total_cost, success=result.success,
             )
 
         summary = f"Workflow {'PASSED' if result.success else 'FAILED'}\n"

@@ -250,3 +250,153 @@ def test_workflow_step_timeout_default():
 
     step = WorkflowStep(agent_name="albert", prompt_template="build it")
     assert step.timeout == 600
+
+
+# -- Audit log --
+
+
+def test_record_audit_basic(tmp_path: Path):
+    """Audit log records and retrieves entries."""
+    db_path = tmp_path / "test.db"
+    store = ConversationStore(db_path)
+
+    store.record_audit(
+        action="agent_message", agent_name="albert",
+        user_id="user1", platform="cli",
+        details="prompt_len=50, result_len=100", cost_usd=0.05,
+    )
+
+    entries = store.get_audit_log()
+    assert len(entries) == 1
+    assert entries[0]["action"] == "agent_message"
+    assert entries[0]["agent_name"] == "albert"
+    assert entries[0]["cost_usd"] == 0.05
+    store.close()
+
+
+def test_get_audit_log_filter_by_action(tmp_path: Path):
+    """Audit log can be filtered by action type."""
+    db_path = tmp_path / "test.db"
+    store = ConversationStore(db_path)
+
+    store.record_audit(action="agent_message", agent_name="albert")
+    store.record_audit(action="config_reload")
+    store.record_audit(action="agent_message", agent_name="luna")
+
+    entries = store.get_audit_log(action="agent_message")
+    assert len(entries) == 2
+    assert all(e["action"] == "agent_message" for e in entries)
+    store.close()
+
+
+def test_get_audit_log_filter_by_agent(tmp_path: Path):
+    """Audit log can be filtered by agent name."""
+    db_path = tmp_path / "test.db"
+    store = ConversationStore(db_path)
+
+    store.record_audit(action="agent_message", agent_name="albert")
+    store.record_audit(action="agent_message", agent_name="luna")
+    store.record_audit(action="heartbeat_execute", agent_name="albert")
+
+    entries = store.get_audit_log(agent_name="albert")
+    assert len(entries) == 2
+    assert all(e["agent_name"] == "albert" for e in entries)
+    store.close()
+
+
+def test_get_audit_log_pagination(tmp_path: Path):
+    """Audit log supports limit and offset."""
+    db_path = tmp_path / "test.db"
+    store = ConversationStore(db_path)
+
+    for i in range(10):
+        store.record_audit(action=f"action_{i}", agent_name="albert")
+
+    entries = store.get_audit_log(limit=3, offset=2)
+    assert len(entries) == 3
+    store.close()
+
+
+def test_audit_log_table_created(tmp_path: Path):
+    """audit_log table is created on init."""
+    db_path = tmp_path / "test.db"
+    store = ConversationStore(db_path)
+
+    # Should not raise
+    entries = store.get_audit_log()
+    assert entries == []
+    store.close()
+
+
+# -- Workflow cost cap (parallel + review loop) --
+
+
+def test_parallel_workflow_has_cost_cap():
+    """execute_parallel accepts max_total_cost parameter."""
+    from claude_daemon.agents.workflow import WorkflowEngine, WorkflowResult
+
+    # Just verify the parameter exists on the method signature
+    import inspect
+    sig = inspect.signature(WorkflowEngine.execute_parallel)
+    assert "max_total_cost" in sig.parameters
+
+
+def test_review_loop_has_cost_cap():
+    """execute_review_loop accepts max_total_cost parameter."""
+    from claude_daemon.agents.workflow import WorkflowEngine
+
+    import inspect
+    sig = inspect.signature(WorkflowEngine.execute_review_loop)
+    assert "max_total_cost" in sig.parameters
+
+
+# -- Alert webhook config --
+
+
+def test_config_alert_webhook_urls():
+    """Config loads alert_webhook_urls with empty default."""
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig()
+    assert config.alert_webhook_urls == []
+    assert config.alert_webhook_timeout == 10
+
+
+# -- Model fallback config --
+
+
+def test_config_model_fallback_chain():
+    """Config has model_fallback_chain with sonnet/haiku defaults."""
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig()
+    assert config.model_fallback_chain == ["sonnet", "haiku"]
+    assert config.model_retry_delay == 2.0
+    assert config.model_max_retries == 2
+
+
+# -- Agent hot-reload config --
+
+
+def test_config_agent_hot_reload():
+    """Config has agent_hot_reload enabled by default."""
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig()
+    assert config.agent_hot_reload is True
+    assert config.agent_reload_interval == 10
+
+
+# -- Schema migration --
+
+
+def test_schema_migration_creates_audit_log(tmp_path: Path):
+    """_migrate_schema creates audit_log table when opening a fresh store."""
+    db_path = tmp_path / "test.db"
+    # A fresh ConversationStore should have audit_log via schema + migration
+    store = ConversationStore(db_path)
+    store.record_audit(action="test")
+    entries = store.get_audit_log()
+    assert len(entries) == 1
+    assert entries[0]["action"] == "test"
+    store.close()

@@ -44,6 +44,9 @@ class DaemonConfig:
     mcp_config: str | None = None  # Path to MCP server config JSON
     streaming_enabled: bool = True  # Use stream-json for interactive responses
     per_agent_daily_budget: float = 0.0  # USD per agent per day (0 = unlimited)
+    model_fallback_chain: list[str] = field(default_factory=lambda: ["sonnet", "haiku"])
+    model_retry_delay: float = 2.0  # Seconds between fallback retries
+    model_max_retries: int = 2  # 0 disables model fallback
 
     # Memory
     daily_log_enabled: bool = True
@@ -62,6 +65,10 @@ class DaemonConfig:
     heartbeat_interval: int = 1800
     custom_jobs: list[dict] = field(default_factory=list)
 
+    # Agent hot-reload
+    agent_hot_reload: bool = True  # Auto-detect config file changes
+    agent_reload_interval: int = 10  # Seconds between file change polls
+
     # HTTP API
     api_enabled: bool = False
     api_port: int = 8080
@@ -70,6 +77,10 @@ class DaemonConfig:
     dashboard_enabled: bool = False  # Serve live agent dashboard at /
     github_webhook_secret: str = ""  # GitHub webhook signing secret
     stripe_webhook_secret: str = ""  # Stripe webhook signing secret
+
+    # Alert webhooks
+    alert_webhook_urls: list[str] = field(default_factory=list)  # URLs to POST alerts to
+    alert_webhook_timeout: int = 10  # HTTP timeout for webhook calls
 
     # Rate limiting
     rate_limit_per_user: int = 20  # Messages per minute per user
@@ -160,6 +171,11 @@ class DaemonConfig:
             mcp_config=claude_cfg.get("mcp_config"),
             streaming_enabled=claude_cfg.get("streaming", True),
             per_agent_daily_budget=float(claude_cfg.get("per_agent_daily_budget", 0.0)),
+            model_fallback_chain=claude_cfg.get("model_fallback_chain", ["sonnet", "haiku"]),
+            model_retry_delay=float(claude_cfg.get("model_retry_delay", 2.0)),
+            model_max_retries=int(claude_cfg.get("model_max_retries", 2)),
+            agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
+            agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),
             daily_log_enabled=memory_cfg.get("daily_log", True),
             compaction_threshold=int(memory_cfg.get("compaction_threshold", 50_000)),
             max_session_age_hours=int(memory_cfg.get("max_session_age_hours", 72)),
@@ -186,6 +202,8 @@ class DaemonConfig:
                 os.environ.get("STRIPE_WEBHOOK_SECRET")
                 or daemon_cfg.get("stripe_webhook_secret", "")
             ),
+            alert_webhook_urls=daemon_cfg.get("alert_webhook_urls", []),
+            alert_webhook_timeout=int(daemon_cfg.get("alert_webhook_timeout", 10)),
             rate_limit_per_user=int(daemon_cfg.get("rate_limit_per_user", 20)),
             rate_limit_window=int(daemon_cfg.get("rate_limit_window", 60)),
             telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),
