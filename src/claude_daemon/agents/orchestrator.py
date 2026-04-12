@@ -76,11 +76,15 @@ class Orchestrator:
         process_manager: ProcessManager,
         store: ConversationStore,
         hub: DashboardHub | None = None,
+        failure_analyzer=None,
+        embedding_store=None,
     ) -> None:
         self.registry = registry
         self.pm = process_manager
         self.store = store
         self.hub = hub
+        self._failure_analyzer = failure_analyzer
+        self._embedding_store = embedding_store
         self._spawned_tasks: dict[str, SpawnedTask] = {}
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
@@ -182,7 +186,15 @@ class Orchestrator:
         correlation_id = str(uuid.uuid4())[:12]
         log.info("[%s] %s <- %s:%s prompt_len=%d", correlation_id, agent.name, platform, user_id, len(prompt))
 
-        agent_context = agent.build_system_context()
+        # Semantic memory search for task-relevant context
+        semantic_matches = []
+        if self._embedding_store and self._embedding_store.available:
+            try:
+                semantic_matches = await self._embedding_store.search(prompt[:500], top_k=3)
+            except Exception:
+                pass
+
+        agent_context = agent.build_system_context(semantic_matches=semantic_matches)
         agent_context += f"\n\n{self.registry.get_agent_summary()}"
 
         conv = self.store.get_or_create_conversation(
@@ -253,6 +265,17 @@ class Orchestrator:
             cost_usd=response.cost, success=not response.is_error,
         )
 
+        # Analyze failures for lesson extraction
+        if response.is_error and self._failure_analyzer:
+            try:
+                asyncio.create_task(
+                    self._failure_analyzer.analyze(
+                        agent.name, task_type, response.result[:1500],
+                    )
+                )
+            except Exception:
+                pass
+
         # Process delegation tags in response
         if not response.is_error:
             response = await self._process_delegations(agent, response)
@@ -308,7 +331,14 @@ class Orchestrator:
         task_type: str = "default",
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a message to a specific agent."""
-        agent_context = agent.build_system_context()
+        semantic_matches = []
+        if self._embedding_store and self._embedding_store.available:
+            try:
+                semantic_matches = await self._embedding_store.search(prompt[:500], top_k=3)
+            except Exception:
+                pass
+
+        agent_context = agent.build_system_context(semantic_matches=semantic_matches)
         agent_context += f"\n\n{self.registry.get_agent_summary()}"
 
         conv = self.store.get_or_create_conversation(
@@ -427,7 +457,20 @@ class Orchestrator:
 
         task_id = str(uuid.uuid4())[:12]
 
+        # Persist to SQLite so tasks survive daemon restarts
+        try:
+            self.store.create_task(
+                task_id, agent.name, prompt[:2000],
+                task_type=task_type, platform=platform, user_id=user_id,
+            )
+        except Exception:
+            log.debug("Could not persist task %s to DB", task_id)
+
         async def _run():
+            try:
+                self.store.update_task_status(task_id, "running")
+            except Exception:
+                pass
             try:
                 # Use a unique session key to avoid sharing sessions
                 unique_user = f"{user_id}:spawn:{task_id}"
@@ -445,6 +488,16 @@ class Orchestrator:
                 log.exception("Background task %s on %s failed", task_id, agent.name)
                 spawned.result = f"Task failed: {e}"
                 spawned.status = "failed"
+            # Update DB with final status
+            try:
+                self.store.update_task_status(
+                    task_id, spawned.status,
+                    result=spawned.result[:5000] if spawned.result else None,
+                    error=spawned.result if spawned.status == "failed" else None,
+                    cost_usd=spawned.cost,
+                )
+            except Exception:
+                pass
             if self.hub:
                 try:
                     await self.hub.task_update(

@@ -120,12 +120,20 @@ class DurableMemory:
 
     def archive_memory(self) -> None:
         """Create a timestamped backup of MEMORY.md before overwriting."""
-        if not self.memory_file.exists():
-            return
+        self.archive_file(self.memory_file, self.memory_dir / "archive", prefix="MEMORY")
+
+    def archive_file(self, path: Path, archive_dir: Path | None = None, prefix: str | None = None) -> Path | None:
+        """Create a timestamped backup of any file. Returns archive path or None."""
+        if not path.exists():
+            return None
+        dest_dir = archive_dir or (self.memory_dir / "archive")
+        dest_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        archive = self.memory_dir / "archive" / f"MEMORY_{ts}.md"
-        shutil.copy2(self.memory_file, archive)
-        log.info("Archived MEMORY.md to %s", archive.name)
+        name = prefix or path.stem
+        archive = dest_dir / f"{name}_{ts}.md"
+        shutil.copy2(path, archive)
+        log.info("Archived %s to %s", path.name, archive.name)
+        return archive
 
     # -- SOUL.md --
 

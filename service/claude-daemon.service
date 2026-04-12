@@ -3,10 +3,12 @@ Description=Claude Code Daemon
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=claude-daemon start --foreground
 Restart=on-failure
 RestartSec=10
+WatchdogSec=120
+NotifyAccess=main
 Environment=HOME=%h
 
 [Install]

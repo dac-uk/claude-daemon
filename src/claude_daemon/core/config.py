@@ -59,6 +59,13 @@ class DaemonConfig:
         "planning", "workflow", "rem_sleep", "improvement",
     ])
 
+    # Self-Evolution
+    evolution_enabled: bool = True  # Generate proposals to update SOUL.md/AGENTS.md
+    evolution_dry_run: bool = True  # Log proposals but don't apply (safe default)
+
+    # Semantic Memory (vector embeddings)
+    embeddings_enabled: bool = True  # Enable semantic search (requires sqlite-vec for full quality)
+
     # Memory
     daily_log_enabled: bool = True
     compaction_threshold: int = 50_000
@@ -197,6 +204,9 @@ class DaemonConfig:
             managed_agents_task_types=claude_cfg.get("managed_agents_task_types", [
                 "planning", "workflow", "rem_sleep", "improvement",
             ]),
+            evolution_enabled=claude_cfg.get("evolution_enabled", True),
+            evolution_dry_run=claude_cfg.get("evolution_dry_run", True),
+            embeddings_enabled=memory_cfg.get("embeddings_enabled", True),
             disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),

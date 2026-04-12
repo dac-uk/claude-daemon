@@ -1,16 +1,45 @@
-"""Signal handling for graceful shutdown and config reload."""
+"""Signal handling for graceful shutdown, config reload, and systemd integration."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+import socket
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from claude_daemon.core.daemon import ClaudeDaemon
 
 log = logging.getLogger(__name__)
+
+
+def sd_notify(state: str) -> bool:
+    """Send a notification to systemd (if running under systemd).
+
+    Common states:
+      READY=1       — daemon is ready
+      WATCHDOG=1    — watchdog ping (prevents restart)
+      STOPPING=1    — daemon is shutting down
+
+    Returns True if the notification was sent, False otherwise.
+    Uses the sd_notify socket protocol directly to avoid requiring systemd-python.
+    """
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return False
+    try:
+        if addr[0] == "@":
+            addr = "\0" + addr[1:]
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(state.encode(), addr)
+        finally:
+            sock.close()
+        return True
+    except OSError:
+        return False
 
 
 def install_signal_handlers(daemon: ClaudeDaemon, loop: asyncio.AbstractEventLoop) -> None:

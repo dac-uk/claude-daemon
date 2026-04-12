@@ -121,6 +121,15 @@ class SchedulerEngine:
             replace_existing=True,
         )
 
+        # Systemd watchdog ping (every 60s — WatchdogSec=120 in service file)
+        self._scheduler.add_job(
+            self._job_watchdog_ping,
+            IntervalTrigger(seconds=60),
+            id="watchdog_ping",
+            name="Systemd watchdog ping",
+            replace_existing=True,
+        )
+
     def _register_agent_heartbeats(self) -> None:
         """Parse each agent's HEARTBEAT.md and register their tasks as cron jobs."""
         if not self.daemon.agent_registry:
@@ -384,6 +393,11 @@ class SchedulerEngine:
                     await integration.send_response(chat_id, response)
                 except Exception:
                     log.exception("Failed to deliver custom job result")
+
+    def _job_watchdog_ping(self) -> None:
+        """Pet the systemd watchdog to prevent restart. Synchronous (not async)."""
+        from claude_daemon.core.signals import sd_notify
+        sd_notify("WATCHDOG=1")
 
     def _write_event(self, agent_name: str, event_type: str, summary: str) -> None:
         """Write to the shared event log so other agents can see activity."""

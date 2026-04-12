@@ -13,13 +13,14 @@ import os
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
+from claude_daemon.agents.failure_analyzer import FailureAnalyzer
 from claude_daemon.agents.improvement import ImprovementPlanner
 from claude_daemon.agents.orchestrator import Orchestrator
 from claude_daemon.agents.registry import AgentRegistry
 from claude_daemon.agents.workflow import WorkflowEngine
 from claude_daemon.core.config import DaemonConfig
 from claude_daemon.core.process import ClaudeResponse, ProcessManager
-from claude_daemon.core.signals import install_signal_handlers
+from claude_daemon.core.signals import install_signal_handlers, sd_notify
 from claude_daemon.memory.compactor import ContextCompactor
 from claude_daemon.memory.durable import DurableMemory
 from claude_daemon.memory.store import ConversationStore
@@ -243,8 +244,13 @@ class ClaudeDaemon:
         self.durable.ensure_soul()
         self.working = WorkingMemory(self.store, self.durable, self.config)
         self.process_manager = ProcessManager(self.config)
+
+        # Semantic memory (vector embeddings)
+        from claude_daemon.memory.embeddings import EmbeddingStore
+        self.embedding_store = EmbeddingStore(self.store._db, self.config)
         self.compactor = ContextCompactor(
-            self.store, self.durable, self.process_manager, self.config
+            self.store, self.durable, self.process_manager, self.config,
+            embedding_store=self.embedding_store,
         )
         self.updater = Updater(self.config, self.process_manager)
 
@@ -268,16 +274,27 @@ class ClaudeDaemon:
             log.info("MCP pool: %d servers active across %d agents", sample, len(mcp_counts))
         self.agent_registry = AgentRegistry(agents_dir, shared_dir=shared_dir)
         self.agent_registry.load_all()
+        self.failure_analyzer = FailureAnalyzer(
+            self.process_manager, self.store, shared_dir,
+        )
         self.orchestrator = Orchestrator(
             self.agent_registry, self.process_manager, self.store,
             hub=getattr(self, "_dashboard_hub", None),
+            failure_analyzer=self.failure_analyzer,
+            embedding_store=self.embedding_store,
         )
         self.workflow_engine = WorkflowEngine(
             self.orchestrator, self.agent_registry,
         )
+        from claude_daemon.agents.evolution import EvolutionActuator
+        self.evolution_actuator = EvolutionActuator(
+            self.agent_registry, self.process_manager, self.store,
+            self.config, shared_dir,
+        )
         self.improvement_planner = ImprovementPlanner(
             self.agent_registry, self.process_manager,
             self.store, shared_dir,
+            evolution_actuator=self.evolution_actuator,
         )
         log.info("Loaded %d agents: %s",
                  len(self.agent_registry), self.agent_registry.agent_names())
@@ -299,6 +316,9 @@ class ClaudeDaemon:
         self.scheduler = SchedulerEngine(self.config, self)
         self.scheduler.start()
 
+        # Mark stale tasks from previous run as failed
+        self._mark_stale_tasks()
+
         # Signal handlers
         loop = asyncio.get_running_loop()
         install_signal_handlers(self, loop)
@@ -310,7 +330,12 @@ class ClaudeDaemon:
         log.info("Data directory: %s", self.config.data_dir)
 
         if self.durable:
+            # Detect unclean previous shutdown (crash recovery)
+            await self._detect_crash_restart()
             self.durable.append_daily_log("Daemon started.")
+
+        # Tell systemd we're ready (no-op if not running under systemd)
+        sd_notify("READY=1")
 
         # Proactive env health check — notify users about missing env vars
         await self._check_env_health()
@@ -320,6 +345,7 @@ class ClaudeDaemon:
 
     async def stop(self) -> None:
         log.info("Shutting down...")
+        sd_notify("STOPPING=1")
 
         # Stop HTTP API
         if hasattr(self, "_http_api") and self._http_api:
@@ -354,6 +380,66 @@ class ClaudeDaemon:
 
         self._remove_pid()
         log.info("Claude Daemon stopped.")
+
+    def _mark_stale_tasks(self) -> None:
+        """Mark any pending/running tasks from a previous daemon run as failed."""
+        if not self.store:
+            return
+        try:
+            stale = self.store.get_pending_tasks()
+            for task in stale:
+                self.store.update_task_status(
+                    task["id"], "failed",
+                    error="Daemon restarted — task was interrupted",
+                )
+            if stale:
+                log.info("Marked %d stale tasks as failed after restart", len(stale))
+        except Exception:
+            log.debug("Could not mark stale tasks (table may not exist yet)")
+
+    async def _detect_crash_restart(self) -> None:
+        """Check if previous shutdown was unclean (crash). Alert user if so."""
+        if not self.durable:
+            return
+        today_log = self.durable.read_daily_log()
+        if not today_log:
+            return
+        # If we see "Daemon started" but no subsequent "Daemon stopped gracefully",
+        # the previous run crashed.
+        lines = today_log.strip().split("\n")
+        last_started = None
+        last_stopped = None
+        for i, line in enumerate(lines):
+            if "Daemon started" in line:
+                last_started = i
+            if "Daemon stopped gracefully" in line:
+                last_stopped = i
+        if last_started is not None and (last_stopped is None or last_stopped < last_started):
+            log.warning("Previous daemon instance did not shut down cleanly — possible crash")
+            self.durable.append_daily_log("WARNING: Detected unclean previous shutdown (crash recovery)")
+            if self.store:
+                self.store.record_audit(
+                    action="crash_detected",
+                    details="Daemon restarted after unclean shutdown",
+                )
+            # Alert via integrations if available
+            await self._alert_crash_restart()
+
+    async def _alert_crash_restart(self) -> None:
+        """Send crash restart notification to all configured alert channels."""
+        message = (
+            "Claude Daemon restarted after an unclean shutdown (possible crash). "
+            "Check `journalctl --user -u claude-daemon` for details."
+        )
+        if not self.router:
+            return
+        for platform_name, integration in self.router.integrations.items():
+            try:
+                alert_targets = self._get_alert_targets(platform_name)
+                for chat_id in alert_targets:
+                    await integration.send_response(chat_id, message)
+            except Exception:
+                log.debug("Could not send crash alert to %s", platform_name)
 
     async def handle_message(
         self, prompt: str, session_id: str | None = None,
