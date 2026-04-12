@@ -157,11 +157,12 @@ class DurableMemory:
         path = self._daily_log_path(d)
         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-        if not path.exists():
-            path.write_text(f"# Daily Log - {(d or date.today()).isoformat()}\n\n")
+        with self._file_lock():
+            if not path.exists():
+                path.write_text(f"# Daily Log - {(d or date.today()).isoformat()}\n\n")
 
-        with open(path, "a") as f:
-            f.write(f"- [{timestamp}] {entry}\n")
+            with open(path, "a") as f:
+                f.write(f"- [{timestamp}] {entry}\n")
 
     def read_daily_log(self, d: date | None = None) -> str:
         path = self._daily_log_path(d)

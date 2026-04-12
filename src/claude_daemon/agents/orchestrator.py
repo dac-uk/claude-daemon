@@ -405,6 +405,9 @@ class Orchestrator:
 
     # -- Parallel task dispatch --
 
+    # Completed tasks are kept for this many seconds before cleanup
+    _TASK_TTL_SECONDS = 3600  # 1 hour
+
     def spawn_task(
         self,
         agent: Agent,
@@ -419,26 +422,37 @@ class Orchestrator:
         to the same agent run truly in parallel (no --resume collision).
         Returns immediately with a SpawnedTask for tracking.
         """
+        # Cleanup old completed tasks to prevent memory leak
+        self._cleanup_finished_tasks()
+
         task_id = str(uuid.uuid4())[:12]
 
         async def _run():
-            # Use a unique session key to avoid sharing sessions
-            unique_user = f"{user_id}:spawn:{task_id}"
-            response = await self.send_to_agent(
-                agent=agent,
-                prompt=prompt,
-                platform=platform,
-                user_id=unique_user,
-                task_type=task_type,
-            )
-            spawned.result = response.result
-            spawned.cost = response.cost
-            spawned.status = "failed" if response.is_error else "completed"
-            if self.hub:
-                await self.hub.task_update(
-                    task_id, agent.name, spawned.status,
-                    result=response.result, cost=response.cost,
+            try:
+                # Use a unique session key to avoid sharing sessions
+                unique_user = f"{user_id}:spawn:{task_id}"
+                response = await self.send_to_agent(
+                    agent=agent,
+                    prompt=prompt,
+                    platform=platform,
+                    user_id=unique_user,
+                    task_type=task_type,
                 )
+                spawned.result = response.result
+                spawned.cost = response.cost
+                spawned.status = "failed" if response.is_error else "completed"
+            except Exception as e:
+                log.exception("Background task %s on %s failed", task_id, agent.name)
+                spawned.result = f"Task failed: {e}"
+                spawned.status = "failed"
+            if self.hub:
+                try:
+                    await self.hub.task_update(
+                        task_id, agent.name, spawned.status,
+                        result=spawned.result, cost=spawned.cost,
+                    )
+                except Exception:
+                    pass
 
         spawned = SpawnedTask(
             task_id=task_id,
@@ -449,6 +463,21 @@ class Orchestrator:
         self._spawned_tasks[task_id] = spawned
         log.info("Spawned task %s on %s", task_id, agent.name)
         return spawned
+
+    def _cleanup_finished_tasks(self) -> None:
+        """Remove completed/failed tasks older than TTL to prevent memory leak."""
+        import time
+        now = time.monotonic()
+        to_remove = []
+        for tid, task in self._spawned_tasks.items():
+            if task.status in ("completed", "failed"):
+                # Use future's done time if available
+                if task._future and task._future.done():
+                    to_remove.append(tid)
+        # Keep at most 100 completed tasks, remove oldest beyond that
+        if len(to_remove) > 100:
+            for tid in to_remove[:len(to_remove) - 100]:
+                del self._spawned_tasks[tid]
 
     async def spawn_parallel(
         self,

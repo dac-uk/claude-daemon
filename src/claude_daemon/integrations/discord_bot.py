@@ -86,6 +86,13 @@ class DiscordIntegration(BaseIntegration):
                 if message.guild.id not in self.allowed_guilds:
                     return
 
+            # Rate limiting
+            if self.daemon and self.daemon.router:
+                user_key = f"discord:{message.author.id}"
+                if not self.daemon.router._rate_limiter.is_allowed(user_key):
+                    await message.reply("Rate limited. Please wait before sending more messages.")
+                    return
+
             content = message.content
             if self._bot.user:
                 content = content.replace(f"<@{self._bot.user.id}>", "").strip()

@@ -492,12 +492,23 @@ class ClaudeDaemon:
 
     # -- Dynamic Agent Management (callable from chat) --
 
+    @staticmethod
+    def _sanitize_agent_name(name: str) -> str | None:
+        """Sanitize agent name to prevent path traversal. Returns None if invalid."""
+        import re
+        name = name.lower().replace(" ", "-")
+        if not re.match(r'^[a-z0-9_-]{1,30}$', name):
+            return None
+        return name
+
     def create_agent(self, name: str, role: str = "", emoji: str = "",
                      model: str = "sonnet", soul: str = "") -> str:
         """Create a new agent dynamically. Returns status message."""
         if not self.agent_registry:
             return "Agent registry not initialized."
-        name = name.lower().replace(" ", "-")
+        name = self._sanitize_agent_name(name)
+        if name is None:
+            return "Invalid agent name. Use only lowercase letters, numbers, hyphens, underscores (max 30 chars)."
         if self.agent_registry.get(name):
             return f"Agent '{name}' already exists."
         agent = self.agent_registry.create_agent(
@@ -550,6 +561,11 @@ class ClaudeDaemon:
             return f"Unknown field '{field}'. Use: role, emoji, model, soul, rules"
 
         agent.load_identity()
+        if self.store:
+            self.store.record_audit(
+                action="agent_update", agent_name=name.lower(),
+                details=f"field={field}, value={value[:100]}",
+            )
         return f"Updated {name}.{field} = {value[:50]}{'...' if len(value) > 50 else ''}"
 
     def spawn_task(self, agent_name: str, prompt: str) -> str:

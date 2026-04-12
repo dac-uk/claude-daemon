@@ -95,6 +95,9 @@ class ProcessManager:
     (for long-running/complex tasks when enabled).
     """
 
+    # Max cached session locks before eviction (prevents unbounded growth)
+    _MAX_SESSION_LOCKS = 500
+
     def __init__(self, config: DaemonConfig) -> None:
         self.config = config
         self._semaphore = asyncio.Semaphore(config.max_concurrent_sessions)
@@ -118,8 +121,16 @@ class ProcessManager:
         return session_id in self._active
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
-        """Get or create a per-session lock to prevent concurrent resume collisions."""
+        """Get or create a per-session lock to prevent concurrent resume collisions.
+
+        Evicts idle locks when cache exceeds _MAX_SESSION_LOCKS to prevent unbounded growth.
+        """
         if session_id not in self._session_locks:
+            # Evict unlocked sessions if cache is too large
+            if len(self._session_locks) >= self._MAX_SESSION_LOCKS:
+                idle = [k for k, v in self._session_locks.items() if not v.locked()]
+                for k in idle[:len(idle) // 2]:  # Remove half of idle locks
+                    del self._session_locks[k]
             self._session_locks[session_id] = asyncio.Lock()
         return self._session_locks[session_id]
 
@@ -532,10 +543,12 @@ class ProcessManager:
 
         except asyncio.TimeoutError:
             log.error("Claude CLI timed out after %ds", self.config.process_timeout)
-            # Kill the hung process
+            # Kill the hung process and wait for it to exit (prevent zombies)
             if tracking_id in self._active:
+                proc = self._active[tracking_id].process
                 try:
-                    self._active[tracking_id].process.kill()
+                    proc.kill()
+                    await proc.wait()  # Reap the process to prevent zombie
                 except ProcessLookupError:
                     pass
                 self._active.pop(tracking_id, None)

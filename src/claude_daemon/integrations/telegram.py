@@ -125,6 +125,13 @@ class TelegramIntegration(BaseIntegration):
             await update.message.reply_text("You are not authorized to use this bot.")
             return
 
+        # Rate limiting (uses the daemon's router rate limiter if available)
+        if self.daemon and self.daemon.router:
+            user_key = f"telegram:{user.id}"
+            if not self.daemon.router._rate_limiter.is_allowed(user_key):
+                await update.message.reply_text("Rate limited. Please wait before sending more messages.")
+                return
+
         if not self.daemon:
             if self._handler:
                 msg = NormalizedMessage(
