@@ -75,8 +75,15 @@ class ProcessManager:
     def __init__(self, config: DaemonConfig) -> None:
         self.config = config
         self._semaphore = asyncio.Semaphore(config.max_concurrent_sessions)
+        self._agent_semaphores: dict[str, asyncio.Semaphore] = {}
         self._active: dict[str, ActiveSession] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+
+    def get_agent_semaphore(self, agent_name: str, max_per_agent: int = 3) -> asyncio.Semaphore:
+        """Get or create a per-agent semaphore to prevent one agent hogging all slots."""
+        if agent_name not in self._agent_semaphores:
+            self._agent_semaphores[agent_name] = asyncio.Semaphore(max_per_agent)
+        return self._agent_semaphores[agent_name]
 
     @property
     def active_count(self) -> int:

@@ -33,7 +33,6 @@ class DaemonConfig:
     # Core
     data_dir: Path = field(default_factory=paths.config_dir)
     log_level: str = "INFO"
-    health_port: int | None = None
 
     # Claude Code
     claude_binary: str = "claude"
@@ -68,6 +67,8 @@ class DaemonConfig:
     api_bind: str = "0.0.0.0"  # Bind address (0.0.0.0 = all interfaces inc. Tailscale/ZeroTier)
     api_key: str = ""  # Bearer token for API auth (empty = no auth)
     dashboard_enabled: bool = False  # Serve live agent dashboard at /
+    github_webhook_secret: str = ""  # GitHub webhook signing secret
+    stripe_webhook_secret: str = ""  # Stripe webhook signing secret
 
     # Rate limiting
     rate_limit_per_user: int = 20  # Messages per minute per user
@@ -149,7 +150,6 @@ class DaemonConfig:
         return cls(
             data_dir=data_dir,
             log_level=_env("LOG_LEVEL") or daemon_cfg.get("log_level", "INFO"),
-            health_port=int(hp) if (hp := daemon_cfg.get("health_port")) else None,
             claude_binary=claude_cfg.get("binary", "claude"),
             max_concurrent_sessions=int(claude_cfg.get("max_concurrent", 3)),
             max_budget_per_message=float(claude_cfg.get("max_budget_per_message", 0.50)),
@@ -176,6 +176,14 @@ class DaemonConfig:
             api_bind=daemon_cfg.get("api_bind", "0.0.0.0"),
             api_key=os.environ.get("CLAUDE_DAEMON_API_KEY") or daemon_cfg.get("api_key", ""),
             dashboard_enabled=daemon_cfg.get("dashboard_enabled", False),
+            github_webhook_secret=(
+                os.environ.get("GITHUB_WEBHOOK_SECRET")
+                or daemon_cfg.get("github_webhook_secret", "")
+            ),
+            stripe_webhook_secret=(
+                os.environ.get("STRIPE_WEBHOOK_SECRET")
+                or daemon_cfg.get("stripe_webhook_secret", "")
+            ),
             rate_limit_per_user=int(daemon_cfg.get("rate_limit_per_user", 20)),
             rate_limit_window=int(daemon_cfg.get("rate_limit_window", 60)),
             telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),

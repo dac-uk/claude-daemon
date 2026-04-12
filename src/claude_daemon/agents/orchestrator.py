@@ -149,6 +149,9 @@ class Orchestrator:
         task_type: str = "default",
     ) -> ClaudeResponse:
         """Send a message to a specific agent with its full identity context."""
+        correlation_id = str(uuid.uuid4())[:12]
+        log.info("[%s] %s <- %s:%s prompt_len=%d", correlation_id, agent.name, platform, user_id, len(prompt))
+
         agent_context = agent.build_system_context()
         agent_context += f"\n\n{self.registry.get_agent_summary()}"
 
@@ -205,6 +208,8 @@ class Orchestrator:
             model=model, platform=platform,
             success=not response.is_error,
         )
+
+        log.info("[%s] %s -> cost=$%.4f tokens=%d/%d", correlation_id, agent.name, response.cost, response.input_tokens, response.output_tokens)
 
         # Process delegation tags in response
         if not response.is_error:

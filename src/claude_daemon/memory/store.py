@@ -20,7 +20,19 @@ class ConversationStore:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
+        self._check_integrity()
         self._init_schema()
+
+    def _check_integrity(self) -> None:
+        """Run integrity check on startup. Log warning if database is corrupted."""
+        try:
+            result = self._db.execute("PRAGMA integrity_check").fetchone()
+            if result and result[0] != "ok":
+                log.error("DATABASE INTEGRITY CHECK FAILED: %s", result[0])
+            else:
+                log.debug("Database integrity check passed")
+        except sqlite3.DatabaseError as e:
+            log.error("DATABASE CORRUPT — cannot verify integrity: %s", e)
 
     def _init_schema(self) -> None:
         schema_path = Path(__file__).parent / "schema.sql"

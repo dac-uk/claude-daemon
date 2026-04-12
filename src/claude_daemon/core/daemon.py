@@ -459,13 +459,6 @@ class ClaudeDaemon:
             stats.get("total_messages", 0),
         )
 
-    async def _safe_light_sleep(self, session_id: str) -> None:
-        """Run light sleep without crashing the main flow."""
-        try:
-            await self.compactor.light_sleep(session_id)
-        except Exception:
-            log.exception("Light sleep failed for session %s", session_id[:8])
-
     async def _start_integrations(self) -> None:
         from claude_daemon.integrations.router import MessageRouter
         self.router = MessageRouter(self)

@@ -39,6 +39,8 @@ class SchedulerEngine:
         self.daemon = daemon
         self._scheduler = BackgroundScheduler()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._failure_counts: dict[str, int] = {}  # job_id -> consecutive failure count
+        self._max_failures: int = 3  # pause job after this many consecutive failures
 
     def start(self) -> None:
         self._loop = asyncio.get_event_loop()
@@ -105,6 +107,16 @@ class SchedulerEngine:
             args=[self._job_heartbeat],
             id="heartbeat",
             name="Heartbeat",
+            replace_existing=True,
+        )
+
+        # Log retention (daily at 3:30 AM)
+        self._scheduler.add_job(
+            self._run_async,
+            CronTrigger(hour=3, minute=30),
+            args=[self._job_log_retention],
+            id="log_retention",
+            name="Log retention cleanup",
             replace_existing=True,
         )
 
@@ -175,11 +187,11 @@ class SchedulerEngine:
             # Alert on all integrations
             if result.updated and self.daemon.router:
                 for name, integ in self.daemon.router.integrations.items():
-                    try:
-                        for chat_id in self._get_alert_targets(name):
+                    for chat_id in self._get_alert_targets(name):
+                        try:
                             await integ.send_response(chat_id, f"Claude Code updated: {result}")
-                    except Exception:
-                        pass
+                        except Exception:
+                            log.warning("Failed to deliver update notification via %s:%s", name, chat_id)
 
     async def _job_deep_sleep(self) -> None:
         """Phase 2: Nightly deep sleep consolidation + per-agent compaction."""
@@ -229,7 +241,7 @@ class SchedulerEngine:
                             try:
                                 await integration.send_response(chat_id, summary)
                             except Exception:
-                                pass
+                                log.warning("Failed to deliver improvement plan via %s:%s", platform_name, chat_id)
             except Exception:
                 log.exception("Improvement cycle failed")
 
@@ -254,6 +266,12 @@ class SchedulerEngine:
             log.warning("Heartbeat: agent '%s' not found", agent_name)
             return
 
+        # Circuit breaker: skip if this heartbeat has failed too many times
+        job_key = f"{agent_name}:{model}"
+        if self._failure_counts.get(job_key, 0) >= self._max_failures:
+            log.warning("Heartbeat %s circuit-broken after %d consecutive failures — skipping", agent_name, self._max_failures)
+            return
+
         log.info("Heartbeat: running '%s' task (model=%s)", agent_name, model)
         try:
             response = await self.daemon.orchestrator.send_to_agent(
@@ -264,9 +282,14 @@ class SchedulerEngine:
                 task_type="scheduled",
             )
             if response.is_error:
-                log.error("Heartbeat %s failed: %s", agent_name, response.result[:200])
+                self._failure_counts[job_key] = self._failure_counts.get(job_key, 0) + 1
+                log.error("Heartbeat %s failed (%d/%d): %s", agent_name, self._failure_counts[job_key], self._max_failures, response.result[:200])
+                if self._failure_counts[job_key] >= self._max_failures:
+                    self._alert_failure(f"Heartbeat for {agent_name} circuit-broken after {self._max_failures} consecutive failures")
                 return
 
+            # Reset failure counter on success
+            self._failure_counts.pop(job_key, None)
             log.info("Heartbeat %s complete: cost=$%.4f", agent_name, response.cost)
 
             # Record metric
@@ -297,10 +320,33 @@ class SchedulerEngine:
                         try:
                             await integration.send_response(chat_id, text)
                         except Exception:
-                            pass
+                            log.warning("Failed to deliver heartbeat result for %s via %s:%s", agent_name, platform_name, chat_id)
 
         except Exception:
             log.exception("Heartbeat task failed for %s", agent_name)
+
+    async def _job_log_retention(self) -> None:
+        """Delete daily log files older than log_retention_days."""
+        if not self.daemon.durable:
+            return
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.daemon.config.log_retention_days)
+        memory_dir = self.daemon.config.memory_dir
+        if not memory_dir.is_dir():
+            return
+        removed = 0
+        for log_file in memory_dir.glob("*.md"):
+            try:
+                # Daily logs are named like 2024-01-15.md
+                date_str = log_file.stem
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if file_date < cutoff:
+                    log_file.unlink()
+                    removed += 1
+            except (ValueError, OSError):
+                continue
+        if removed:
+            log.info("Log retention: removed %d log files older than %d days", removed, self.daemon.config.log_retention_days)
 
     async def _job_custom(self, prompt: str, platform: str, chat_id: str) -> None:
         log.info("Running custom job: prompt=%s..., platform=%s", prompt[:50], platform)

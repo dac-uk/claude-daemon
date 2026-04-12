@@ -32,16 +32,22 @@ class DashboardHub:
         return len(self._clients)
 
     async def broadcast(self, event: dict[str, Any]) -> None:
-        """Send an event to all connected WebSocket clients."""
+        """Send an event to all connected WebSocket clients concurrently."""
         if not self._clients:
             return
 
-        dead: set[web.WebSocketResponse] = set()
-        for ws in self._clients:
+        async def _send(ws: web.WebSocketResponse) -> web.WebSocketResponse | None:
             try:
                 await ws.send_json(event)
+                return None
             except Exception:
-                dead.add(ws)
+                return ws
+
+        results = await asyncio.gather(
+            *(_send(ws) for ws in self._clients),
+            return_exceptions=True,
+        )
+        dead = {r for r in results if isinstance(r, web.WebSocketResponse)}
         self._clients -= dead
 
     async def ws_handler(self, request: web.Request) -> web.WebSocketResponse:

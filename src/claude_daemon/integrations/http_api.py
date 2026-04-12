@@ -7,6 +7,9 @@ agent dashboard when dashboard_enabled is set.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -59,11 +62,19 @@ class HttpApi:
         if request.path in ("/api/health", "/"):
             return await handler(request)
 
+        # Webhooks use their own signature verification, not bearer tokens
+        if request.path.startswith("/api/webhook/"):
+            return await handler(request)
+
         if self.api_key:
-            # WebSocket auth via query param or header
             auth = request.headers.get("Authorization", "")
-            query_key = request.query.get("key", "")
-            token = auth[7:] if auth.startswith("Bearer ") else query_key
+            # WebSocket: accept token via Sec-WebSocket-Protocol header
+            ws_proto = request.headers.get("Sec-WebSocket-Protocol", "")
+            token = ""
+            if auth.startswith("Bearer "):
+                token = auth[7:]
+            elif ws_proto:
+                token = ws_proto
             if token != self.api_key:
                 return web.json_response(
                     {"error": "Unauthorized"}, status=401,
@@ -83,6 +94,37 @@ class HttpApi:
         if self._runner:
             await self._runner.cleanup()
             log.info("HTTP API stopped")
+
+    # -- Webhook signature verification --
+
+    def _verify_github_signature(self, request: web.Request, body: bytes) -> bool:
+        """Verify GitHub webhook X-Hub-Signature-256. Returns True if valid or no secret configured."""
+        secret = self.daemon.config.github_webhook_secret
+        if not secret:
+            return True  # No secret configured — skip verification
+        sig = request.headers.get("X-Hub-Signature-256", "")
+        if not sig.startswith("sha256="):
+            return False
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig[7:], expected)
+
+    def _verify_stripe_signature(self, request: web.Request, body: bytes) -> bool:
+        """Verify Stripe webhook Stripe-Signature header. Returns True if valid or no secret configured."""
+        secret = self.daemon.config.stripe_webhook_secret
+        if not secret:
+            return True  # No secret configured — skip verification
+        sig_header = request.headers.get("Stripe-Signature", "")
+        if not sig_header:
+            return False
+        # Parse Stripe's "t=...,v1=..." format
+        parts = dict(p.split("=", 1) for p in sig_header.split(",") if "=" in p)
+        timestamp = parts.get("t", "")
+        v1_sig = parts.get("v1", "")
+        if not timestamp or not v1_sig:
+            return False
+        signed_payload = f"{timestamp}.{body.decode()}"
+        expected = hmac.new(secret.encode(), signed_payload.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(v1_sig, expected)
 
     # -- Handlers --
 
@@ -109,6 +151,7 @@ class HttpApi:
                 "model": agent.identity.default_model,
                 "is_orchestrator": agent.is_orchestrator,
                 "has_mcp": agent.mcp_config_path is not None,
+                "mcp_health": agent.check_mcp_health(),
                 "heartbeat_tasks": len(agent.parse_heartbeat_tasks()),
             })
         return web.json_response({"agents": agents})
@@ -128,15 +171,7 @@ class HttpApi:
         })
 
     async def _handle_message(self, request: web.Request) -> web.Response:
-        """Send a message to an agent.
-
-        POST /api/message
-        {
-            "message": "...",
-            "agent": "albert",       // optional, defaults to orchestrator
-            "user_id": "api-user",   // optional
-        }
-        """
+        """POST /api/message — Send a message to an agent."""
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
@@ -157,18 +192,14 @@ class HttpApi:
                 agent_name=agent_name,
             )
             return web.json_response({"result": result})
-        except Exception as e:
+        except Exception:
             log.exception("API message handler error")
             return web.json_response(
-                {"error": f"Internal error: {e}"}, status=500,
+                {"error": "Internal server error"}, status=500,
             )
 
     async def _handle_workflow(self, request: web.Request) -> web.Response:
-        """Run the build quality gate workflow.
-
-        POST /api/workflow
-        {"request": "build a settings page"}
-        """
+        """POST /api/workflow — Run the build quality gate workflow."""
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
@@ -181,15 +212,12 @@ class HttpApi:
         try:
             result = await self.daemon.run_build_workflow(request_text)
             return web.json_response({"result": result})
-        except Exception as e:
+        except Exception:
             log.exception("Workflow API error")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "Workflow execution failed"}, status=500)
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
-        """Get per-agent metrics.
-
-        GET /api/metrics?agent=albert&days=7
-        """
+        """GET /api/metrics?agent=albert&days=7"""
         agent = request.query.get("agent")
         days = int(request.query.get("days", "7"))
 
@@ -243,17 +271,28 @@ class HttpApi:
         """Receive external webhooks and route to appropriate agent.
 
         POST /api/webhook/{source}
-
-        Supported sources: github, stripe, generic
+        Verifies signatures for GitHub and Stripe. Processes asynchronously
+        and returns 202 Accepted immediately.
         """
         source = request.match_info["source"]
 
         try:
-            body = await request.json()
+            raw_body = await request.read()
+            body = json.loads(raw_body) if raw_body else {}
         except (json.JSONDecodeError, Exception):
             body = {}
+            raw_body = b""
 
-        # Route based on source
+        # Verify webhook signatures
+        if source == "github" and not self._verify_github_signature(request, raw_body):
+            log.warning("GitHub webhook signature verification failed")
+            return web.json_response({"error": "Invalid signature"}, status=403)
+
+        if source == "stripe" and not self._verify_stripe_signature(request, raw_body):
+            log.warning("Stripe webhook signature verification failed")
+            return web.json_response({"error": "Invalid signature"}, status=403)
+
+        # Build prompt and determine agent
         agent_name = None
         prompt = ""
 
@@ -263,13 +302,10 @@ class HttpApi:
                 f"[GitHub webhook: {event_type}]\n\n"
                 f"{json.dumps(body, indent=2)[:3000]}"
             )
-            # PR events go to Max for review, push events go to Albert
             if event_type in ("pull_request", "pull_request_review"):
                 agent_name = "max"
             elif event_type == "push":
                 agent_name = "albert"
-            elif event_type in ("issues", "issue_comment"):
-                agent_name = "johnny"
             else:
                 agent_name = "johnny"
 
@@ -282,30 +318,33 @@ class HttpApi:
             agent_name = "penny"
 
         else:
-            # Generic webhook — route to Johnny (orchestrator)
+            # Generic webhook — must have API key auth
+            if self.api_key:
+                auth = request.headers.get("Authorization", "")
+                if not auth.startswith("Bearer ") or auth[7:] != self.api_key:
+                    return web.json_response({"error": "Unauthorized"}, status=401)
             prompt = (
                 f"[Webhook from {source}]\n\n"
                 f"{json.dumps(body, indent=2)[:3000]}"
             )
             agent_name = "johnny"
 
-        if prompt:
+        if not prompt:
+            return web.json_response({"status": "ignored"})
+
+        # Process asynchronously — return 202 immediately
+        async def _process():
             try:
-                result = await self.daemon.handle_message(
+                await self.daemon.handle_message(
                     prompt=prompt,
                     platform=f"webhook:{source}",
                     user_id=f"webhook:{source}",
                     agent_name=agent_name,
                 )
-                return web.json_response({
-                    "status": "processed",
-                    "agent": agent_name,
-                    "result": result[:5000] if result else "",
-                })
-            except Exception as e:
-                log.exception("Webhook handler error")
-                return web.json_response(
-                    {"error": str(e)}, status=500,
-                )
+            except Exception:
+                log.exception("Webhook async processing failed for %s", source)
 
-        return web.json_response({"status": "ignored"})
+        asyncio.create_task(_process())
+        return web.json_response(
+            {"status": "accepted", "agent": agent_name}, status=202,
+        )

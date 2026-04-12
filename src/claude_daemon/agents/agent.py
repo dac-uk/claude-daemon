@@ -151,6 +151,30 @@ class Agent:
             return str(path)
         return None
 
+    def check_mcp_health(self) -> dict[str, str]:
+        """Check if agent's MCP tools config is valid. Returns {server_name: status}."""
+        import json as _json
+        result = {}
+        path = self.mcp_config_path
+        if not path:
+            return result
+        try:
+            with open(path) as f:
+                config = _json.load(f)
+            servers = config.get("mcpServers", {})
+            for name, server in servers.items():
+                cmd = server.get("command", "")
+                env = server.get("env", {})
+                # Check for unresolved env var placeholders
+                unresolved = [k for k, v in env.items() if v.startswith("${") and v.endswith("}")]
+                if unresolved:
+                    result[name] = f"unconfigured ({', '.join(unresolved)})"
+                else:
+                    result[name] = "configured"
+        except Exception as e:
+            result["_error"] = str(e)
+        return result
+
     def get_model(self, task_type: str = "default") -> str:
         """Get the appropriate model for a task type.
 
@@ -167,82 +191,35 @@ class Agent:
     def build_system_context(self, max_chars: int = 8000) -> str:
         """Build the full system prompt context for this agent.
 
-        Boot sequence: SOUL -> IDENTITY -> AGENTS -> USER -> TOOLS ->
-        MEMORY -> REFLECTIONS -> recent logs.
+        Priority-ordered: critical blocks are never truncated, lower-priority
+        blocks are trimmed first if the total exceeds max_chars.
+
+        Tiers:
+          1. CRITICAL (never cut): SOUL, identity, steering, planning protocol
+          2. HIGH: operating rules, user context, memory
+          3. MEDIUM: reflections, tools, events, learnings
+          4. LOW: playbook index, logging convention, vision
         """
-        blocks = []
         ident = self.identity
 
+        # -- Tier 1: Critical (never truncated) --
+        critical: list[str] = []
+
         if ident.soul:
-            blocks.append(ident.soul[:1500])
+            critical.append(ident.soul)
 
         if ident.role:
-            blocks.append(f"Your name is {ident.name}. Role: {ident.role}")
+            critical.append(f"Your name is {ident.name}. Role: {ident.role}")
 
-        if ident.agents_rules:
-            blocks.append(f"## Operating Rules\n{ident.agents_rules[:1000]}")
-
-        if ident.user_context:
-            blocks.append(f"## User Context\n{ident.user_context[:600]}")
-
-        if ident.tools_guidance:
-            blocks.append(f"## Tools\n{ident.tools_guidance[:400]}")
-
-        if ident.vision:
-            blocks.append(f"## Vision\n{ident.vision[:400]}")
-
-        # Memory
-        memory_path = self.workspace / "MEMORY.md"
-        if memory_path.exists():
-            mem = memory_path.read_text()
-            if mem:
-                blocks.append(f"## Memory\n{mem[:1500]}")
-
-        # Reflections
-        refl_path = self.workspace / "REFLECTIONS.md"
-        if refl_path.exists():
-            refl = refl_path.read_text()
-            if refl:
-                blocks.append(f"## Self-Reflections\n{refl[:400]}")
-
-        # Shared workspace context
+        # Steering — mid-task redirection from orchestrator (highest priority)
         if self.shared_dir:
-            # Steering (mid-task redirection from orchestrator)
             steer_path = self.shared_dir / "steer" / f"{self.name}.md"
             if steer_path.exists():
                 steer = steer_path.read_text().strip()
                 if steer:
-                    blocks.append(f"## STEERING (priority instructions)\n{steer[:500]}")
+                    critical.append(f"## STEERING (priority instructions)\n{steer}")
 
-            # Shared event log for inter-agent awareness
-            events_path = self.shared_dir / "events.md"
-            if events_path.exists():
-                events = events_path.read_text()
-                if events:
-                    blocks.append(f"## Recent Agent Activity\n{events[-500:]}")
-
-            # Shared playbooks — accumulated lessons from all agents
-            playbooks_dir = self.shared_dir / "playbooks"
-            if playbooks_dir.is_dir():
-                playbook_index = []
-                for pb in sorted(playbooks_dir.glob("*.md"))[-10:]:
-                    playbook_index.append(f"- {pb.stem}")
-                if playbook_index:
-                    blocks.append(
-                        "## Shared Playbooks (team lessons)\n"
-                        + "\n".join(playbook_index)
-                        + "\nRead these when working on related tasks."
-                    )
-
-            # Shared learnings — cross-agent improvement insights
-            learnings_path = self.shared_dir / "learnings.md"
-            if learnings_path.exists():
-                learnings = learnings_path.read_text()
-                if learnings:
-                    blocks.append(f"## Team Learnings\n{learnings[-600:]}")
-
-        # Planning protocol
-        blocks.append(
+        critical.append(
             "## Planning Protocol\n"
             "For multi-step or complex tasks: ALWAYS plan first using Opus-level reasoning.\n"
             "1. Outline your approach, steps, dependencies, and risks.\n"
@@ -252,19 +229,104 @@ class Agent:
             "Skip planning for simple single-step queries."
         )
 
-        # OTA logging convention
-        blocks.append(
+        # -- Tier 2: High priority --
+        high: list[str] = []
+
+        if ident.agents_rules:
+            high.append(f"## Operating Rules\n{ident.agents_rules}")
+
+        if ident.user_context:
+            high.append(f"## User Context\n{ident.user_context}")
+
+        memory_path = self.workspace / "MEMORY.md"
+        if memory_path.exists():
+            mem = memory_path.read_text()
+            if mem:
+                high.append(f"## Memory\n{mem}")
+
+        # -- Tier 3: Medium priority --
+        medium: list[str] = []
+
+        refl_path = self.workspace / "REFLECTIONS.md"
+        if refl_path.exists():
+            refl = refl_path.read_text()
+            if refl:
+                medium.append(f"## Self-Reflections\n{refl}")
+
+        if ident.tools_guidance:
+            medium.append(f"## Tools\n{ident.tools_guidance}")
+
+        if self.shared_dir:
+            events_path = self.shared_dir / "events.md"
+            if events_path.exists():
+                events = events_path.read_text()
+                if events:
+                    medium.append(f"## Recent Agent Activity\n{events[-500:]}")
+
+            learnings_path = self.shared_dir / "learnings.md"
+            if learnings_path.exists():
+                learnings = learnings_path.read_text()
+                if learnings:
+                    medium.append(f"## Team Learnings\n{learnings[-600:]}")
+
+        # -- Tier 4: Low priority --
+        low: list[str] = []
+
+        if ident.vision:
+            low.append(f"## Vision\n{ident.vision}")
+
+        if self.shared_dir:
+            playbooks_dir = self.shared_dir / "playbooks"
+            if playbooks_dir.is_dir():
+                playbook_index = []
+                for pb in sorted(playbooks_dir.glob("*.md"))[-10:]:
+                    playbook_index.append(f"- {pb.stem}")
+                if playbook_index:
+                    low.append(
+                        "## Shared Playbooks (team lessons)\n"
+                        + "\n".join(playbook_index)
+                        + "\nRead these when working on related tasks."
+                    )
+
+        low.append(
             "## Logging Convention\n"
             "Tag key reasoning: [THOUGHT] [ACTION] [OBSERVATION] [REASONING]\n"
             "Tag trimmable output: [TOOL-OUTPUT] [METADATA]\n"
             "5-10 tags per task. Enables memory reconstruction."
         )
 
-        context = "\n\n".join(blocks)
-        if len(context) > max_chars:
-            context = context[:max_chars]
+        # Assemble with priority-based trimming
+        critical_text = "\n\n".join(critical)
+        remaining = max_chars - len(critical_text)
 
-        return context
+        def _fit(blocks: list[str], budget: int) -> tuple[str, int]:
+            """Fit as many blocks as possible into budget, truncating the last."""
+            parts = []
+            left = budget
+            for block in blocks:
+                if left <= 0:
+                    break
+                if len(block) <= left:
+                    parts.append(block)
+                    left -= len(block) + 2  # account for \n\n joiner
+                else:
+                    parts.append(block[:left])
+                    left = 0
+            return "\n\n".join(parts), left
+
+        high_text, remaining = _fit(high, remaining)
+        medium_text, remaining = _fit(medium, remaining)
+        low_text, _ = _fit(low, remaining)
+
+        parts = [critical_text]
+        if high_text:
+            parts.append(high_text)
+        if medium_text:
+            parts.append(medium_text)
+        if low_text:
+            parts.append(low_text)
+
+        return "\n\n".join(parts)
 
     def parse_heartbeat_tasks(self) -> list[HeartbeatTask]:
         """Parse HEARTBEAT.md into structured tasks.
