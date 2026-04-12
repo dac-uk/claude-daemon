@@ -152,17 +152,34 @@ class ClaudeDaemon:
         managed = self.process_manager.managed
         try:
             await managed.ensure_environment()
-            registered = 0
-            for agent in self.agent_registry:
-                try:
-                    await managed.register_agent(agent)
-                    registered += 1
-                except Exception:
-                    log.warning("Failed to register managed agent: %s", agent.name)
-            log.info("Registered %d/%d agents with Managed Agents API",
-                     registered, len(self.agent_registry))
         except Exception:
-            log.exception("Failed to initialize Managed Agents environment")
+            log.exception("Failed to create Managed Agents environment — disabling")
+            self.config.managed_agents_enabled = False
+            return
+
+        total = len(self.agent_registry)
+        registered = 0
+        failed = []
+        for agent in self.agent_registry:
+            try:
+                await managed.register_agent(agent)
+                registered += 1
+            except Exception:
+                failed.append(agent.name)
+                log.warning("Failed to register managed agent: %s", agent.name)
+
+        log.info("Registered %d/%d agents with Managed Agents API", registered, total)
+
+        if failed:
+            log.warning("Failed agents: %s", ", ".join(failed))
+
+        # If majority failed, disable managed backend to avoid confusing partial state
+        if total > 0 and registered < total / 2:
+            log.error(
+                "Majority of agents failed to register (%d/%d) — disabling Managed Agents",
+                total - registered, total,
+            )
+            self.config.managed_agents_enabled = False
 
     async def enable_mcp_server(self, name: str) -> str:
         """Remove a server from the disabled list and refresh tools.json."""

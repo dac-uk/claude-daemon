@@ -242,6 +242,8 @@ class ProcessManager:
                     platform=platform,
                     user_id=user_id,
                     model_override=model_override,
+                    settings_path=settings_path,
+                    effort=effort,
                 )
             except Exception as e:
                 log.warning(
@@ -317,6 +319,8 @@ class ProcessManager:
                     platform=platform,
                     user_id=user_id,
                     model_override=model_override,
+                    settings_path=settings_path,
+                    effort=effort,
                 ):
                     yield chunk
                 return

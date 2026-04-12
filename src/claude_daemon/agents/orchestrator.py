@@ -207,6 +207,8 @@ class Orchestrator:
             user_id=user_id,
             model_override=model,
             mcp_config_path=agent.mcp_config_path,
+            settings_path=agent.settings_path,
+            effort=agent.get_effort(task_type),
             task_type=task_type,
             agent_name=agent.name,
         )
@@ -333,6 +335,8 @@ class Orchestrator:
             user_id=user_id,
             model_override=model,
             mcp_config_path=agent.mcp_config_path,
+            settings_path=agent.settings_path,
+            effort=agent.get_effort(task_type),
             task_type=task_type,
             agent_name=agent.name,
         ):

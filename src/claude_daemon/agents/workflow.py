@@ -25,7 +25,7 @@ class WorkflowStep:
 
     agent_name: str
     prompt_template: str  # May contain {prev_result}, {original_request}, {step_N_result}
-    task_type: str = "default"
+    task_type: str = "workflow"
     label: str = ""  # Optional human-readable label for this step
     timeout: int = 600  # Per-step timeout in seconds (default 10 min)
 

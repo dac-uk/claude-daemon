@@ -334,3 +334,88 @@ def test_stream_message_signature_includes_task_type_and_agent_name():
     sig = inspect.signature(ProcessManager.stream_message)
     assert "task_type" in sig.parameters
     assert "agent_name" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Fix verification: settings_path and effort passed through
+# ---------------------------------------------------------------------------
+
+def test_orchestrator_passes_settings_path_and_effort():
+    """Verify orchestrator.send_to_agent passes settings_path and effort to PM."""
+    import inspect
+    from claude_daemon.agents.orchestrator import Orchestrator
+
+    source = inspect.getsource(Orchestrator.send_to_agent)
+    assert "settings_path=agent.settings_path" in source
+    assert "effort=agent.get_effort(task_type)" in source
+
+
+def test_orchestrator_stream_passes_settings_path_and_effort():
+    """Verify orchestrator.stream_to_agent passes settings_path and effort to PM."""
+    import inspect
+    from claude_daemon.agents.orchestrator import Orchestrator
+
+    source = inspect.getsource(Orchestrator.stream_to_agent)
+    assert "settings_path=agent.settings_path" in source
+    assert "effort=agent.get_effort(task_type)" in source
+
+
+# ---------------------------------------------------------------------------
+# Fix verification: improvement planner passes task_type
+# ---------------------------------------------------------------------------
+
+def test_improvement_planner_passes_task_type():
+    """Verify all improvement planner calls include task_type='improvement'."""
+    import inspect
+    from claude_daemon.agents.improvement import ImprovementPlanner
+
+    for method_name in [
+        "run_agent_self_assessment",
+        "_synthesise_learnings",
+        "_generate_improvement_plan",
+    ]:
+        method = getattr(ImprovementPlanner, method_name)
+        source = inspect.getsource(method)
+        assert 'task_type="improvement"' in source, (
+            f"{method_name} missing task_type='improvement'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fix verification: workflow step defaults to task_type="workflow"
+# ---------------------------------------------------------------------------
+
+def test_workflow_step_default_task_type():
+    """WorkflowStep should default to task_type='workflow'."""
+    from claude_daemon.agents.workflow import WorkflowStep
+
+    step = WorkflowStep(agent_name="albert", prompt_template="test")
+    assert step.task_type == "workflow"
+
+
+# ---------------------------------------------------------------------------
+# Fix verification: managed backend accepts settings_path and effort
+# ---------------------------------------------------------------------------
+
+def test_managed_backend_send_message_accepts_settings_and_effort():
+    """ManagedAgentBackend.send_message must accept settings_path and effort."""
+    import inspect
+    from claude_daemon.core.managed_agents import ManagedAgentBackend
+
+    sig = inspect.signature(ManagedAgentBackend.send_message)
+    assert "settings_path" in sig.parameters
+    assert "effort" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Fix verification: session continuity
+# ---------------------------------------------------------------------------
+
+def test_managed_backend_has_session_map():
+    """ManagedAgentBackend tracks session IDs for continuity."""
+    from claude_daemon.core.managed_agents import ManagedAgentBackend
+
+    config = MagicMock()
+    backend = ManagedAgentBackend(config)
+    assert hasattr(backend, "_session_map")
+    assert isinstance(backend._session_map, dict)

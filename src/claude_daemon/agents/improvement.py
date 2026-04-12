@@ -198,6 +198,7 @@ class ImprovementPlanner:
             platform="system",
             user_id=f"self-assess:{agent.name}",
             model_override=agent.get_model("scheduled"),
+            task_type="improvement",
         )
 
         if response.is_error or len(response.result) < 30:
@@ -244,6 +245,7 @@ class ImprovementPlanner:
             platform="system",
             user_id="learnings-synthesis",
             model_override="haiku",
+            task_type="improvement",
         )
 
         if response.is_error or len(response.result) < 30:
@@ -296,6 +298,7 @@ class ImprovementPlanner:
             platform="system",
             user_id="improvement-planner",
             model_override="sonnet",
+            task_type="improvement",
         )
 
         if response.is_error:

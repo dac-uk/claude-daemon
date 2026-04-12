@@ -39,6 +39,7 @@ class ManagedAgentBackend:
     def __init__(self, config: DaemonConfig) -> None:
         self.config = config
         self._agent_ids: dict[str, str] = {}  # daemon agent name → managed agent ID
+        self._session_map: dict[str, str] = {}  # daemon session_id → managed session_id
         self._env_id: str | None = None
         self._client = None  # lazy-init
 
@@ -119,6 +120,8 @@ class ManagedAgentBackend:
         platform: str = "managed",
         user_id: str = "local",
         model_override: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> ClaudeResponse:
         """Buffered execution via Managed Agents API.
 
@@ -136,14 +139,20 @@ class ManagedAgentBackend:
 
         start = time.monotonic()
         try:
-            # Create session
-            session = await asyncio.to_thread(
-                self._client.beta.managed_agents.sessions.create,
-                agent_id=agent_id,
-                environment_id=self._env_id,
-                beta=_MANAGED_AGENTS_BETA,
-            )
-            managed_session_id = session.id
+            # Reuse existing managed session for conversation continuity,
+            # or create a new one if this is the first message
+            managed_session_id = self._session_map.get(session_id) if session_id else None
+
+            if not managed_session_id:
+                session = await asyncio.to_thread(
+                    self._client.beta.managed_agents.sessions.create,
+                    agent_id=agent_id,
+                    environment_id=self._env_id,
+                    beta=_MANAGED_AGENTS_BETA,
+                )
+                managed_session_id = session.id
+                if session_id:
+                    self._session_map[session_id] = managed_session_id
 
             # Send user message
             await asyncio.to_thread(
@@ -226,6 +235,8 @@ class ManagedAgentBackend:
         platform: str = "managed",
         user_id: str = "local",
         model_override: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Streaming execution via Managed Agents API.
 
