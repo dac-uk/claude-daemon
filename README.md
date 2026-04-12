@@ -18,7 +18,12 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Auto-Compact at 50%** - Prevents context degradation in long resumed sessions by triggering compaction at 50% context usage (CLI default waits much longer).
 - **Domain Gotchas** - Per-agent failure-point documentation injected as high-priority context. Highest-signal content type per best practices research.
 - **Managed Agents Backend** - Dual-backend execution: CLI subprocess for fast/cheap tasks (chat, heartbeats), Anthropic's Managed Agents API for long-running/complex tasks (planning, workflows, REM sleep). Automatic fallback to CLI if API fails. Control via `/backend` command.
-- **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, proposals delivered to you automatically.
+- **Self-Evolution (EvolutionActuator)** - The improvement loop is now closed: weekly improvement plans generate targeted SOUL.md/AGENTS.md mutations. Safety guards (size check, protected sections, archive-before-write) prevent data loss. Starts in dry-run mode — proposals logged but not applied until you're confident. Evolution log tracks every mutation.
+- **Semantic Memory Search** - Vector embedding index (sqlite-vec) for cosine similarity search across all memory, playbooks, reflections, and failure lessons. Agents find conceptually related context ("deployment process" matches "CI/CD pipeline"), not just keyword matches. Graceful degradation — FTS5 still works without sqlite-vec.
+- **Failure Analysis & Lesson Extraction** - Every failed agent task is auto-classified via Haiku ($0.02/failure): category, root cause, severity, actionable lesson. Lessons written to `shared/failure-lessons.md` for cross-agent learning. Recurring patterns surfaced in the weekly improvement plan.
+- **Task Persistence** - Spawned background tasks survive daemon restarts. SQLite `task_queue` table tracks full lifecycle (pending → running → completed/failed). Stale tasks from crashed runs are auto-marked as failed on startup.
+- **Crash Alerting & Watchdog** - systemd `Type=notify` with `WatchdogSec=120`. 60-second watchdog ping prevents restart on silent hangs. Crash detection on startup alerts you via Telegram/Discord. No more silent failures.
+- **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, evolution proposals applied, results delivered to you automatically.
 - **Agent Heartbeats** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings, Albert audits tech debt, Max runs quality retrospectives.
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
 - **Inter-Agent Delegation** - Agents can request help from other agents mid-task using `[DELEGATE:name]` tags
@@ -565,8 +570,15 @@ Agents continuously learn and improve without being prompted:
 1. **REM Sleep** — Global MEMORY.md rewritten from weekly signals
 2. **Per-Agent Self-Assessment** — Each agent evaluates their own performance: rating, strengths, struggles, skills to develop, tools needed, process improvements
 3. **Cross-Agent Learning Synthesis** — All reflections aggregated into `shared/learnings.md`, injected into every agent's future context
-4. **Improvement Plan** — Reads reflections + metrics + playbooks, generates prioritised proposals with owners and ROI
-5. **Proactive Delivery** — Improvement suggestions sent to you via Slack/Telegram automatically
+4. **Improvement Plan** — Reads reflections + metrics + failure patterns + playbooks, generates prioritised proposals with owners and ROI
+5. **Self-Evolution** — EvolutionActuator turns plan into targeted SOUL.md/AGENTS.md mutations. Archive-before-write, size guards, protected sections. Dry-run mode by default — set `evolution_dry_run: false` once you trust it.
+6. **Proactive Delivery** — Improvement suggestions + evolution results sent to you via Slack/Telegram automatically
+
+**Continuous failure learning:**
+- Every failed agent task is auto-analyzed by the `FailureAnalyzer` (Haiku, ~$0.02)
+- Failures classified: rate_limit, timeout, tool_error, logic_error, context_overflow, permission_denied
+- Lessons extracted and written to `shared/failure-lessons.md`
+- Recurring patterns surfaced in next week's improvement plan
 
 **Ongoing research heartbeats:**
 - Johnny: Weekly strategy review (Fri), monthly initiative planning (1st)
@@ -720,6 +732,11 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Session lock eviction** | Per-session asyncio locks are bounded (`max 500`). When the ceiling is hit, idle locks are evicted to prevent unbounded memory growth in long-running instances. |
 | **Background task cleanup** | Spawned background tasks are tracked and cleaned up on each new spawn. Completed tasks are pruned (capped at 100 finished entries) so the task registry doesn't grow forever. |
 | **Managed Agents fallback** | If the Managed Agents API fails (network, quota, beta issues), the daemon automatically falls back to CLI subprocess with a warning log. No user-visible failure for backend outages. |
+| **Crash alerting** | systemd `Type=notify` with `WatchdogSec=120`. On startup, detects unclean previous shutdown and alerts you via Telegram/Discord. 60-second watchdog ping prevents restart on silent hangs. |
+| **Task persistence** | Spawned background tasks are persisted to SQLite `task_queue` before launching. On daemon restart, stale tasks are marked as failed. Full lifecycle tracking: pending → running → completed/failed. |
+| **Failure post-mortems** | Every failed agent task is auto-analyzed via Haiku ($0.02): classified by category (timeout, rate_limit, tool_error, etc.), root cause extracted, actionable lesson written to `shared/failure-lessons.md`. Deduplicated by error hash. |
+| **Evolution safety guards** | Self-evolution proposals are validated before application: size guard rejects <30% content reduction, `## Identity` and `## Values` sections in SOUL.md are protected (never removed), archive-before-write creates timestamped backup, dry-run mode is the default. |
+| **Semantic search degradation** | If `sqlite-vec` is not installed, the `EmbeddingStore` gracefully disables itself. All methods return empty results and FTS5 keyword search continues working. Zero impact on existing functionality. |
 
 ## Architecture
 
@@ -762,9 +779,17 @@ Telegram / Discord / CLI / HTTP API / Webhooks
 
   Scheduler (APScheduler)
     - Dreaming: deep sleep (4 AM), REM sleep (Sunday 5 AM)
-    - Improvement: self-assessments, learning synthesis, improvement plan
+    - Improvement: self-assessments → learning synthesis → improvement plan
+                   → EvolutionActuator (SOUL.md/AGENTS.md mutations)
+    - FailureAnalyzer: auto-classify errors → extract lessons → shared/failure-lessons.md
     - Agent heartbeats: from HEARTBEAT.md (research, audits, reports)
-    - Per-agent memory compaction (nightly)
+    - Per-agent memory compaction (nightly) → EmbeddingStore reindex
+    - Watchdog ping (60s) → sd_notify("WATCHDOG=1")
+
+  EmbeddingStore (sqlite-vec)
+    - Semantic search over memory, playbooks, reflections, failure lessons
+    - Queried before build_system_context() → injects Tier 2 relevant matches
+    - Reindexed nightly during deep sleep
 ```
 
 ## Configuration
@@ -799,6 +824,8 @@ claude:
     - workflow
     - rem_sleep
     - improvement
+  evolution_enabled: true          # Generate SOUL.md/AGENTS.md mutation proposals
+  evolution_dry_run: true          # Log proposals but don't apply (safe default)
 
 memory:
   daily_log: true
@@ -807,6 +834,7 @@ memory:
   dream_enabled: true
   self_improve: true               # Enable self-assessment cycle
   log_retention_days: 30           # Delete daily logs older than this
+  embeddings_enabled: true         # Semantic search (requires sqlite-vec for full quality)
 
 integrations:
   telegram:
@@ -846,7 +874,7 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 ~/.config/claude-daemon/
 ├── config.yaml
-├── claude_daemon.db              # SQLite (conversations, FTS5, agent_metrics)
+├── claude_daemon.db              # SQLite (conversations, FTS5, agent_metrics, task_queue, failure_analyses, evolution_log, memory_vec)
 ├── agents/
 │   ├── johnny/
 │   │   ├── SOUL.md               # Identity + improvement directives
@@ -864,6 +892,9 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 │   ├── USER.md                   # Your context (all agents read)
 │   ├── learnings.md              # Cross-agent insights (auto-generated)
 │   ├── events.md                 # Agent activity log (auto-maintained)
+│   ├── failure-lessons.md        # Auto-extracted from failed tasks
+│   ├── evolution-log.md          # Record of self-applied prompt mutations
+│   ├── evolution-archive/        # Timestamped backups before SOUL/AGENTS edits
 │   ├── playbooks/                # Compounding lessons
 │   │   ├── improvement-plan.md   # Weekly improvement proposals
 │   │   ├── tech-debt.md          # Albert's findings
