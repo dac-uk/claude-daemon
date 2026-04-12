@@ -128,7 +128,9 @@ class DiscordIntegration(BaseIntegration):
                 "`/tasks` - List active tasks\n"
                 "`/newagent` - Create an agent\n"
                 "`/setagent` - Modify an agent\n"
-                "`/delagent` - Remove an agent"
+                "`/delagent` - Remove an agent\n"
+                "`/setenv` - Set an env var\n"
+                "`/getenv` - Show env var status"
             )
 
         @self._bot.tree.command(name="status", description="Show daemon status")
@@ -334,6 +336,39 @@ class DiscordIntegration(BaseIntegration):
                 return
             result = self.daemon.list_tasks()
             await interaction.response.send_message(result)
+
+        @self._bot.tree.command(name="setenv", description="Set an environment variable")
+        @discord.app_commands.describe(key="Variable name (e.g. GITHUB_TOKEN)", value="Value")
+        async def slash_setenv(interaction: discord.Interaction, key: str, value: str):
+            try:
+                from claude_daemon.core.env_manager import set_env_var, reload_env
+                key = key.upper()
+                set_env_var(key, value)
+                reload_env()
+                if self.daemon:
+                    await self.daemon.reload_config()
+                masked = "****" + value[-4:] if len(value) >= 4 else "****"
+                note = ""
+                if key in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"):
+                    note = "\nNote: integration tokens require a daemon restart to take effect."
+                await interaction.response.send_message(
+                    f"Set `{key}` = `{masked}`{note}", ephemeral=True,
+                )
+            except ValueError as e:
+                await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+
+        @self._bot.tree.command(name="getenv", description="Show environment variable status")
+        async def slash_getenv(interaction: discord.Interaction):
+            from claude_daemon.core.env_manager import list_env_vars
+            env_vars = list_env_vars()
+            lines = ["**Environment variables:**\n"]
+            for var in env_vars:
+                if var["status"] == "set":
+                    lines.append(f"`{var['key']}`: {var['masked']}")
+                else:
+                    lines.append(f"`{var['key']}`: *(not set)*")
+            lines.append("\nSet with: `/setenv KEY value`")
+            await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     async def _handle_streaming(
         self, message: discord.Message, content: str,

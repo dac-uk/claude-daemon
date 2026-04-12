@@ -78,6 +78,8 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("metrics", self._cmd_metrics))
         self._app.add_handler(CommandHandler("spawn", self._cmd_spawn))
         self._app.add_handler(CommandHandler("tasks", self._cmd_tasks))
+        self._app.add_handler(CommandHandler("setenv", self._cmd_setenv))
+        self._app.add_handler(CommandHandler("getenv", self._cmd_getenv))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -219,7 +221,9 @@ class TelegramIntegration(BaseIntegration):
             "/session - Current session info\n"
             "/cost - Your usage costs\n"
             "/jobs - List scheduled jobs\n"
-            "/dream - Trigger memory consolidation"
+            "/dream - Trigger memory consolidation\n"
+            "/setenv KEY value - Set an env var\n"
+            "/getenv - Show which env vars are set"
         )
 
     async def _cmd_agents(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -509,3 +513,53 @@ class TelegramIntegration(BaseIntegration):
 
         result = self.daemon.list_tasks()
         await update.message.reply_text(result)
+
+    async def _cmd_setenv(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Set an env var: /setenv KEY value"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+
+        args = (update.message.text or "").split(maxsplit=2)
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: /setenv KEY value\n"
+                "Example: /setenv GITHUB_TOKEN ghp_abc123\n\n"
+                "Use /getenv to see which vars are set."
+            )
+            return
+
+        key = args[1].upper()
+        value = args[2].strip()
+
+        try:
+            from claude_daemon.core.env_manager import set_env_var, reload_env
+            set_env_var(key, value)
+            reload_env()
+            if self.daemon:
+                await self.daemon.reload_config()
+            masked = "****" + value[-4:] if len(value) >= 4 else "****"
+            note = ""
+            if key in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"):
+                note = "\nNote: integration tokens require a daemon restart to take effect."
+            await update.message.reply_text(f"Set {key} = {masked}{note}")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+
+    async def _cmd_getenv(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show env var status: /getenv"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+
+        from claude_daemon.core.env_manager import list_env_vars
+        env_vars = list_env_vars()
+
+        lines = ["Environment variables:\n"]
+        for var in env_vars:
+            if var["status"] == "set":
+                lines.append(f"  {var['key']}: {var['masked']}")
+            else:
+                lines.append(f"  {var['key']}: (not set)")
+        lines.append("\nSet with: /setenv KEY value")
+        await update.message.reply_text("\n".join(lines))

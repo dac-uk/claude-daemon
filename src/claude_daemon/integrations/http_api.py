@@ -50,6 +50,8 @@ class HttpApi:
         self._app.router.add_get("/api/metrics", self._handle_metrics)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
         self._app.router.add_get("/api/audit", self._handle_audit)
+        self._app.router.add_get("/api/config/env", self._handle_env_list)
+        self._app.router.add_post("/api/config/env", self._handle_env_set)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -373,3 +375,35 @@ class HttpApi:
             action=action, agent_name=agent, limit=limit, offset=offset,
         )
         return web.json_response({"audit": entries})
+
+    async def _handle_env_list(self, request: web.Request) -> web.Response:
+        """GET /api/config/env — list env vars with set/unset status (masked)."""
+        from claude_daemon.core.env_manager import list_env_vars
+        return web.json_response({"env_vars": list_env_vars()})
+
+    async def _handle_env_set(self, request: web.Request) -> web.Response:
+        """POST /api/config/env — set an env var. Body: {"key": "...", "value": "..."}"""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        key = body.get("key", "").strip().upper()
+        value = body.get("value", "").strip()
+        if not key or not value:
+            return web.json_response({"error": "Missing 'key' or 'value'"}, status=400)
+
+        try:
+            from claude_daemon.core.env_manager import set_env_var, reload_env
+            set_env_var(key, value)
+            reload_env()
+            await self.daemon.reload_config()
+
+            masked = "****" + value[-4:] if len(value) >= 4 else "****"
+            if self.daemon.store:
+                self.daemon.store.record_audit(
+                    action="env_set", details=f"key={key}",
+                )
+            return web.json_response({"status": "ok", "key": key, "masked": masked})
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)

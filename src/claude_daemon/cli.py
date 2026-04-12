@@ -239,6 +239,46 @@ def _cmd_install_service(args: argparse.Namespace) -> None:
         print("Enable with: systemctl --user enable --now claude-daemon")
 
 
+def _cmd_env(args: argparse.Namespace) -> None:
+    """Manage environment variables."""
+    from claude_daemon.core.config import DaemonConfig
+    from claude_daemon.core.env_manager import list_env_vars, set_env_var, reload_env
+
+    # Ensure .env is loaded
+    DaemonConfig.load()
+
+    action = getattr(args, "env_action", None) or "list"
+
+    if action == "list":
+        env_vars = list_env_vars()
+        print("Environment variables:\n")
+        for var in env_vars:
+            status = var["status"]
+            if status == "set":
+                print(f"  {var['key']:30s} set  ({var['masked']})")
+            else:
+                print(f"  {var['key']:30s} unset")
+        print(f"\nFile: {env_vars and 'see' or ''} ~/.config/claude-daemon/.env")
+        print("Set with: claude-daemon env set KEY=VALUE")
+
+    elif action == "set":
+        pair = args.pair
+        if "=" not in pair:
+            print("Usage: claude-daemon env set KEY=VALUE")
+            sys.exit(1)
+        key, value = pair.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        try:
+            set_env_var(key, value)
+            masked = "****" + value[-4:] if len(value) >= 4 else "****"
+            print(f"Set {key} = {masked}")
+            print("Restart the daemon for integration tokens to take effect.")
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
     from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
@@ -351,6 +391,13 @@ def main() -> None:
     # jobs
     sub.add_parser("jobs", help="List scheduled jobs")
 
+    # env
+    p_env = sub.add_parser("env", help="Manage environment variables")
+    p_env_sub = p_env.add_subparsers(dest="env_action")
+    p_env_sub.add_parser("list", help="List all env vars with set/unset status")
+    p_env_set = p_env_sub.add_parser("set", help="Set an env var (KEY=VALUE)")
+    p_env_set.add_argument("pair", help="KEY=VALUE")
+
     # agents
     p_agents = sub.add_parser("agents", help="Manage agents")
     p_agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -374,6 +421,7 @@ def main() -> None:
         "update": _cmd_update,
         "install-service": _cmd_install_service,
         "jobs": _cmd_jobs,
+        "env": _cmd_env,
         "agents": _cmd_agents,
     }
 

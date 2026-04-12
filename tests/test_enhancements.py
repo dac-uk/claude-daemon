@@ -400,3 +400,111 @@ def test_schema_migration_creates_audit_log(tmp_path: Path):
     assert len(entries) == 1
     assert entries[0]["action"] == "test"
     store.close()
+
+
+# -- Env manager --
+
+
+def test_env_manager_list_vars():
+    """list_env_vars returns known vars with set/unset status."""
+    import os
+    from claude_daemon.core.env_manager import list_env_vars
+
+    os.environ["CLAUDE_DAEMON_API_KEY"] = "test_key_1234"
+    try:
+        result = list_env_vars()
+        assert isinstance(result, list)
+        assert len(result) > 0
+        api_key_entry = next(e for e in result if e["key"] == "CLAUDE_DAEMON_API_KEY")
+        assert api_key_entry["status"] == "set"
+        assert api_key_entry["masked"] == "****1234"
+    finally:
+        os.environ.pop("CLAUDE_DAEMON_API_KEY", None)
+
+
+def test_env_manager_set_var(tmp_path: Path):
+    """set_env_var writes to .env file and sets os.environ."""
+    import os
+    from unittest.mock import patch as _patch
+    from claude_daemon.core.env_manager import set_env_var
+
+    with _patch("claude_daemon.core.env_manager.get_env_file_path", return_value=tmp_path / ".env"):
+        set_env_var("TEST_VAR_XYZ", "hello_world")
+        assert os.environ.get("TEST_VAR_XYZ") == "hello_world"
+        content = (tmp_path / ".env").read_text()
+        assert "TEST_VAR_XYZ" in content
+        assert "hello_world" in content
+    os.environ.pop("TEST_VAR_XYZ", None)
+
+
+def test_env_manager_set_var_validates_key():
+    """set_env_var rejects invalid key names."""
+    from claude_daemon.core.env_manager import set_env_var
+
+    with pytest.raises(ValueError):
+        set_env_var("invalid-key", "value")
+    with pytest.raises(ValueError):
+        set_env_var("123_BAD", "value")
+
+
+def test_env_manager_mask():
+    """_mask hides all but last 4 characters."""
+    from claude_daemon.core.env_manager import _mask
+
+    assert _mask("ghp_abc123456789") == "****6789"
+    assert _mask("abc") == "****"
+    assert _mask("abcde") == "****bcde"
+
+
+def test_env_manager_scan_mcp_unresolved():
+    """scan_mcp_unresolved detects unconfigured MCP vars."""
+    from claude_daemon.core.env_manager import scan_mcp_unresolved
+
+    agent1 = MagicMock()
+    agent1.name = "albert"
+    agent1.check_mcp_health.return_value = {
+        "github": "configured",
+        "slack": "unconfigured (SLACK_BOT_TOKEN, SLACK_TEAM_ID)",
+    }
+    agent2 = MagicMock()
+    agent2.name = "luna"
+    agent2.check_mcp_health.return_value = {"github": "configured"}
+
+    registry = MagicMock()
+    registry.__iter__ = lambda self: iter([agent1, agent2])
+
+    result = scan_mcp_unresolved(registry)
+    assert "albert" in result
+    assert "SLACK_BOT_TOKEN" in result["albert"]
+    assert "luna" not in result
+
+
+def test_env_manager_missing_report():
+    """get_missing_env_report generates human-readable report."""
+    from claude_daemon.core.env_manager import get_missing_env_report
+
+    agent = MagicMock()
+    agent.name = "albert"
+    agent.check_mcp_health.return_value = {
+        "slack": "unconfigured (SLACK_BOT_TOKEN)",
+    }
+    registry = MagicMock()
+    registry.__iter__ = lambda self: iter([agent])
+
+    report = get_missing_env_report(registry)
+    assert report is not None
+    assert "SLACK_BOT_TOKEN" in report
+    assert "/setenv" in report
+
+
+def test_env_manager_no_missing():
+    """get_missing_env_report returns None when everything is configured."""
+    from claude_daemon.core.env_manager import get_missing_env_report
+
+    agent = MagicMock()
+    agent.name = "albert"
+    agent.check_mcp_health.return_value = {"github": "configured"}
+    registry = MagicMock()
+    registry.__iter__ = lambda self: iter([agent])
+
+    assert get_missing_env_report(registry) is None

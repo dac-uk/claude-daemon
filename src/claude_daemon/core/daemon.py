@@ -146,6 +146,9 @@ class ClaudeDaemon:
         if self.durable:
             self.durable.append_daily_log("Daemon started.")
 
+        # Proactive env health check — notify users about missing env vars
+        await self._check_env_health()
+
         await self._shutdown_event.wait()
         await self.stop()
 
@@ -581,6 +584,41 @@ class ClaudeDaemon:
                 log.warning("aiohttp not available (pip install aiohttp)")
             except Exception:
                 log.exception("Failed to start HTTP API")
+
+    async def _check_env_health(self) -> None:
+        """Check for missing env vars and notify users via available channels."""
+        if not self.agent_registry:
+            return
+
+        from claude_daemon.core.env_manager import get_missing_env_report
+
+        report = get_missing_env_report(self.agent_registry)
+        if not report:
+            log.info("Env health check: all MCP tool env vars configured")
+            return
+
+        log.warning("Env health check:\n%s", report)
+
+        # Proactively notify users via any available integration
+        if self.router:
+            for platform_name, integration in self.router.integrations.items():
+                targets = self._get_alert_targets(platform_name)
+                for chat_id in targets:
+                    try:
+                        await integration.send_response(chat_id, report)
+                    except Exception:
+                        log.warning(
+                            "Failed to deliver env health report via %s:%s",
+                            platform_name, chat_id,
+                        )
+
+    def _get_alert_targets(self, platform: str) -> list[str]:
+        """Get alert target chat/channel IDs for a platform."""
+        if platform == "telegram" and self.config.telegram_allowed_users:
+            return [str(uid) for uid in self.config.telegram_allowed_users]
+        if platform == "discord" and self.config.discord_alert_channel_ids:
+            return list(self.config.discord_alert_channel_ids)
+        return []
 
     def _write_pid(self) -> None:
         pid_file = self.config.pid_path

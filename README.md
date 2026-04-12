@@ -49,7 +49,7 @@ Or if you've already cloned the repo:
 ./install.sh
 ```
 
-The script handles everything: Python package, config templates, systemd/launchd service. Idempotent — safe to run again. After install, edit `~/.config/claude-daemon/.env` with your tokens and you're live.
+The script handles everything: Python package, config templates, systemd/launchd service, and interactive token setup. Idempotent — safe to run again. You never need to manually edit `.env` files — use the interactive installer, chat commands, CLI, or API instead.
 
 To update an existing install (pull latest code, reinstall deps, re-patch service):
 
@@ -58,6 +58,55 @@ To update an existing install (pull latest code, reinstall deps, re-patch servic
 ```
 
 The daemon also self-updates automatically via its nightly scheduler — new code and dependencies are installed alongside Claude CLI updates.
+
+## Managing Environment Variables
+
+You never need to manually edit `.env` files. Four ways to manage secrets and tokens:
+
+**Via chat** (Telegram or Discord):
+```
+/setenv GITHUB_TOKEN ghp_abc123
+/setenv SLACK_BOT_TOKEN xoxb-xxx
+/getenv                          # See which vars are set (values masked)
+```
+
+**Via CLI:**
+```bash
+claude-daemon env list           # Show all vars with set/unset status
+claude-daemon env set GITHUB_TOKEN=ghp_abc123
+```
+
+**Via HTTP API:**
+```bash
+# List (values masked)
+curl -H "Authorization: Bearer $KEY" http://localhost:8080/api/config/env
+
+# Set
+curl -X POST -H "Authorization: Bearer $KEY" \
+  -d '{"key": "GITHUB_TOKEN", "value": "ghp_abc123"}' \
+  http://localhost:8080/api/config/env
+```
+
+**Via install script** (interactive prompts on first run):
+```bash
+./install.sh    # Prompts for Telegram, Discord, GitHub, API key, dashboard
+```
+
+### Startup health check
+
+When the daemon starts, it automatically scans all agents' MCP tool configurations for unresolved environment variables. If any are missing, it sends a notification to you via Telegram or Discord (whichever is configured) listing exactly what's missing and how to fix it:
+
+```
+Missing environment variables detected:
+
+  - GITHUB_TOKEN (used by: albert, max, luna)
+  - SLACK_BOT_TOKEN (used by: johnny)
+
+Fix via chat:  /setenv VARIABLE_NAME your_value
+Fix via CLI:   claude-daemon env set VARIABLE_NAME=your_value
+```
+
+This means you'll always know immediately if something is misconfigured — the daemon tells you proactively.
 
 ## Manual Setup
 
@@ -129,6 +178,8 @@ All commands are available on **both** Telegram and Discord with full feature pa
 | `/metrics` | Per-agent cost metrics for last 7 days |
 | `/spawn` | Spawn a background task on an agent (runs in parallel) |
 | `/tasks` | List all spawned background tasks and their status |
+| `/setenv` | Set an environment variable (e.g. `/setenv GITHUB_TOKEN ghp_...`) |
+| `/getenv` | Show which env vars are set/unset (values are masked) |
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
@@ -468,6 +519,8 @@ GET  /api/sessions            — Active Claude subprocesses
 GET  /api/tasks               — Spawned background tasks
 GET  /api/metrics             — Per-agent cost/token metrics
 GET  /api/audit               — Structured audit log (filter by action, agent, paginate)
+GET  /api/config/env          — List env vars with set/unset status (masked values)
+POST /api/config/env          — Set an env var {"key": "...", "value": "..."}
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
@@ -513,6 +566,7 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Agent hot-reload** | File watcher polls every 10s for changes to IDENTITY.md, SOUL.md, AGENTS.md. Edits take effect on the next message — no daemon restart needed. |
 | **Alert webhooks** | Failures, circuit breaker events, and updates are POSTed as JSON to configured webhook URLs (Slack, PagerDuty, custom). Fire-and-forget with timeout — never blocks the scheduler. |
 | **Audit log** | Every significant action (messages, delegations, workflows, heartbeats, config reloads, webhook receives) recorded in a structured `audit_log` SQLite table. Queryable via `GET /api/audit`. |
+| **Startup env check** | On startup, all agents' MCP tools are scanned for unresolved `${ENV_VAR}` placeholders. Missing vars are reported via Telegram/Discord proactively — no silent tool failures. |
 | **Schema migration** | On startup, `_migrate_schema()` detects and applies missing tables/columns. Upgrading the daemon never breaks the database. |
 | **Daemon self-update** | Editable git installs: `git pull --ff-only` + `pip install -e ".[all]"` runs automatically alongside `claude update`. New dependencies are always installed. |
 | **Correlation IDs** | Every agent call is tagged with a short UUID in logs for end-to-end tracing. |
