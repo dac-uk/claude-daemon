@@ -238,7 +238,8 @@ To add a new MCP server, add one entry to `MCP_SERVER_CATALOG` in `src/claude_da
 If you prefer to set things up yourself:
 
 ```bash
-pip install -e ".[all]"
+pip install -e ".[all]"           # All integrations
+# pip install -e ".[managed]"     # Adds anthropic SDK for Managed Agents backend
 
 mkdir -p ~/.config/claude-daemon
 cp config.example.yaml ~/.config/claude-daemon/config.yaml
@@ -831,6 +832,9 @@ DISCORD_BOT_TOKEN=your_token
 CLAUDE_DAEMON_API_KEY=your_api_key
 GITHUB_TOKEN=ghp_...
 SUPABASE_ACCESS_TOKEN=sbp_...
+
+# Managed Agents API (optional — enables long-running task routing)
+ANTHROPIC_API_KEY=sk-ant-...
 
 # Webhook signature secrets (set to enforce verification in production)
 GITHUB_WEBHOOK_SECRET=whsec_...
