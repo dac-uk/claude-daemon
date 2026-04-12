@@ -83,6 +83,7 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("mcp", self._cmd_mcp))
         self._app.add_handler(CommandHandler("thinking", self._cmd_thinking))
         self._app.add_handler(CommandHandler("effort", self._cmd_effort))
+        self._app.add_handler(CommandHandler("backend", self._cmd_backend))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -666,3 +667,50 @@ class TelegramIntegration(BaseIntegration):
             return
         result = await self.daemon.set_default_effort(args[1].lower())
         await update.message.reply_text(result)
+
+    async def _cmd_backend(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        args = (update.message.text or "").split()
+
+        if len(args) < 2:
+            # Show status
+            status = self.daemon.get_managed_agents_status()
+            lines = [
+                "Managed Agents Backend",
+                f"  Enabled: {status['enabled']}",
+                f"  API key set: {status['api_key_set']}",
+                f"  Environment: {status['environment_id'] or 'none'}",
+                f"  Registered: {', '.join(status['registered_agents']) or 'none'}",
+                f"  Task types: {', '.join(status['task_types'])}",
+            ]
+            await update.message.reply_text("\n".join(lines))
+            return
+
+        action = args[1].lower()
+        if action in ("on", "enable"):
+            result = await self.daemon.set_managed_agents(True)
+            await update.message.reply_text(result)
+        elif action in ("off", "disable"):
+            result = await self.daemon.set_managed_agents(False)
+            await update.message.reply_text(result)
+        elif action == "status":
+            status = self.daemon.get_managed_agents_status()
+            lines = [
+                "Managed Agents Backend",
+                f"  Enabled: {status['enabled']}",
+                f"  API key set: {status['api_key_set']}",
+                f"  Environment: {status['environment_id'] or 'none'}",
+                f"  Registered: {', '.join(status['registered_agents']) or 'none'}",
+                f"  Task types: {', '.join(status['task_types'])}",
+            ]
+            await update.message.reply_text("\n".join(lines))
+        else:
+            await update.message.reply_text(
+                "Usage: /backend [on|off|status]\n\n"
+                "  /backend         — show current status\n"
+                "  /backend on      — enable Managed Agents\n"
+                "  /backend off     — disable, fall back to CLI\n"
+                "  /backend status  — detailed status"
+            )

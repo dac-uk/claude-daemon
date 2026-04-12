@@ -207,6 +207,8 @@ class Orchestrator:
             user_id=user_id,
             model_override=model,
             mcp_config_path=agent.mcp_config_path,
+            task_type=task_type,
+            agent_name=agent.name,
         )
 
         if self.hub:
@@ -331,6 +333,8 @@ class Orchestrator:
             user_id=user_id,
             model_override=model,
             mcp_config_path=agent.mcp_config_path,
+            task_type=task_type,
+            agent_name=agent.name,
         ):
             if isinstance(chunk, str):
                 accumulated += chunk

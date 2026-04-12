@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:
     from claude_daemon.core.config import DaemonConfig
+    from claude_daemon.core.managed_agents import ManagedAgentBackend
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +89,11 @@ class ActiveSession:
 
 
 class ProcessManager:
-    """Manages concurrent Claude Code CLI invocations with streaming support."""
+    """Manages concurrent Claude Code CLI invocations with streaming support.
+
+    Supports dual-backend execution: CLI subprocess (default) and Managed Agents API
+    (for long-running/complex tasks when enabled).
+    """
 
     def __init__(self, config: DaemonConfig) -> None:
         self.config = config
@@ -96,6 +101,7 @@ class ProcessManager:
         self._agent_semaphores: dict[str, asyncio.Semaphore] = {}
         self._active: dict[str, ActiveSession] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._managed: "ManagedAgentBackend | None" = None  # lazy init
 
     def get_agent_semaphore(self, agent_name: str, max_per_agent: int = 3) -> asyncio.Semaphore:
         """Get or create a per-agent semaphore to prevent one agent hogging all slots."""
@@ -116,6 +122,25 @@ class ProcessManager:
         if session_id not in self._session_locks:
             self._session_locks[session_id] = asyncio.Lock()
         return self._session_locks[session_id]
+
+    @property
+    def managed(self) -> "ManagedAgentBackend | None":
+        """Lazy-init Managed Agents backend if API key is available."""
+        if self._managed is None and os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                from claude_daemon.core.managed_agents import ManagedAgentBackend
+                self._managed = ManagedAgentBackend(self.config)
+            except ImportError:
+                log.debug("anthropic SDK not installed, Managed Agents unavailable")
+        return self._managed
+
+    def _should_use_managed(self, task_type: str, agent_name: str | None) -> bool:
+        """Route to Managed Agents or CLI based on task characteristics."""
+        if not self.managed:
+            return False
+        if not self.config.managed_agents_enabled:
+            return False
+        return task_type in self.config.managed_agents_task_types
 
     def _subprocess_env(self) -> dict[str, str]:
         """Build subprocess environment with Claude CLI overrides."""
@@ -192,13 +217,38 @@ class ProcessManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         effort: str | None = None,
+        task_type: str = "default",
+        agent_name: str | None = None,
     ) -> ClaudeResponse:
         """Send a prompt and return the complete response (buffered mode).
 
         Auto-parallel: if the target session is already processing, a fresh
         session is started automatically instead of blocking.
+
+        If managed_agents_enabled and task_type matches, routes through the
+        Managed Agents API instead of CLI subprocess. Falls back to CLI on error.
         """
         budget = max_budget if max_budget is not None else self.config.max_budget_per_message
+
+        # Managed Agents routing (with automatic fallback to CLI)
+        if agent_name and self._should_use_managed(task_type, agent_name):
+            try:
+                return await self._managed.send_message(
+                    prompt=prompt,
+                    agent_name=agent_name,
+                    session_id=session_id,
+                    system_context=system_context,
+                    max_budget=budget,
+                    platform=platform,
+                    user_id=user_id,
+                    model_override=model_override,
+                )
+            except Exception as e:
+                log.warning(
+                    "Managed Agents failed for %s (task_type=%s), falling back to CLI: %s",
+                    agent_name, task_type, e,
+                )
+                # Fall through to CLI execution
 
         if session_id:
             lock = self._get_session_lock(session_id)
@@ -235,11 +285,16 @@ class ProcessManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         effort: str | None = None,
+        task_type: str = "default",
+        agent_name: str | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a response token-by-token. Yields text chunks, then final ClaudeResponse.
 
         Auto-parallel: if the target session has an active subprocess, a fresh
         session is started automatically instead of colliding on --resume.
+
+        If managed_agents_enabled and task_type matches, routes through the
+        Managed Agents API. Falls back to CLI on error.
 
         Usage:
             async for chunk in pm.stream_message("hello"):
@@ -249,6 +304,28 @@ class ProcessManager:
                     # final result with metadata
         """
         budget = max_budget if max_budget is not None else self.config.max_budget_per_message
+
+        # Managed Agents routing (with automatic fallback to CLI)
+        if agent_name and self._should_use_managed(task_type, agent_name):
+            try:
+                async for chunk in self._managed.stream_message(
+                    prompt=prompt,
+                    agent_name=agent_name,
+                    session_id=session_id,
+                    system_context=system_context,
+                    max_budget=budget,
+                    platform=platform,
+                    user_id=user_id,
+                    model_override=model_override,
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                log.warning(
+                    "Managed Agents streaming failed for %s, falling back to CLI: %s",
+                    agent_name, e,
+                )
+                # Fall through to CLI execution
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:

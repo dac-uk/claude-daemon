@@ -411,6 +411,39 @@ def _cmd_effort(args: argparse.Namespace) -> None:
     print("Note: this takes effect on next daemon restart or config reload.")
 
 
+def _cmd_backend(args: argparse.Namespace) -> None:
+    """Control Managed Agents backend."""
+    import os
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+    action = getattr(args, "action", "status")
+
+    if action == "on":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("Error: ANTHROPIC_API_KEY env var not set.")
+            print("Set it with: claude-daemon env set ANTHROPIC_API_KEY=sk-ant-...")
+            return
+        config.managed_agents_enabled = True
+        print("Managed Agents enabled.")
+        print(f"Task types routed to API: {', '.join(config.managed_agents_task_types)}")
+        print("Note: takes effect on next daemon restart or config reload.")
+
+    elif action == "off":
+        config.managed_agents_enabled = False
+        print("Managed Agents disabled. All tasks route to CLI.")
+        print("Note: takes effect on next daemon restart or config reload.")
+
+    else:  # status
+        api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        print("Managed Agents Backend")
+        print(f"  Enabled:    {config.managed_agents_enabled}")
+        print(f"  API key:    {'set' if api_key else 'not set'}")
+        print(f"  Task types: {', '.join(config.managed_agents_task_types)}")
+        if not api_key:
+            print("\n  To enable: set ANTHROPIC_API_KEY then run 'claude-daemon backend on'")
+
+
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
     from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
@@ -548,6 +581,11 @@ def main() -> None:
     p_effort = sub.add_parser("effort", help="Set reasoning effort level for all tasks")
     p_effort.add_argument("level", choices=["low", "medium", "high", "max"], help="Effort level")
 
+    # backend
+    p_backend = sub.add_parser("backend", help="Control Managed Agents backend")
+    p_backend.add_argument("action", nargs="?", default="status",
+                           choices=["status", "on", "off"], help="Action")
+
     # agents
     p_agents = sub.add_parser("agents", help="Manage agents")
     p_agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -575,6 +613,7 @@ def main() -> None:
         "mcp": _cmd_mcp,
         "thinking": _cmd_thinking,
         "effort": _cmd_effort,
+        "backend": _cmd_backend,
         "agents": _cmd_agents,
     }
 

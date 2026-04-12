@@ -43,6 +43,14 @@ claude:
   # agent_deny_rules:             # Extra deny rules appended to built-in safety defaults
   #   - "Bash(docker rm *)"
 
+  # Managed Agents — Anthropic's hosted agent execution (beta, requires ANTHROPIC_API_KEY)
+  # managed_agents_enabled: false  # Set true to route long-running tasks to Managed Agents API
+  # managed_agents_task_types:     # Task types routed to Managed Agents (rest use CLI)
+  #   - planning                   # Complex planning tasks (Opus, long-running)
+  #   - workflow                   # Multi-step build pipelines
+  #   - rem_sleep                  # Weekly memory integration
+  #   - improvement                # Self-assessment cycles
+
 memory:
   daily_log: true               # Write daily markdown logs
   compaction_threshold: 50000   # Characters before auto-compaction

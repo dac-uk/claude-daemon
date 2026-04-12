@@ -118,6 +118,52 @@ class ClaudeDaemon:
         log.info(msg)
         return msg
 
+    # -- Managed Agents backend control ----------------------------------------
+
+    async def set_managed_agents(self, enabled: bool) -> str:
+        """Enable or disable Managed Agents backend for configured task types."""
+        self.config.managed_agents_enabled = enabled
+        state = "enabled" if enabled else "disabled"
+        if enabled and self.process_manager and self.process_manager.managed:
+            # Register agents if not already done
+            await self._register_managed_agents()
+        log.info("Managed Agents %s", state)
+        return f"Managed Agents {state}. Task types: {', '.join(self.config.managed_agents_task_types)}"
+
+    def get_managed_agents_status(self) -> dict:
+        """Return status information about the Managed Agents backend."""
+        if self.process_manager and self.process_manager.managed:
+            return self.process_manager.managed.get_status()
+        return {
+            "enabled": self.config.managed_agents_enabled,
+            "environment_id": None,
+            "registered_agents": [],
+            "agent_count": 0,
+            "task_types": list(self.config.managed_agents_task_types),
+            "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        }
+
+    async def _register_managed_agents(self) -> None:
+        """Register all daemon agents with the Managed Agents API."""
+        if not self.process_manager or not self.process_manager.managed:
+            return
+        if not self.agent_registry:
+            return
+        managed = self.process_manager.managed
+        try:
+            await managed.ensure_environment()
+            registered = 0
+            for agent in self.agent_registry:
+                try:
+                    await managed.register_agent(agent)
+                    registered += 1
+                except Exception:
+                    log.warning("Failed to register managed agent: %s", agent.name)
+            log.info("Registered %d/%d agents with Managed Agents API",
+                     registered, len(self.agent_registry))
+        except Exception:
+            log.exception("Failed to initialize Managed Agents environment")
+
     async def enable_mcp_server(self, name: str) -> str:
         """Remove a server from the disabled list and refresh tools.json."""
         from claude_daemon.agents.bootstrap import MCP_SERVER_CATALOG
@@ -218,6 +264,10 @@ class ClaudeDaemon:
         )
         log.info("Loaded %d agents: %s",
                  len(self.agent_registry), self.agent_registry.agent_names())
+
+        # Register agents with Managed Agents API (if enabled + API key available)
+        if self.config.managed_agents_enabled and self.process_manager.managed:
+            await self._register_managed_agents()
 
         # Agent hot-reload file watcher
         if self.config.agent_hot_reload and self.agent_registry:

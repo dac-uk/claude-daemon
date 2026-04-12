@@ -20,10 +20,12 @@ dependencies = [
 telegram = ["python-telegram-bot>=21.0"]
 discord = ["discord.py>=2.3"]
 api = ["aiohttp>=3.9"]
+managed = ["anthropic>=1.0.0"]
 all = [
     "python-telegram-bot>=21.0",
     "discord.py>=2.3",
     "aiohttp>=3.9",
+    "anthropic>=1.0.0",
 ]
 dev = [
     "pytest>=7.0",

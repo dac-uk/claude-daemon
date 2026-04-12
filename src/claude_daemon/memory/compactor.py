@@ -265,6 +265,7 @@ class ContextCompactor:
         )
         response = await self.pm.send_message(
             prompt=prompt, max_budget=0.15, platform="system", user_id="dreamer",
+            task_type="rem_sleep",
         )
 
         if response.is_error:

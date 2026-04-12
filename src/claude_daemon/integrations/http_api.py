@@ -58,6 +58,8 @@ class HttpApi:
         self._app.router.add_post("/api/mcp/refresh", self._handle_mcp_refresh)
         self._app.router.add_post("/api/settings/thinking", self._handle_settings_thinking)
         self._app.router.add_post("/api/settings/effort", self._handle_settings_effort)
+        self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
+        self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -474,4 +476,21 @@ class HttpApi:
         if not level:
             return web.json_response({"error": "Missing 'level'"}, status=400)
         result = await self.daemon.set_default_effort(level)
+        return web.json_response({"status": "ok", "message": result})
+
+    async def _handle_backend_status(self, request: web.Request) -> web.Response:
+        """GET /api/settings/backend — get Managed Agents backend status."""
+        status = self.daemon.get_managed_agents_status()
+        return web.json_response(status)
+
+    async def _handle_backend_set(self, request: web.Request) -> web.Response:
+        """POST /api/settings/backend — enable/disable Managed Agents backend."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        enabled = body.get("enabled")
+        if enabled is None:
+            return web.json_response({"error": "Missing 'enabled' (true/false)"}, status=400)
+        result = await self.daemon.set_managed_agents(bool(enabled))
         return web.json_response({"status": "ok", "message": result})

@@ -17,6 +17,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Effort Level Control** - Two-dimensional control: model routing (Opus/Sonnet/Haiku) PLUS reasoning depth (low/medium/high/max). Scheduled tasks use low effort for speed; planning uses high effort for quality. Adjustable via `/effort` command.
 - **Auto-Compact at 50%** - Prevents context degradation in long resumed sessions by triggering compaction at 50% context usage (CLI default waits much longer).
 - **Domain Gotchas** - Per-agent failure-point documentation injected as high-priority context. Highest-signal content type per best practices research.
+- **Managed Agents Backend** - Dual-backend execution: CLI subprocess for fast/cheap tasks (chat, heartbeats), Anthropic's Managed Agents API for long-running/complex tasks (planning, workflows, REM sleep). Automatic fallback to CLI if API fails. Control via `/backend` command.
 - **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, proposals delivered to you automatically.
 - **Agent Heartbeats** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings, Albert audits tech debt, Max runs quality retrospectives.
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
@@ -310,6 +311,8 @@ All commands are available on **both** Telegram and Discord with full feature pa
 | `/mcp refresh` | Regenerate MCP configs from current env vars |
 | `/thinking on\|off` | Toggle extended thinking for all agents |
 | `/effort low\|medium\|high\|max` | Set reasoning depth (low=fast/cheap, high=deep) |
+| `/backend` | Show Managed Agents backend status |
+| `/backend on\|off` | Enable/disable Managed Agents for configured task types |
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
@@ -657,6 +660,8 @@ POST /api/mcp/disable         — Disable a server {"server": "snowflake"}
 POST /api/mcp/refresh         — Regenerate tools.json for all agents
 POST /api/settings/thinking   — Toggle extended thinking {"enabled": true/false}
 POST /api/settings/effort     — Set effort level {"level": "low/medium/high/max"}
+GET  /api/settings/backend    — Get Managed Agents backend status
+POST /api/settings/backend    — Enable/disable Managed Agents {"enabled": true/false}
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted

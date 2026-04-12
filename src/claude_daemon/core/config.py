@@ -53,6 +53,12 @@ class DaemonConfig:
     default_effort: str = ""  # Override effort level for all tasks (empty = use per-task-type mapping)
     agent_deny_rules: list[str] = field(default_factory=list)  # Extra deny rules appended to defaults
 
+    # Managed Agents (Anthropic hosted agent execution)
+    managed_agents_enabled: bool = False  # Opt-in (requires ANTHROPIC_API_KEY env var)
+    managed_agents_task_types: list[str] = field(default_factory=lambda: [
+        "planning", "workflow", "rem_sleep", "improvement",
+    ])
+
     # Memory
     daily_log_enabled: bool = True
     compaction_threshold: int = 50_000
@@ -187,6 +193,10 @@ class DaemonConfig:
             thinking_enabled=claude_cfg.get("thinking_enabled", True),
             default_effort=claude_cfg.get("default_effort", ""),
             agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
+            managed_agents_enabled=claude_cfg.get("managed_agents_enabled", False),
+            managed_agents_task_types=claude_cfg.get("managed_agents_task_types", [
+                "planning", "workflow", "rem_sleep", "improvement",
+            ]),
             disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),

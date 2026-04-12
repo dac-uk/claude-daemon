@@ -473,6 +473,30 @@ class DiscordIntegration(BaseIntegration):
             result = await self.daemon.set_default_effort(level.lower())
             await interaction.response.send_message(result, ephemeral=True)
 
+        @self._bot.tree.command(name="backend", description="Control Managed Agents backend")
+        @discord.app_commands.describe(action="on, off, or status")
+        async def slash_backend(interaction: discord.Interaction, action: str = ""):
+            if not self.daemon:
+                await interaction.response.send_message("Daemon not ready.", ephemeral=True)
+                return
+            if action.lower() in ("on", "enable"):
+                result = await self.daemon.set_managed_agents(True)
+                await interaction.response.send_message(result, ephemeral=True)
+            elif action.lower() in ("off", "disable"):
+                result = await self.daemon.set_managed_agents(False)
+                await interaction.response.send_message(result, ephemeral=True)
+            else:
+                status = self.daemon.get_managed_agents_status()
+                lines = [
+                    "**Managed Agents Backend**",
+                    f"Enabled: {status['enabled']}",
+                    f"API key set: {status['api_key_set']}",
+                    f"Environment: {status['environment_id'] or 'none'}",
+                    f"Registered: {', '.join(status['registered_agents']) or 'none'}",
+                    f"Task types: {', '.join(status['task_types'])}",
+                ]
+                await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
     async def _handle_streaming(
         self, message: discord.Message, content: str,
         channel_agent: str | None = None,
