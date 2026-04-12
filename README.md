@@ -30,7 +30,24 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Agent Metrics** - Per-agent cost tracking, token usage, and performance metrics
 - **Service Files** - systemd and launchd support for true daemon operation
 
-## Quick Start
+## Quick Install
+
+```bash
+# One-line install (clones repo, installs deps, configures service)
+curl -sSL https://raw.githubusercontent.com/dac-uk/claude-daemon/main/install.sh | bash
+```
+
+Or if you've already cloned the repo:
+
+```bash
+./install.sh
+```
+
+The script handles everything: Python package, config templates, systemd/launchd service. Idempotent — safe to run again. After install, edit `~/.config/claude-daemon/.env` with your tokens and you're live.
+
+## Manual Setup
+
+If you prefer to set things up yourself:
 
 ```bash
 pip install -e ".[all]"
