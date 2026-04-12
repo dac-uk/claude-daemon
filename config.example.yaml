@@ -36,6 +36,13 @@ claude:
   #   - snowflake
   #   - bigquery
 
+  # Agent settings.json — best practice integration
+  # thinking_enabled: true        # Enable extended thinking (alwaysThinkingEnabled)
+  # default_effort: ""            # Override effort level (low/medium/high/max, empty = per-task-type)
+  # auto_compact_pct: 50          # Auto-compact at this % of context (prevents context degradation)
+  # agent_deny_rules:             # Extra deny rules appended to built-in safety defaults
+  #   - "Bash(docker rm *)"
+
 memory:
   daily_log: true               # Write daily markdown logs
   compaction_threshold: 50000   # Characters before auto-compaction

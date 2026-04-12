@@ -82,11 +82,14 @@ class ClaudeDaemon:
     # -- MCP server pool management ------------------------------------------
 
     async def refresh_mcp(self) -> str:
-        """Regenerate MCP tools.json for all agents from current env state."""
-        from claude_daemon.agents.bootstrap import refresh_agent_tools_json
+        """Regenerate MCP tools.json + settings.json for all agents."""
+        from claude_daemon.agents.bootstrap import refresh_agent_configs
         agents_dir = self.config.data_dir / "agents"
-        counts = refresh_agent_tools_json(
-            agents_dir, disabled_servers=self.config.disabled_mcp_servers,
+        counts = refresh_agent_configs(
+            agents_dir,
+            disabled_servers=self.config.disabled_mcp_servers,
+            deny_rules=self.config.agent_deny_rules or None,
+            thinking_enabled=self.config.thinking_enabled,
         )
         if self.agent_registry:
             for agent in self.agent_registry:
@@ -94,8 +97,26 @@ class ClaudeDaemon:
         total = sum(counts.values())
         agents = len(counts)
         avg = total // agents if agents else 0
-        log.info("MCP configs refreshed: %d servers across %d agents", avg, agents)
-        return f"MCP configs refreshed: {avg} servers active across {agents} agents."
+        log.info("Agent configs refreshed: %d MCP servers across %d agents", avg, agents)
+        return f"Agent configs refreshed: {avg} MCP servers active across {agents} agents."
+
+    async def set_thinking(self, enabled: bool) -> str:
+        """Toggle thinking mode and regenerate agent settings."""
+        self.config.thinking_enabled = enabled
+        await self.refresh_mcp()  # regenerates settings.json
+        state = "enabled" if enabled else "disabled"
+        log.info("Thinking %s for all agents", state)
+        return f"Thinking {state} for all agents. Settings regenerated."
+
+    async def set_default_effort(self, level: str) -> str:
+        """Set the default effort level for subsequent messages."""
+        valid = ("low", "medium", "high", "max", "")
+        if level not in valid:
+            return f"Invalid effort level: {level}. Use: {', '.join(v for v in valid if v)}"
+        self.config.default_effort = level
+        msg = f"Default effort set to {level}" if level else "Default effort reset to per-task-type mapping"
+        log.info(msg)
+        return msg
 
     async def enable_mcp_server(self, name: str) -> str:
         """Remove a server from the disabled list and refresh tools.json."""
@@ -166,15 +187,18 @@ class ClaudeDaemon:
 
         # Multi-agent system
         from claude_daemon.agents.bootstrap import (
-            create_csuite_workspaces, create_shared_workspace, refresh_agent_tools_json,
+            create_csuite_workspaces, create_shared_workspace, refresh_agent_configs,
         )
         agents_dir = self.config.data_dir / "agents"
         shared_dir = self.config.data_dir / "shared"
         create_shared_workspace(self.config.data_dir)
         create_csuite_workspaces(agents_dir)
-        # Regenerate MCP tools.json for all agents based on current env vars
-        mcp_counts = refresh_agent_tools_json(
-            agents_dir, disabled_servers=self.config.disabled_mcp_servers,
+        # Regenerate tools.json + settings.json for all agents based on current env vars
+        mcp_counts = refresh_agent_configs(
+            agents_dir,
+            disabled_servers=self.config.disabled_mcp_servers,
+            deny_rules=self.config.agent_deny_rules or None,
+            thinking_enabled=self.config.thinking_enabled,
         )
         if mcp_counts:
             sample = next(iter(mcp_counts.values()), 0)

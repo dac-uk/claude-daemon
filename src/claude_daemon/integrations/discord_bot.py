@@ -436,6 +436,43 @@ class DiscordIntegration(BaseIntegration):
                     ephemeral=True,
                 )
 
+        @self._bot.tree.command(name="thinking", description="Toggle extended thinking for all agents")
+        @discord.app_commands.describe(toggle="on or off")
+        async def slash_thinking(interaction: discord.Interaction, toggle: str = ""):
+            if not self.daemon:
+                await interaction.response.send_message("Daemon not ready.", ephemeral=True)
+                return
+            if toggle.lower() not in ("on", "off"):
+                current = "on" if self.daemon.config.thinking_enabled else "off"
+                await interaction.response.send_message(
+                    f"Usage: `/thinking on|off`\n\n"
+                    f"Toggles extended thinking for all agents.\n"
+                    f"Currently: {current}",
+                    ephemeral=True,
+                )
+                return
+            enabled = toggle.lower() == "on"
+            result = await self.daemon.set_thinking(enabled)
+            await interaction.response.send_message(result, ephemeral=True)
+
+        @self._bot.tree.command(name="effort", description="Set reasoning depth for all tasks")
+        @discord.app_commands.describe(level="low, medium, high, or max")
+        async def slash_effort(interaction: discord.Interaction, level: str = ""):
+            if not self.daemon:
+                await interaction.response.send_message("Daemon not ready.", ephemeral=True)
+                return
+            if not level:
+                current = self.daemon.config.default_effort or "per-task-type"
+                await interaction.response.send_message(
+                    f"Usage: `/effort low|medium|high|max`\n\n"
+                    f"Sets reasoning depth for all tasks.\n"
+                    f"Currently: {current}",
+                    ephemeral=True,
+                )
+                return
+            result = await self.daemon.set_default_effort(level.lower())
+            await interaction.response.send_message(result, ephemeral=True)
+
     async def _handle_streaming(
         self, message: discord.Message, content: str,
         channel_agent: str | None = None,

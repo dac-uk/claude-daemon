@@ -213,7 +213,8 @@ async def test_execute_buffered_falls_back_on_rate_limit():
     call_count = 0
 
     async def fake_once(prompt, session_id, system_context, max_budget,
-                        platform, user_id, model_override=None, mcp_config_path=None):
+                        platform, user_id, model_override=None, mcp_config_path=None,
+                        settings_path=None, effort=None):
         nonlocal call_count
         call_count += 1
         if model_override == "opus":
@@ -249,7 +250,8 @@ async def test_execute_buffered_no_fallback_on_normal_error():
     call_count = 0
 
     async def fake_once(prompt, session_id, system_context, max_budget,
-                        platform, user_id, model_override=None, mcp_config_path=None):
+                        platform, user_id, model_override=None, mcp_config_path=None,
+                        settings_path=None, effort=None):
         nonlocal call_count
         call_count += 1
         return ClaudeResponse.error("Authentication error"), "auth failed"
@@ -277,7 +279,8 @@ async def test_execute_buffered_exhausts_chain():
     call_count = 0
 
     async def fake_once(prompt, session_id, system_context, max_budget,
-                        platform, user_id, model_override=None, mcp_config_path=None):
+                        platform, user_id, model_override=None, mcp_config_path=None,
+                        settings_path=None, effort=None):
         nonlocal call_count
         call_count += 1
         return ClaudeResponse.error("rate limit exceeded"), "429"

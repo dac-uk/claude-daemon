@@ -48,6 +48,10 @@ class DaemonConfig:
     model_retry_delay: float = 2.0  # Seconds between fallback retries
     model_max_retries: int = 2  # 0 disables model fallback
     stream_idle_timeout_ms: int = 600_000  # ms before idle stream is killed (default 90s is too short for Opus thinking)
+    auto_compact_pct: int = 50  # Auto-compact at this % of context window (CLI default waits much longer)
+    thinking_enabled: bool = True  # alwaysThinkingEnabled in per-agent settings.json
+    default_effort: str = ""  # Override effort level for all tasks (empty = use per-task-type mapping)
+    agent_deny_rules: list[str] = field(default_factory=list)  # Extra deny rules appended to defaults
 
     # Memory
     daily_log_enabled: bool = True
@@ -179,6 +183,10 @@ class DaemonConfig:
             model_retry_delay=float(claude_cfg.get("model_retry_delay", 2.0)),
             model_max_retries=int(claude_cfg.get("model_max_retries", 2)),
             stream_idle_timeout_ms=int(claude_cfg.get("stream_idle_timeout_ms", 600_000)),
+            auto_compact_pct=int(claude_cfg.get("auto_compact_pct", 50)),
+            thinking_enabled=claude_cfg.get("thinking_enabled", True),
+            default_effort=claude_cfg.get("default_effort", ""),
+            agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
             disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),

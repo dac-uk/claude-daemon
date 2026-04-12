@@ -46,6 +46,7 @@ class AgentIdentity:
     tools_guidance: str = ""
     vision: str = ""
     heartbeat_tasks: str = ""
+    gotchas: str = ""
 
     # Per-agent model routing
     default_model: str = "sonnet"
@@ -60,6 +61,16 @@ class AgentIdentity:
     def display_name(self) -> str:
         prefix = f"{self.emoji} " if self.emoji else ""
         return f"{prefix}{self.name}"
+
+
+# Default effort mapping — task type → reasoning depth
+_EFFORT_BY_TASK_TYPE: dict[str, str] = {
+    "scheduled": "low",
+    "heartbeat": "low",
+    "chat": "medium",
+    "default": "medium",
+    "planning": "high",
+}
 
 
 @dataclass
@@ -136,6 +147,11 @@ class Agent:
         if vision_path.exists():
             self.identity.vision = vision_path.read_text()
 
+        # GOTCHAS.md
+        gotchas_path = self.workspace / "GOTCHAS.md"
+        if gotchas_path.exists():
+            self.identity.gotchas = gotchas_path.read_text()
+
         # HEARTBEAT.md
         hb_path = self.workspace / "HEARTBEAT.md"
         if hb_path.exists():
@@ -150,6 +166,19 @@ class Agent:
         if path.exists():
             return str(path)
         return None
+
+    @property
+    def settings_path(self) -> str | None:
+        """Resolve path to this agent's settings.json, or None."""
+        path = self.workspace / "settings.json"
+        return str(path) if path.exists() else None
+
+    def get_effort(self, task_type: str = "default") -> str:
+        """Get effort level for a task type.
+
+        task_type: 'default', 'planning', 'chat', 'scheduled', 'heartbeat'
+        """
+        return _EFFORT_BY_TASK_TYPE.get(task_type, "medium")
 
     def check_mcp_health(self) -> dict[str, str]:
         """Check if agent's MCP tools config is valid. Returns {server_name: status}."""
@@ -217,20 +246,31 @@ class Agent:
             if steer_path.exists():
                 steer = steer_path.read_text().strip()
                 if steer:
-                    critical.append(f"## STEERING (priority instructions)\n{steer}")
+                    critical.append(
+                        f"<important>\n## STEERING (priority instructions)\n{steer}\n</important>"
+                    )
 
         critical.append(
+            "<important>\n"
             "## Planning Protocol\n"
-            "For multi-step or complex tasks: ALWAYS plan first using Opus-level reasoning.\n"
-            "1. Outline your approach, steps, dependencies, and risks.\n"
-            "2. Publish the plan to the user IMMEDIATELY.\n"
-            "3. Execute autonomously — do NOT wait for approval.\n"
-            "4. Update the user if the plan changes during execution.\n"
-            "Skip planning for simple single-step queries."
+            "For multi-step or complex tasks:\n"
+            "1. RESEARCH — Gather context. Read relevant files, check current state.\n"
+            "2. PLAN — Outline approach, steps, dependencies, and risks.\n"
+            "3. PUBLISH the plan to the user immediately.\n"
+            "4. EXECUTE autonomously — do NOT wait for approval.\n"
+            "5. VERIFY — Before declaring done, verify your output works correctly.\n"
+            "   Run tests, check builds, confirm the change does what was asked.\n"
+            "6. REPORT — Summarise what was done, what was verified, any issues found.\n"
+            "If the plan changes during execution, update the user.\n"
+            "Skip planning for simple single-step queries.\n"
+            "</important>"
         )
 
         # -- Tier 2: High priority --
         high: list[str] = []
+
+        if ident.gotchas:
+            high.append(f"<important>\n## Gotchas\n{ident.gotchas}\n</important>")
 
         if ident.agents_rules:
             high.append(f"## Operating Rules\n{ident.agents_rules}")
@@ -255,6 +295,15 @@ class Agent:
 
         if ident.tools_guidance:
             medium.append(f"## Tools\n{ident.tools_guidance}")
+
+        if not self.is_orchestrator:
+            medium.append(
+                "## Available Capabilities\n"
+                "- When refactoring, review for reuse, quality, and efficiency\n"
+                "- For bulk operations, run the same command across multiple files\n"
+                "- For debugging, methodically isolate: read error, check assumptions, targeted fix\n"
+                "- Always verify changes: run tests, check builds, confirm behaviour matches intent"
+            )
 
         if self.shared_dir:
             events_path = self.shared_dir / "events.md"

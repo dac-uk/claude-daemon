@@ -21,7 +21,7 @@ def test_catalog_has_expected_servers():
     assert "tavily" in MCP_SERVER_CATALOG
     assert "fetch" in MCP_SERVER_CATALOG
     assert "time" in MCP_SERVER_CATALOG
-    assert len(MCP_SERVER_CATALOG) >= 36
+    assert len(MCP_SERVER_CATALOG) >= 37
 
 
 def test_catalog_entries_have_required_fields():

@@ -122,6 +122,8 @@ class ProcessManager:
         env = os.environ.copy()
         # Override the 90s default idle timeout — Opus thinking phases can take several minutes
         env["CLAUDE_STREAM_IDLE_TIMEOUT_MS"] = str(self.config.stream_idle_timeout_ms)
+        # Auto-compact at configured % to prevent context degradation in long sessions
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(self.config.auto_compact_pct)
         return env
 
     def _build_args(
@@ -133,6 +135,8 @@ class ProcessManager:
         output_format: str = "json",
         model_override: str | None = None,
         mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> tuple[list[str], str]:
         """Build the claude CLI arguments. Returns (args, tracking_id)."""
         args = [
@@ -162,6 +166,14 @@ class ProcessManager:
         if mcp_path:
             args.extend(["--mcp-config", mcp_path])
 
+        # Per-agent settings.json (permissions, thinking, etc.)
+        if settings_path:
+            args.extend(["--settings", settings_path])
+
+        # Effort level: controls reasoning depth within a model
+        if effort:
+            args.extend(["--effort", effort])
+
         if system_context:
             args.extend(["--append-system-prompt", system_context])
 
@@ -178,6 +190,8 @@ class ProcessManager:
         user_id: str = "local",
         model_override: str | None = None,
         mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> ClaudeResponse:
         """Send a prompt and return the complete response (buffered mode).
 
@@ -194,19 +208,19 @@ class ProcessManager:
                 async with self._semaphore:
                     return await self._execute_buffered(
                         prompt, None, system_context, budget, platform, user_id,
-                        model_override, mcp_config_path,
+                        model_override, mcp_config_path, settings_path, effort,
                     )
             async with lock:
                 async with self._semaphore:
                     return await self._execute_buffered(
                         prompt, session_id, system_context, budget, platform, user_id,
-                        model_override, mcp_config_path,
+                        model_override, mcp_config_path, settings_path, effort,
                     )
         else:
             async with self._semaphore:
                 return await self._execute_buffered(
                     prompt, session_id, system_context, budget, platform, user_id,
-                    model_override, mcp_config_path,
+                    model_override, mcp_config_path, settings_path, effort,
                 )
 
     async def stream_message(
@@ -219,6 +233,8 @@ class ProcessManager:
         user_id: str = "local",
         model_override: str | None = None,
         mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a response token-by-token. Yields text chunks, then final ClaudeResponse.
 
@@ -243,6 +259,7 @@ class ProcessManager:
             prompt, session_id, system_context, budget,
             output_format="stream-json", model_override=model_override,
             mcp_config_path=mcp_config_path,
+            settings_path=settings_path, effort=effort,
         )
 
         log.debug("Streaming Claude: session=%s, model=%s, prompt_len=%d",
@@ -334,6 +351,8 @@ class ProcessManager:
         max_budget: float, platform: str, user_id: str,
         model_override: str | None = None,
         mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> ClaudeResponse:
         """Execute claude CLI with automatic model fallback on rate limit errors."""
         max_retries = self.config.model_max_retries
@@ -341,7 +360,7 @@ class ProcessManager:
             # Fallback disabled — single attempt
             response, _ = await self._execute_buffered_once(
                 prompt, session_id, system_context, max_budget, platform, user_id,
-                model_override, mcp_config_path,
+                model_override, mcp_config_path, settings_path, effort,
             )
             response.model_used = model_override or ""
             return response
@@ -352,7 +371,7 @@ class ProcessManager:
         for i, model in enumerate(chain[:max_retries + 1]):
             response, stderr_text = await self._execute_buffered_once(
                 prompt, session_id, system_context, max_budget, platform, user_id,
-                model, mcp_config_path,
+                model, mcp_config_path, settings_path, effort,
             )
             response.model_used = model
             last_response = response
@@ -374,11 +393,14 @@ class ProcessManager:
         max_budget: float, platform: str, user_id: str,
         model_override: str | None = None,
         mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+        effort: str | None = None,
     ) -> tuple[ClaudeResponse, str]:
         """Execute a single buffered Claude CLI call. Returns (response, stderr_text)."""
         args, tracking_id = self._build_args(
             prompt, session_id, system_context, max_budget,
             model_override=model_override, mcp_config_path=mcp_config_path,
+            settings_path=settings_path, effort=effort,
         )
 
         log.debug("Executing Claude: session=%s, prompt_len=%d", tracking_id, len(prompt))

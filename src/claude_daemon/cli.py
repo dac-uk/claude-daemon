@@ -380,6 +380,37 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
         print(f"MCP configs refreshed: {sample} servers active across {len(counts)} agents.")
 
 
+def _cmd_thinking(args: argparse.Namespace) -> None:
+    """Toggle extended thinking for all agents."""
+    from claude_daemon.core.config import DaemonConfig
+    from claude_daemon.agents.bootstrap import refresh_agent_configs
+
+    config = DaemonConfig.load()
+    enabled = args.toggle == "on"
+    config.thinking_enabled = enabled
+
+    agents_dir = config.data_dir / "agents"
+    counts = refresh_agent_configs(
+        agents_dir,
+        disabled_servers=config.disabled_mcp_servers,
+        deny_rules=config.agent_deny_rules,
+        thinking_enabled=enabled,
+    )
+    state = "on" if enabled else "off"
+    print(f"Extended thinking: {state} (updated {len(counts)} agents)")
+
+
+def _cmd_effort(args: argparse.Namespace) -> None:
+    """Set reasoning effort level for all tasks."""
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+    level = args.level
+    config.default_effort = level
+    print(f"Default effort set to: {level}")
+    print("Note: this takes effect on next daemon restart or config reload.")
+
+
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
     from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
@@ -509,6 +540,14 @@ def main() -> None:
     p_mcp_dis.add_argument("server", help="Server name")
     p_mcp_sub.add_parser("refresh", help="Regenerate tools.json from current env")
 
+    # thinking
+    p_thinking = sub.add_parser("thinking", help="Toggle extended thinking for all agents")
+    p_thinking.add_argument("toggle", choices=["on", "off"], help="on or off")
+
+    # effort
+    p_effort = sub.add_parser("effort", help="Set reasoning effort level for all tasks")
+    p_effort.add_argument("level", choices=["low", "medium", "high", "max"], help="Effort level")
+
     # agents
     p_agents = sub.add_parser("agents", help="Manage agents")
     p_agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -534,6 +573,8 @@ def main() -> None:
         "jobs": _cmd_jobs,
         "env": _cmd_env,
         "mcp": _cmd_mcp,
+        "thinking": _cmd_thinking,
+        "effort": _cmd_effort,
         "agents": _cmd_agents,
     }
 

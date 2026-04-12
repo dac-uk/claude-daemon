@@ -5,14 +5,18 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 ## Features
 
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
-- **MCP Server Pool (36 servers)** - Tiered shared pool of MCP servers available to all agents. Zero-config servers (fetch, git, time, memory, context7, playwright, etc.) are always on. Token-required servers auto-enable when you set the env var. Manage via `/mcp list`, `/mcp enable`, `/mcp disable`.
+- **MCP Server Pool (37 servers)** - Tiered shared pool of MCP servers available to all agents. Zero-config servers (fetch, git, time, memory, context7, playwright, etc.) are always on. Token-required servers auto-enable when you set the env var. Manage via `/mcp list`, `/mcp enable`, `/mcp disable`.
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
 - **Graceful Model Degradation** - If Opus is rate-limited or unavailable, automatically falls back to Sonnet, then Haiku. Configurable fallback chain — no failed requests from transient capacity issues.
 - **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
 - **Fuzzy Agent Matching** - Type `@jony` and it routes to `johnny`. Close-enough name typos resolved automatically with no error or fallback to the wrong agent.
 - **Per-Agent Channels** - Bind Telegram groups or Discord channels to specific agents. Dedicated channels for Albert, Luna, etc.
 - **Cross-Platform Sessions** - Start a conversation on Telegram, continue on Discord, pick up from CLI. Sessions follow the user, not the platform.
-- **Mandatory Planning** - For complex tasks, agents plan first (Opus), publish the plan immediately, then execute autonomously without waiting for approval.
+- **Mandatory Planning (Research→Plan→Execute→Verify→Report)** - For complex tasks, agents research context, plan with Opus, publish immediately, execute autonomously, verify output works, and report results. Critical instructions wrapped in `<important>` tags for reliable adherence.
+- **Per-Agent Settings.json** - Autonomy-first permissions (all tools allowed) with deterministic deny rules blocking dangerous operations (`rm -rf`, `sudo`, force-push) at the CLI level. Extended thinking enabled by default. Configurable via `/thinking` and `/effort` commands.
+- **Effort Level Control** - Two-dimensional control: model routing (Opus/Sonnet/Haiku) PLUS reasoning depth (low/medium/high/max). Scheduled tasks use low effort for speed; planning uses high effort for quality. Adjustable via `/effort` command.
+- **Auto-Compact at 50%** - Prevents context degradation in long resumed sessions by triggering compaction at 50% context usage (CLI default waits much longer).
+- **Domain Gotchas** - Per-agent failure-point documentation injected as high-priority context. Highest-signal content type per best practices research.
 - **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, proposals delivered to you automatically.
 - **Agent Heartbeats** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings, Albert audits tech debt, Max runs quality retrospectives.
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
@@ -112,7 +116,7 @@ This means you'll always know immediately if something is misconfigured — the 
 
 ## MCP Server Pool
 
-The daemon ships with **36 MCP servers** available as a shared pool to all agents. Servers are organized into three tiers:
+The daemon ships with **37 MCP servers** available as a shared pool to all agents. Servers are organized into three tiers:
 
 | Tier | Description | In tools.json? |
 |------|-------------|-----------------|
@@ -147,6 +151,7 @@ The daemon ships with **36 MCP servers** available as a shared pool to all agent
 | `git` | @modelcontextprotocol/server-git | *(none)* | T1 |
 | `context7` | @upstash/context7-mcp | *(none)* | T1 |
 | `playwright` | @anthropic-ai/mcp-playwright | *(none)* | T1 |
+| `computer-use` | @anthropic-ai/computer-use-mcp-server | *(none)* | T1 |
 | `docker` | @modelcontextprotocol/server-docker | *(none)* | T1 |
 | `codebase-memory` | codebase-memory-mcp | *(none)* | T1 |
 | `github` | @anthropic-ai/claude-code-github-mcp | `GITHUB_TOKEN` | T2 |
@@ -303,6 +308,8 @@ All commands are available on **both** Telegram and Discord with full feature pa
 | `/mcp enable X` | Enable a disabled MCP server |
 | `/mcp disable X` | Disable an MCP server |
 | `/mcp refresh` | Regenerate MCP configs from current env vars |
+| `/thinking on\|off` | Toggle extended thinking for all agents |
+| `/effort low\|medium\|high\|max` | Set reasoning depth (low=fast/cheap, high=deep) |
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
@@ -648,6 +655,8 @@ GET  /api/mcp                 — List all MCP servers with tier and status
 POST /api/mcp/enable          — Enable a disabled server {"server": "tavily"}
 POST /api/mcp/disable         — Disable a server {"server": "snowflake"}
 POST /api/mcp/refresh         — Regenerate tools.json for all agents
+POST /api/settings/thinking   — Toggle extended thinking {"enabled": true/false}
+POST /api/settings/effort     — Set effort level {"level": "low/medium/high/max"}
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
@@ -689,7 +698,7 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Log retention** | Daily agent logs older than `log_retention_days` (default: 30) are garbage-collected nightly. |
 | **Context priority** | SOUL + steering always included. Low-priority blocks (vision, playbooks) trimmed first when tight. |
 | **MCP health** | `/api/agents` includes `mcp_health` for each agent — detects unresolved `${ENV_VAR}` placeholders. |
-| **MCP tiered pool** | 36 MCP servers in a shared pool. Zero-config servers always active; token-required auto-enable when vars set. Managed via `/mcp list/enable/disable/refresh`. |
+| **MCP tiered pool** | 37 MCP servers in a shared pool. Zero-config servers always active; token-required auto-enable when vars set. Managed via `/mcp list/enable/disable/refresh`. |
 | **Model fallback** | Rate-limited or unavailable models automatically retry with the next model in the chain (default: opus -> sonnet -> haiku). Configurable via `model_fallback_chain`. |
 | **Agent hot-reload** | File watcher polls every 10s for changes to IDENTITY.md, SOUL.md, AGENTS.md. Edits take effect on the next message — no daemon restart needed. |
 | **Alert webhooks** | Failures, circuit breaker events, and updates are POSTed as JSON to configured webhook URLs (Slack, PagerDuty, custom). Fire-and-forget with timeout — never blocks the scheduler. |

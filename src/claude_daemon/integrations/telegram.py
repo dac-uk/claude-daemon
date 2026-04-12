@@ -81,6 +81,8 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("setenv", self._cmd_setenv))
         self._app.add_handler(CommandHandler("getenv", self._cmd_getenv))
         self._app.add_handler(CommandHandler("mcp", self._cmd_mcp))
+        self._app.add_handler(CommandHandler("thinking", self._cmd_thinking))
+        self._app.add_handler(CommandHandler("effort", self._cmd_effort))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -632,3 +634,35 @@ class TelegramIntegration(BaseIntegration):
                 "  /mcp disable X   — disable a server\n"
                 "  /mcp refresh     — regenerate configs from current env"
             )
+
+    async def _cmd_thinking(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        args = (update.message.text or "").split()
+        if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            await update.message.reply_text(
+                "Usage: /thinking on|off\n\n"
+                "Toggles extended thinking for all agents.\n"
+                f"Currently: {'on' if self.daemon.config.thinking_enabled else 'off'}"
+            )
+            return
+        enabled = args[1].lower() == "on"
+        result = await self.daemon.set_thinking(enabled)
+        await update.message.reply_text(result)
+
+    async def _cmd_effort(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        args = (update.message.text or "").split()
+        if len(args) < 2:
+            current = self.daemon.config.default_effort or "per-task-type"
+            await update.message.reply_text(
+                "Usage: /effort low|medium|high|max\n\n"
+                "Sets reasoning depth for all tasks.\n"
+                f"Currently: {current}"
+            )
+            return
+        result = await self.daemon.set_default_effort(args[1].lower())
+        await update.message.reply_text(result)

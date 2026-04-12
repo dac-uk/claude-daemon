@@ -56,6 +56,8 @@ class HttpApi:
         self._app.router.add_post("/api/mcp/enable", self._handle_mcp_enable)
         self._app.router.add_post("/api/mcp/disable", self._handle_mcp_disable)
         self._app.router.add_post("/api/mcp/refresh", self._handle_mcp_refresh)
+        self._app.router.add_post("/api/settings/thinking", self._handle_settings_thinking)
+        self._app.router.add_post("/api/settings/effort", self._handle_settings_effort)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -446,4 +448,30 @@ class HttpApi:
     async def _handle_mcp_refresh(self, request: web.Request) -> web.Response:
         """POST /api/mcp/refresh — regenerate tools.json for all agents."""
         result = await self.daemon.refresh_mcp()
+        return web.json_response({"status": "ok", "message": result})
+
+    # -- Settings --
+
+    async def _handle_settings_thinking(self, request: web.Request) -> web.Response:
+        """POST /api/settings/thinking — toggle extended thinking."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        enabled = body.get("enabled")
+        if enabled is None or not isinstance(enabled, bool):
+            return web.json_response({"error": "Missing 'enabled' (bool)"}, status=400)
+        result = await self.daemon.set_thinking(enabled)
+        return web.json_response({"status": "ok", "message": result})
+
+    async def _handle_settings_effort(self, request: web.Request) -> web.Response:
+        """POST /api/settings/effort — set reasoning effort level."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        level = body.get("level", "").strip().lower()
+        if not level:
+            return web.json_response({"error": "Missing 'level'"}, status=400)
+        result = await self.daemon.set_default_effort(level)
         return web.json_response({"status": "ok", "message": result})

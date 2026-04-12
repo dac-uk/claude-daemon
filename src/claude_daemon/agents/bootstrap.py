@@ -66,6 +66,11 @@ CSUITE_AGENTS = [
             "4. If the plan changes during execution, update the user.\n"
             "This applies to all agents. Simple single-step queries skip planning.\n"
         ),
+        "gotchas": (
+            "- Never write code yourself. You are the orchestrator. Delegate ALL implementation.\n"
+            "- Always verify the agent you delegate to has finished before reporting to Dave.\n"
+            "- When multiple agents are involved, sequence dependencies correctly.\n"
+        ),
         # mcp_servers: all agents now share the full MCP pool via refresh_agent_tools_json()
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
@@ -125,6 +130,12 @@ CSUITE_AGENTS = [
             "- Research better tools, libraries, and architectural patterns for our stack.\n"
             "- When you find a better way, write it to shared/playbooks/ for the whole team.\n"
         ),
+        "gotchas": (
+            "- Always run tests after code changes. Never assume a change is safe.\n"
+            "- Check for breaking API changes before modifying shared interfaces.\n"
+            "- Commit atomically — one logical change per commit, never batch unrelated changes.\n"
+            "- Do NOT touch UI/View files. That is Luna's domain.\n"
+        ),
         # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
@@ -177,6 +188,29 @@ CSUITE_AGENTS = [
             "- Build and maintain a design system. Document patterns in shared/playbooks/.\n"
             "- When you solve a tricky layout or animation, write a playbook for next time.\n"
         ),
+        "gotchas": (
+            "- Run the app and visually verify every UI change. Never ship unseen.\n"
+            "- Test both light mode and dark mode for every screen.\n"
+            "- Do NOT write backend logic. That is Albert's domain.\n"
+        ),
+        "tools": (
+            "# Design Tools\n\n"
+            "## UI/UX Pro Max (npx uipro-cli)\n"
+            "Design intelligence tool with:\n"
+            "- 161 industry-specific reasoning rules (SaaS, FinTech, Healthcare, E-commerce, etc.)\n"
+            "- 67 UI styles (Glassmorphism, Neumorphism, Brutalism, Dark Mode, AI-Native, Bento Grids)\n"
+            "- 161 colour palettes with accessibility validation\n"
+            "- 57 font pairings (Google Fonts) with mood alignment\n"
+            "- Anti-pattern lists per industry\n"
+            "Run `npx uipro-cli` when you need design system guidance, colour palette suggestions,\n"
+            "typography recommendations, or industry-specific UI patterns.\n\n"
+            "## Design Principles\n"
+            "- Mobile-first responsive design\n"
+            "- WCAG 2.1 AA accessibility as baseline\n"
+            "- Consistent spacing scale (4px base)\n"
+            "- Design tokens over hardcoded values\n"
+            "- Component-first architecture\n"
+        ),
         # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
@@ -216,6 +250,11 @@ CSUITE_AGENTS = [
             "- Track recurring bugs by category. If the same type of bug appears 3+ times, write a playbook.\n"
             "- Maintain a quality checklist in shared/checklists/ and evolve it based on what you find.\n"
             "- Propose automated checks for the most common failure modes.\n"
+        ),
+        "gotchas": (
+            "- Finding zero issues on first pass is a red flag. Look harder.\n"
+            "- Always check both happy path and edge cases.\n"
+            "- Route bugs precisely: UI issues to Luna, logic issues to Albert.\n"
         ),
         # mcp_servers: shared pool
         "heartbeat": (
@@ -259,6 +298,11 @@ CSUITE_AGENTS = [
             "- Identify cost optimisation opportunities. Can we use cheaper models for some tasks?\n"
             "- Track ROI per agent and per initiative. Propose cuts and investments.\n"
             "- Research new pricing models, discounts, or efficiency tools.\n"
+        ),
+        "gotchas": (
+            "- Token costs spike during Opus planning. Check cost before long-running tasks.\n"
+            "- Daily budget limits are per-agent. Don't assume another agent's budget.\n"
+            "- Always present costs with context (percentage of budget, trend vs average).\n"
         ),
         # mcp_servers: shared pool
         "heartbeat": (
@@ -306,6 +350,11 @@ CSUITE_AGENTS = [
             "- Maintain a risk register in shared/playbooks/risk-register.md.\n"
             "- When a vulnerability is found and fixed, write the pattern to prevent recurrence.\n"
         ),
+        "gotchas": (
+            "- Never log, display, or include secrets, tokens, or credentials in output.\n"
+            "- Check file permissions after creating sensitive files.\n"
+            "- Always provide mitigations alongside risk identification.\n"
+        ),
         # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
@@ -351,6 +400,11 @@ CSUITE_AGENTS = [
             "- Track regulatory changes that affect our operations.\n"
             "- Maintain a compliance checklist in shared/checklists/compliance.md.\n"
             "- When a legal question is answered, write the ruling to shared/playbooks/ for reuse.\n"
+        ),
+        "gotchas": (
+            "- Legal advice must cite jurisdiction and applicable law. Never give unqualified opinions.\n"
+            "- Flag time-sensitive compliance deadlines with explicit dates.\n"
+            "- Balance caution with commercial pragmatism — don't block velocity unnecessarily.\n"
         ),
         # mcp_servers: shared pool
         "heartbeat": (
@@ -516,6 +570,13 @@ MCP_SERVER_CATALOG: dict[str, dict] = {
         "env": {},
         "category": "developer",
         "description": "Browser automation and testing",
+    },
+    "computer-use": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/computer-use-mcp-server@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Control screen — open apps, click, type, and screenshot display",
     },
     "docker": {
         "command": "npx",
@@ -719,17 +780,80 @@ def generate_mcp_config(disabled_servers: list[str] | None = None) -> dict:
     return {"mcpServers": servers}
 
 
-def refresh_agent_tools_json(
+# ---------------------------------------------------------------------------
+# Agent settings.json — autonomy-first permissions with safety deny rules
+# ---------------------------------------------------------------------------
+
+# Autonomy-first: all tool permissions enabled by default
+AGENT_ALLOW_RULES: list[str] = [
+    "Bash(*)", "Read(*)", "Edit(*)", "Write(*)",
+    "Glob(*)", "Grep(*)", "NotebookEdit(*)",
+    "WebFetch(domain:*)", "WebSearch",
+    "Agent(*)", "Task(*)", "mcp__*",
+]
+
+# Deterministic safety net — blocks at CLI level before model sees tool call
+AGENT_DENY_RULES: list[str] = [
+    "Bash(rm -rf /)", "Bash(rm -rf /*)",
+    "Bash(sudo *)",
+    "Bash(curl * | bash)", "Bash(curl * | sh)",
+    "Bash(wget * | bash)", "Bash(wget * | sh)",
+    "Bash(git push --force origin main)",
+    "Bash(git push --force origin master)",
+    "Bash(shutdown *)", "Bash(reboot *)",
+    "Bash(mkfs *)", "Bash(dd if=*)",
+    "Bash(DROP TABLE *)", "Bash(drop table *)",
+]
+
+
+def generate_agent_settings(
+    allow_rules: list[str] | None = None,
+    deny_rules: list[str] | None = None,
+    thinking_enabled: bool = True,
+) -> dict:
+    """Build a settings.json dict for agent CLI sessions.
+
+    Autonomy-first: all tool permissions are allowed by default.
+    The deny list provides a deterministic safety net on top of
+    ``--permission-mode auto``.
+    """
+    effective_deny = list(AGENT_DENY_RULES)
+    if deny_rules:
+        for rule in deny_rules:
+            if rule not in effective_deny:
+                effective_deny.append(rule)
+    return {
+        "permissions": {
+            "allow": allow_rules or list(AGENT_ALLOW_RULES),
+            "deny": effective_deny,
+        },
+        "alwaysThinkingEnabled": thinking_enabled,
+        "includeGitInstructions": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unified config refresh — tools.json + settings.json for every agent
+# ---------------------------------------------------------------------------
+
+def refresh_agent_configs(
     agents_dir: Path,
     disabled_servers: list[str] | None = None,
+    deny_rules: list[str] | None = None,
+    thinking_enabled: bool = True,
 ) -> dict[str, int]:
-    """Regenerate tools.json for every agent workspace.
+    """Regenerate tools.json AND settings.json for every agent workspace.
 
     Returns ``{agent_name: server_count}`` for each agent updated.
     """
     mcp_config = generate_mcp_config(disabled_servers)
     server_count = len(mcp_config.get("mcpServers", {}))
-    payload = json.dumps(mcp_config, indent=2) + "\n"
+    mcp_payload = json.dumps(mcp_config, indent=2) + "\n"
+
+    settings = generate_agent_settings(
+        deny_rules=deny_rules, thinking_enabled=thinking_enabled,
+    )
+    settings_payload = json.dumps(settings, indent=2) + "\n"
 
     results: dict[str, int] = {}
     if not agents_dir.is_dir():
@@ -737,10 +861,19 @@ def refresh_agent_tools_json(
 
     for child in sorted(agents_dir.iterdir()):
         if child.is_dir() and (child / "IDENTITY.md").exists():
-            (child / "tools.json").write_text(payload)
+            (child / "tools.json").write_text(mcp_payload)
+            (child / "settings.json").write_text(settings_payload)
             results[child.name] = server_count
 
     return results
+
+
+def refresh_agent_tools_json(
+    agents_dir: Path,
+    disabled_servers: list[str] | None = None,
+) -> dict[str, int]:
+    """Backwards-compatible alias — delegates to refresh_agent_configs."""
+    return refresh_agent_configs(agents_dir, disabled_servers=disabled_servers)
 
 
 def get_mcp_catalog_status(disabled_servers: list[str] | None = None) -> list[dict]:
@@ -825,11 +958,25 @@ def create_csuite_workspaces(agents_dir: Path) -> int:
         if rules:
             (workspace / "AGENTS.md").write_text(rules)
 
-        # tools.json is generated at daemon startup by refresh_agent_tools_json()
-        # to ensure it reflects the current env-var state.  Write an empty
-        # scaffold here so the file exists for identity loading.
+        # tools.json + settings.json are generated at daemon startup by
+        # refresh_agent_configs() to reflect current env-var state.
+        # Write empty scaffolds here so files exist for identity loading.
         if not (workspace / "tools.json").exists():
             (workspace / "tools.json").write_text('{"mcpServers": {}}\n')
+        if not (workspace / "settings.json").exists():
+            (workspace / "settings.json").write_text(
+                json.dumps(generate_agent_settings(), indent=2) + "\n"
+            )
+
+        # GOTCHAS.md
+        gotchas = agent_def.get("gotchas", "")
+        if gotchas:
+            (workspace / "GOTCHAS.md").write_text(f"# Gotchas\n\n{gotchas}")
+
+        # TOOLS.md
+        tools = agent_def.get("tools", "")
+        if tools:
+            (workspace / "TOOLS.md").write_text(tools)
 
         # HEARTBEAT.md
         heartbeat = agent_def.get("heartbeat", "")
