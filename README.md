@@ -8,6 +8,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Per-Agent MCP Tools** - Each agent gets their own MCP server config (GitHub, Slack, Gmail, Google Calendar, Supabase) so they can actually interact with the world
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
 - **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
+- **Fuzzy Agent Matching** - Type `@jony` and it routes to `johnny`. Close-enough name typos resolved automatically with no error or fallback to the wrong agent.
 - **Per-Agent Channels** - Bind Telegram groups or Discord channels to specific agents. Dedicated channels for Albert, Luna, etc.
 - **Cross-Platform Sessions** - Start a conversation on Telegram, continue on Discord, pick up from CLI. Sessions follow the user, not the platform.
 - **Mandatory Planning** - For complex tasks, agents plan first (Opus), publish the plan immediately, then execute autonomously without waiting for approval.
@@ -25,8 +26,8 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **DB Integrity** - SQLite `PRAGMA integrity_check` runs on startup. Corrupt databases are flagged in logs before any data is written.
 - **Streaming Responses** - Live streaming to Telegram and Discord with throttled message edits
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
-- **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs
-- **Full-Text Search** - FTS5-indexed conversation history for searching past interactions
+- **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
+- **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.
 - **Agent Metrics** - Per-agent cost tracking, token usage, and performance metrics
 - **Service Files** - systemd and launchd support for true daemon operation
 
@@ -402,6 +403,23 @@ Multi-step agent orchestration triggered via `/workflow` or `POST /api/workflow`
 - **Parallel**: Fan-out to multiple agents simultaneously, collect all results
 - **Review Loop**: Build-review cycle with retry (Albert builds, Max reviews, fix loop)
 
+Each step has a configurable **timeout** (default: 600s). If a step takes longer, it fails cleanly and the workflow stops — no hung pipelines.
+
+Workflows accept an optional **cost cap** (`max_total_cost`). If the accumulated spend across all steps hits the cap, remaining steps are skipped and the workflow reports the breach. Set `max_total_cost=0` (the default) for unlimited.
+
+```python
+# Example via HTTP API
+POST /api/workflow
+{
+  "steps": [
+    {"agent": "albert", "prompt": "build the feature", "timeout": 300},
+    {"agent": "luna",   "prompt": "style it: {prev_result}", "timeout": 120},
+    {"agent": "max",    "prompt": "review: {prev_result}", "timeout": 120}
+  ],
+  "max_total_cost": 2.00   # Stop if total cost exceeds $2
+}
+```
+
 ## Live Agent Dashboard
 
 A browser-based dashboard showing all agents as a live force graph with real-time status, streaming output, and event log.
@@ -467,7 +485,12 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 |---------|-----------|
 | **Webhook auth** | GitHub verifies `X-Hub-Signature-256`; Stripe verifies `t=...,v1=...` — both HMAC-SHA256. 403 on failure. |
 | **Async webhooks** | All webhook handlers return 202 immediately; agent processing happens in a background task. |
-| **Circuit breaker** | Heartbeat jobs pause after 3 consecutive failures; resume automatically on next success. |
+| **Circuit breaker** | Heartbeat jobs pause after 3 consecutive failures; resume automatically on next success. State persists to `.circuit_breaker.json` — a paused job stays paused across daemon restarts. |
+| **File-locked memory** | All MEMORY.md writes use `fcntl.LOCK_EX`. Concurrent agent writes are serialized — no silent overwrites or data loss when multiple agents update memory simultaneously. |
+| **Fuzzy agent routing** | `@jony` resolves to `johnny` via difflib (similarity ≥ 0.6). Unknown names that are close enough auto-correct; genuinely unknown names fall through to the orchestrator gracefully. |
+| **FTS5 safe search** | User search queries are escaped before hitting SQLite FTS5 — each word is quoted to neutralize special characters (`*`, `"`, `-`). No syntax errors from user input. |
+| **Session race safety** | Concurrent session creation for the same user uses `INSERT OR IGNORE` + re-fetch. Two rapid parallel requests never produce duplicate conversations. |
+| **Integration startup timeout** | Telegram and Discord connectors have a 30s startup timeout. A hung authentication attempt doesn't block the daemon from starting or serving other integrations. |
 | **DB integrity** | `PRAGMA integrity_check` runs on startup before any schema init. Errors logged clearly. |
 | **Log retention** | Daily agent logs older than `log_retention_days` (default: 30) are garbage-collected nightly. |
 | **Context priority** | SOUL + steering always included. Low-priority blocks (vision, playbooks) trimmed first when tight. |
@@ -531,6 +554,7 @@ claude:
   binary: claude
   max_concurrent: 5               # Parallel task limit (global)
   max_budget_per_message: 0.50
+  per_agent_daily_budget: 0.0     # Max USD per agent per day. 0 = unlimited.
   permission_mode: auto
 
 memory:
