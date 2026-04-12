@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -115,6 +116,13 @@ class ProcessManager:
         if session_id not in self._session_locks:
             self._session_locks[session_id] = asyncio.Lock()
         return self._session_locks[session_id]
+
+    def _subprocess_env(self) -> dict[str, str]:
+        """Build subprocess environment with Claude CLI overrides."""
+        env = os.environ.copy()
+        # Override the 90s default idle timeout — Opus thinking phases can take several minutes
+        env["CLAUDE_STREAM_IDLE_TIMEOUT_MS"] = str(self.config.stream_idle_timeout_ms)
+        return env
 
     def _build_args(
         self,
@@ -245,6 +253,7 @@ class ProcessManager:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._subprocess_env(),
             )
 
             active = ActiveSession(
@@ -379,6 +388,7 @@ class ProcessManager:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._subprocess_env(),
             )
 
             active = ActiveSession(

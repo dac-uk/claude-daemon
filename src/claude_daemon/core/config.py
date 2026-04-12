@@ -47,6 +47,7 @@ class DaemonConfig:
     model_fallback_chain: list[str] = field(default_factory=lambda: ["sonnet", "haiku"])
     model_retry_delay: float = 2.0  # Seconds between fallback retries
     model_max_retries: int = 2  # 0 disables model fallback
+    stream_idle_timeout_ms: int = 600_000  # ms before idle stream is killed (default 90s is too short for Opus thinking)
 
     # Memory
     daily_log_enabled: bool = True
@@ -177,6 +178,7 @@ class DaemonConfig:
             model_fallback_chain=claude_cfg.get("model_fallback_chain", ["sonnet", "haiku"]),
             model_retry_delay=float(claude_cfg.get("model_retry_delay", 2.0)),
             model_max_retries=int(claude_cfg.get("model_max_retries", 2)),
+            stream_idle_timeout_ms=int(claude_cfg.get("stream_idle_timeout_ms", 600_000)),
             disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),

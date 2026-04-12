@@ -27,6 +27,7 @@ claude:
   #   - haiku
   # model_retry_delay: 2.0      # Seconds between fallback retries
   # model_max_retries: 2        # Max fallback attempts (0 disables)
+  # stream_idle_timeout_ms: 600000  # Idle timeout for streaming responses (default 600s; CLI default is 90s which breaks Opus thinking)
 
   # MCP Server Pool — tiered auto-enable
   # Zero-config servers are always available. Token-required servers
