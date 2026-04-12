@@ -98,6 +98,7 @@ class ClaudeDaemon:
         self.agent_registry.load_all()
         self.orchestrator = Orchestrator(
             self.agent_registry, self.process_manager, self.store,
+            hub=getattr(self, "_dashboard_hub", None),
         )
         self.workflow_engine = WorkflowEngine(
             self.orchestrator, self.agent_registry,
@@ -529,6 +530,10 @@ class ClaudeDaemon:
                 )
                 await self._http_api.start()
                 log.info("HTTP API started on port %d", self.config.api_port)
+
+                # Wire the dashboard hub to the orchestrator for live events
+                if self.orchestrator and self._http_api.hub:
+                    self.orchestrator.hub = self._http_api.hub
             except ImportError:
                 log.warning("aiohttp not available (pip install aiohttp)")
             except Exception:

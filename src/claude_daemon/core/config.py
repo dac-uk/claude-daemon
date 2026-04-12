@@ -65,7 +65,9 @@ class DaemonConfig:
     # HTTP API
     api_enabled: bool = False
     api_port: int = 8080
+    api_bind: str = "0.0.0.0"  # Bind address (0.0.0.0 = all interfaces inc. Tailscale/ZeroTier)
     api_key: str = ""  # Bearer token for API auth (empty = no auth)
+    dashboard_enabled: bool = False  # Serve live agent dashboard at /
 
     # Rate limiting
     rate_limit_per_user: int = 20  # Messages per minute per user
@@ -171,7 +173,9 @@ class DaemonConfig:
             custom_jobs=sched_cfg.get("custom_jobs", []),
             api_enabled=daemon_cfg.get("api_enabled", False),
             api_port=int(daemon_cfg.get("api_port", 8080)),
+            api_bind=daemon_cfg.get("api_bind", "0.0.0.0"),
             api_key=os.environ.get("CLAUDE_DAEMON_API_KEY") or daemon_cfg.get("api_key", ""),
+            dashboard_enabled=daemon_cfg.get("dashboard_enabled", False),
             rate_limit_per_user=int(daemon_cfg.get("rate_limit_per_user", 20)),
             rate_limit_window=int(daemon_cfg.get("rate_limit_window", 60)),
             telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN") or tg_cfg.get("token"),

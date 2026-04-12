@@ -6,6 +6,8 @@ daemon:
   # api_enabled: true           # Enable HTTP REST API
   # api_port: 8080              # API port
   # api_key: ""                 # API auth key (or set CLAUDE_DAEMON_API_KEY env var)
+  # dashboard_enabled: true     # Serve live agent dashboard at http://host:port/
+  # api_bind: "0.0.0.0"        # Bind address (0.0.0.0 for LAN/Tailscale/ZeroTier access)
 
 claude:
   binary: claude                # Path to Claude Code CLI

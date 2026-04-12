@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Daemon — Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --orange: #d29922; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: var(--bg); color: var(--text); overflow: hidden; height: 100vh; }
+
+  /* Top bar */
+  .topbar { display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .topbar h1 { font-size: 16px; font-weight: 600; }
+  .topbar h1 span { color: var(--accent); }
+  .topbar-stats { display: flex; gap: 20px; font-size: 13px; color: var(--text-dim); }
+  .topbar-stats .stat-value { color: var(--text); font-weight: 600; }
+  .ws-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+            background: var(--red); margin-right: 6px; vertical-align: middle; }
+  .ws-dot.connected { background: var(--green); }
+
+  /* Layout */
+  .main { display: flex; height: calc(100vh - 49px); }
+  .graph-panel { flex: 1; position: relative; }
+  .side-panel { width: 380px; background: var(--surface); border-left: 1px solid var(--border);
+                display: flex; flex-direction: column; transition: width 0.2s; }
+  .side-panel.collapsed { width: 0; overflow: hidden; }
+
+  /* Graph */
+  svg { width: 100%; height: 100%; }
+  .node circle { stroke-width: 2.5; cursor: pointer; transition: r 0.3s; }
+  .node text { fill: var(--text); font-size: 12px; font-weight: 500; pointer-events: none; }
+  .node .role { fill: var(--text-dim); font-size: 10px; }
+  .node.busy circle { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.4; } }
+  .link { stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 2; }
+  .link.active { stroke: var(--accent); stroke-width: 2; stroke-dasharray: none;
+                 animation: flow 1s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -20; } }
+
+  /* Side panel */
+  .side-header { padding: 14px 16px; border-bottom: 1px solid var(--border);
+                 display: flex; justify-content: space-between; align-items: center; }
+  .side-header h2 { font-size: 14px; }
+  .side-header .close-btn { background: none; border: none; color: var(--text-dim);
+                            cursor: pointer; font-size: 18px; }
+  .stream-area { flex: 1; overflow-y: auto; padding: 12px 16px; font-family: 'SF Mono', monospace;
+                 font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+                 color: var(--text-dim); }
+  .stream-area .chunk { color: var(--text); }
+
+  /* Bottom event log */
+  .event-log { position: absolute; bottom: 0; left: 0; right: 380px; height: 120px;
+               background: var(--surface); border-top: 1px solid var(--border);
+               overflow-y: auto; padding: 8px 16px; font-size: 11px; color: var(--text-dim); }
+  .event-log.full-width { right: 0; }
+  .event-entry { padding: 2px 0; border-bottom: 1px solid rgba(48,54,61,0.5); }
+  .event-entry .ts { color: var(--text-dim); margin-right: 8px; }
+  .event-entry .agent-tag { color: var(--accent); font-weight: 600; }
+  .event-entry .type-tag { color: var(--purple); margin: 0 4px; }
+
+  /* Agent colors */
+  .agent-johnny { --c: #f0883e; } .agent-albert { --c: #58a6ff; }
+  .agent-luna { --c: #bc8cff; }   .agent-max { --c: #3fb950; }
+  .agent-penny { --c: #d29922; }  .agent-jeremy { --c: #f85149; }
+  .agent-sophie { --c: #a5d6ff; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1><span>Claude</span> Daemon</h1>
+  <div class="topbar-stats">
+    <div><span class="ws-dot" id="ws-dot"></span><span id="ws-status">Disconnected</span></div>
+    <div>Active: <span class="stat-value" id="stat-active">0</span></div>
+    <div>Agents: <span class="stat-value" id="stat-agents">0</span></div>
+    <div>Cost today: <span class="stat-value" id="stat-cost">$0.00</span></div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="graph-panel">
+    <svg id="graph"></svg>
+    <div class="event-log" id="event-log"></div>
+  </div>
+  <div class="side-panel collapsed" id="side-panel">
+    <div class="side-header">
+      <h2 id="side-agent-name">Agent</h2>
+      <button class="close-btn" onclick="closeSidePanel()">&times;</button>
+    </div>
+    <div class="stream-area" id="stream-area"></div>
+  </div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// -- State --
+const agents = {};       // name -> {name, role, emoji, model, status, color, streams: []}
+const tasks = {};         // task_id -> {agent, status, ...}
+const events = [];        // event log entries
+let selectedAgent = null;
+let ws = null;
+
+const AGENT_COLORS = {
+  johnny: '#f0883e', albert: '#58a6ff', luna: '#bc8cff', max: '#3fb950',
+  penny: '#d29922', jeremy: '#f85149', sophie: '#a5d6ff',
+};
+
+// -- WebSocket --
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const params = new URLSearchParams(location.search);
+  const key = params.get('key') || '';
+  const url = `${proto}//${location.host}/ws${key ? '?key=' + key : ''}`;
+
+  ws = new WebSocket(url);
+  ws.onopen = () => {
+    document.getElementById('ws-dot').classList.add('connected');
+    document.getElementById('ws-status').textContent = 'Connected';
+  };
+  ws.onclose = () => {
+    document.getElementById('ws-dot').classList.remove('connected');
+    document.getElementById('ws-status').textContent = 'Reconnecting...';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onmessage = (e) => {
+    try { handleEvent(JSON.parse(e.data)); } catch {}
+  };
+}
+
+function handleEvent(evt) {
+  switch (evt.type) {
+    case 'agent_status':
+      if (agents[evt.agent]) {
+        agents[evt.agent].status = evt.status;
+        if (evt.status === 'busy') {
+          agents[evt.agent].streams = [];
+        }
+        updateGraph();
+        updateStats();
+      }
+      addEventLog(evt.agent, evt.type, evt.status === 'busy'
+        ? `Processing: ${evt.prompt || '...'}`
+        : `Done ($${(evt.cost||0).toFixed(4)}, ${evt.duration_ms||0}ms)`);
+      break;
+
+    case 'stream_delta':
+      if (agents[evt.agent]) {
+        agents[evt.agent].streams.push(evt.text);
+        if (selectedAgent === evt.agent) renderStream();
+      }
+      break;
+
+    case 'task_update':
+      tasks[evt.task_id] = evt;
+      addEventLog(evt.agent, 'task', `${evt.task_id.slice(0,8)} ${evt.status}`);
+      break;
+
+    case 'auto_parallel':
+      addEventLog(evt.agent, 'parallel', `Auto-spawned session ${evt.session_id}`);
+      break;
+
+    case 'metrics_tick':
+      if (evt.metrics) {
+        let total = 0;
+        evt.metrics.forEach(m => { total += m.total_cost || 0; });
+        document.getElementById('stat-cost').textContent = '$' + total.toFixed(2);
+      }
+      break;
+  }
+}
+
+// -- Event log --
+function addEventLog(agent, type, text) {
+  const ts = new Date().toLocaleTimeString();
+  events.push({ ts, agent, type, text });
+  if (events.length > 200) events.shift();
+  const el = document.getElementById('event-log');
+  const entry = document.createElement('div');
+  entry.className = 'event-entry';
+  entry.innerHTML = `<span class="ts">${ts}</span><span class="agent-tag">${agent}</span><span class="type-tag">[${type}]</span> ${escHtml(text.slice(0, 120))}`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// -- Side panel --
+function openSidePanel(agentName) {
+  selectedAgent = agentName;
+  const panel = document.getElementById('side-panel');
+  panel.classList.remove('collapsed');
+  document.getElementById('event-log').classList.remove('full-width');
+  const a = agents[agentName];
+  document.getElementById('side-agent-name').textContent =
+    `${a.emoji || ''} ${agentName} — ${a.role || ''}`;
+  renderStream();
+}
+
+function closeSidePanel() {
+  selectedAgent = null;
+  document.getElementById('side-panel').classList.add('collapsed');
+  document.getElementById('event-log').classList.add('full-width');
+}
+
+function renderStream() {
+  const area = document.getElementById('stream-area');
+  const a = agents[selectedAgent];
+  if (!a) { area.textContent = ''; return; }
+  if (a.streams.length === 0) {
+    area.innerHTML = '<span style="color:var(--text-dim)">Waiting for activity...</span>';
+    return;
+  }
+  area.innerHTML = '<span class="chunk">' + escHtml(a.streams.join('')) + '</span>';
+  area.scrollTop = area.scrollHeight;
+}
+
+// -- D3 Force Graph --
+const svg = d3.select('#graph');
+let simulation, nodeGroup, linkGroup;
+let width, height;
+
+function initGraph() {
+  const rect = svg.node().getBoundingClientRect();
+  width = rect.width; height = rect.height - 120; // minus event log
+
+  linkGroup = svg.append('g').attr('class', 'links');
+  nodeGroup = svg.append('g').attr('class', 'nodes');
+
+  simulation = d3.forceSimulation()
+    .force('charge', d3.forceManyBody().strength(-400))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide(60))
+    .on('tick', ticked);
+}
+
+function updateGraph() {
+  const nodes = Object.values(agents).map(a => ({
+    id: a.name, ...a,
+    color: AGENT_COLORS[a.name] || '#58a6ff',
+  }));
+
+  // Orchestrator at center, others around
+  const links = nodes.filter(n => !n.is_orchestrator).map(n => ({
+    source: 'johnny', target: n.id,
+  }));
+
+  // Update simulation
+  simulation.nodes(nodes);
+  simulation.force('link', d3.forceLink(links).id(d => d.id).distance(150));
+
+  // Links
+  const link = linkGroup.selectAll('line').data(links, d => d.source.id + '-' + d.target.id);
+  link.exit().remove();
+  link.enter().append('line').attr('class', 'link').merge(link);
+
+  // Nodes
+  const node = nodeGroup.selectAll('g.node').data(nodes, d => d.id);
+  node.exit().remove();
+
+  const enter = node.enter().append('g')
+    .attr('class', d => `node agent-${d.id}`)
+    .call(d3.drag()
+      .on('start', dragStart)
+      .on('drag', dragged)
+      .on('end', dragEnd))
+    .on('click', (e, d) => openSidePanel(d.id));
+
+  enter.append('circle')
+    .attr('r', d => d.is_orchestrator ? 32 : 26)
+    .attr('fill', d => d.color + '22')
+    .attr('stroke', d => d.color);
+
+  enter.append('text')
+    .attr('text-anchor', 'middle').attr('dy', -8)
+    .text(d => d.emoji || d.id[0].toUpperCase())
+    .style('font-size', '18px');
+
+  enter.append('text')
+    .attr('text-anchor', 'middle').attr('dy', 10)
+    .attr('class', 'name-label')
+    .text(d => d.name);
+
+  enter.append('text')
+    .attr('text-anchor', 'middle').attr('dy', 24)
+    .attr('class', 'role')
+    .text(d => d.role || '');
+
+  // Update existing — set busy/idle class
+  const merged = enter.merge(node);
+  merged.classed('busy', d => d.status === 'busy');
+  merged.select('circle')
+    .attr('fill', d => d.status === 'busy' ? d.color + '44' : d.color + '22')
+    .attr('stroke-width', d => d.status === 'busy' ? 3.5 : 2.5);
+
+  simulation.alpha(0.3).restart();
+}
+
+function ticked() {
+  linkGroup.selectAll('line')
+    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  nodeGroup.selectAll('g.node')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+}
+
+function dragStart(e, d) { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }
+function dragged(e, d) { d.fx = e.x; d.fy = e.y; }
+function dragEnd(e, d) { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }
+
+function updateStats() {
+  const busy = Object.values(agents).filter(a => a.status === 'busy').length;
+  document.getElementById('stat-active').textContent = busy;
+}
+
+// -- Init --
+async function init() {
+  // Close side panel initially
+  document.getElementById('event-log').classList.add('full-width');
+
+  initGraph();
+
+  // Fetch initial agent roster
+  try {
+    const resp = await fetch('/api/agents');
+    const data = await resp.json();
+    (data.agents || []).forEach(a => {
+      agents[a.name] = { ...a, status: 'idle', streams: [],
+        color: AGENT_COLORS[a.name] || '#58a6ff' };
+    });
+    document.getElementById('stat-agents').textContent = data.agents.length;
+    updateGraph();
+  } catch (e) { console.error('Failed to load agents:', e); }
+
+  // Fetch initial status
+  try {
+    const resp = await fetch('/api/status');
+    const data = await resp.json();
+    document.getElementById('stat-cost').textContent = '$' + (data.total_cost || 0).toFixed(2);
+  } catch {}
+
+  connectWS();
+}
+
+window.addEventListener('resize', () => {
+  const rect = svg.node().getBoundingClientRect();
+  width = rect.width; height = rect.height - 120;
+  simulation.force('center', d3.forceCenter(width / 2, height / 2));
+  simulation.alpha(0.3).restart();
+});
+
+init();
+</script>
+</body>
+</html>

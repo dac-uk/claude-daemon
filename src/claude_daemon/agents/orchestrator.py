@@ -25,6 +25,7 @@ from claude_daemon.core.process import ClaudeResponse
 if TYPE_CHECKING:
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.core.process import ProcessManager
+    from claude_daemon.integrations.dashboard import DashboardHub
     from claude_daemon.memory.store import ConversationStore
 
 log = logging.getLogger(__name__)
@@ -73,10 +74,12 @@ class Orchestrator:
         registry: AgentRegistry,
         process_manager: ProcessManager,
         store: ConversationStore,
+        hub: DashboardHub | None = None,
     ) -> None:
         self.registry = registry
         self.pm = process_manager
         self.store = store
+        self.hub = hub
         self._spawned_tasks: dict[str, SpawnedTask] = {}
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
@@ -160,6 +163,9 @@ class Orchestrator:
         # Use agent's model for this task type
         model = agent.get_model(task_type)
 
+        if self.hub:
+            await self.hub.agent_busy(agent.name, prompt)
+
         response = await self.pm.send_message(
             prompt=prompt,
             session_id=conv["session_id"],
@@ -170,13 +176,24 @@ class Orchestrator:
             mcp_config_path=agent.mcp_config_path,
         )
 
+        if self.hub:
+            await self.hub.agent_idle(agent.name, response.cost, response.duration_ms)
+
         self.store.add_message(
             conv["id"], "assistant", response.result,
             tokens=response.output_tokens, cost=response.cost,
         )
-        self.store.update_conversation(
-            conv["id"], session_id=response.session_id, cost=response.cost,
-        )
+        # If auto-parallel created a fresh session, don't overwrite the primary
+        # session pointer — keep it resumable for the next non-parallel message.
+        auto_parallel = response.session_id and response.session_id != conv["session_id"]
+        if auto_parallel:
+            self.store.update_conversation(conv["id"], cost=response.cost)
+            if self.hub:
+                await self.hub.auto_parallel(agent.name, response.session_id)
+        else:
+            self.store.update_conversation(
+                conv["id"], session_id=response.session_id, cost=response.cost,
+            )
 
         # Record per-agent metrics
         self.store.record_agent_metric(
@@ -256,6 +273,9 @@ class Orchestrator:
 
         model = agent.get_model(task_type)
 
+        if self.hub:
+            await self.hub.agent_busy(agent.name, prompt)
+
         async for chunk in self.pm.stream_message(
             prompt=prompt,
             session_id=conv["session_id"],
@@ -267,18 +287,31 @@ class Orchestrator:
         ):
             if isinstance(chunk, str):
                 accumulated += chunk
+                if self.hub:
+                    await self.hub.stream_delta(agent.name, chunk)
                 yield chunk
             elif isinstance(chunk, ClaudeResponse):
                 final_response = chunk
 
         resp = final_response or ClaudeResponse.error("No response")
+
+        if self.hub:
+            await self.hub.agent_idle(agent.name, resp.cost, resp.duration_ms)
+
         self.store.add_message(
             conv["id"], "assistant", accumulated or resp.result,
             tokens=resp.output_tokens, cost=resp.cost,
         )
-        self.store.update_conversation(
-            conv["id"], session_id=resp.session_id, cost=resp.cost,
-        )
+        # Preserve primary session pointer if auto-parallel created a fresh session
+        auto_parallel = resp.session_id and resp.session_id != conv["session_id"]
+        if auto_parallel:
+            self.store.update_conversation(conv["id"], cost=resp.cost)
+            if self.hub:
+                await self.hub.auto_parallel(agent.name, resp.session_id)
+        else:
+            self.store.update_conversation(
+                conv["id"], session_id=resp.session_id, cost=resp.cost,
+            )
 
         self.store.record_agent_metric(
             agent_name=agent.name, metric_type="stream",
@@ -346,6 +379,11 @@ class Orchestrator:
             spawned.result = response.result
             spawned.cost = response.cost
             spawned.status = "failed" if response.is_error else "completed"
+            if self.hub:
+                await self.hub.task_update(
+                    task_id, agent.name, spawned.status,
+                    result=response.result, cost=response.cost,
+                )
 
         spawned = SpawnedTask(
             task_id=task_id,

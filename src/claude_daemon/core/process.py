@@ -82,6 +82,10 @@ class ProcessManager:
     def active_count(self) -> int:
         return len(self._active)
 
+    def is_session_busy(self, session_id: str) -> bool:
+        """Check if a session currently has an active Claude subprocess."""
+        return session_id in self._active
+
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
         """Get or create a per-session lock to prevent concurrent resume collisions."""
         if session_id not in self._session_locks:
@@ -143,11 +147,23 @@ class ProcessManager:
         model_override: str | None = None,
         mcp_config_path: str | None = None,
     ) -> ClaudeResponse:
-        """Send a prompt and return the complete response (buffered mode)."""
+        """Send a prompt and return the complete response (buffered mode).
+
+        Auto-parallel: if the target session is already processing, a fresh
+        session is started automatically instead of blocking.
+        """
         budget = max_budget if max_budget is not None else self.config.max_budget_per_message
 
         if session_id:
             lock = self._get_session_lock(session_id)
+            if lock.locked():
+                # Session is busy — auto-spawn on a fresh session instead of blocking
+                log.info("Auto-parallel: session %s busy, starting fresh session", session_id[:8])
+                async with self._semaphore:
+                    return await self._execute_buffered(
+                        prompt, None, system_context, budget, platform, user_id,
+                        model_override, mcp_config_path,
+                    )
             async with lock:
                 async with self._semaphore:
                     return await self._execute_buffered(
@@ -174,6 +190,9 @@ class ProcessManager:
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a response token-by-token. Yields text chunks, then final ClaudeResponse.
 
+        Auto-parallel: if the target session has an active subprocess, a fresh
+        session is started automatically instead of colliding on --resume.
+
         Usage:
             async for chunk in pm.stream_message("hello"):
                 if isinstance(chunk, str):
@@ -182,6 +201,12 @@ class ProcessManager:
                     # final result with metadata
         """
         budget = max_budget if max_budget is not None else self.config.max_budget_per_message
+
+        # Auto-parallel: if this session already has a running subprocess, start fresh
+        if session_id and session_id in self._active:
+            log.info("Auto-parallel: session %s active, starting fresh session", session_id[:8])
+            session_id = None
+
         args, tracking_id = self._build_args(
             prompt, session_id, system_context, budget,
             output_format="stream-json", model_override=model_override,

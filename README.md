@@ -7,7 +7,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
 - **Per-Agent MCP Tools** - Each agent gets their own MCP server config (GitHub, Slack, Gmail, Google Calendar, Supabase) so they can actually interact with the world
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
-- **Parallel Task Dispatch** - `/spawn` multiple tasks to the same agent — each runs concurrently in its own session. Fan-out work across agents simultaneously.
+- **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
 - **Per-Agent Channels** - Bind Telegram groups or Discord channels to specific agents. Dedicated channels for Albert, Luna, etc.
 - **Cross-Platform Sessions** - Start a conversation on Telegram, continue on Discord, pick up from CLI. Sessions follow the user, not the platform.
 - **Mandatory Planning** - For complex tasks, agents plan first (Opus), publish the plan immediately, then execute autonomously without waiting for approval.
@@ -16,7 +16,8 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
 - **Inter-Agent Delegation** - Agents can request help from other agents mid-task using `[DELEGATE:name]` tags
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
-- **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint
+- **Live Agent Dashboard** - Browser-based D3 force graph showing all agents, real-time status, streaming thought output, and event log. Accessible over Tailscale/ZeroTier.
+- **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
 - **Streaming Responses** - Live streaming to Telegram and Discord with throttled message edits
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs
@@ -114,18 +115,25 @@ integrations:
 
 This is ideal for Discord servers where each agent gets their own channel. In agent-bound channels, the bot responds to all messages (no @mention needed).
 
-## Parallel Task Dispatch
+## Auto-Parallel Execution
 
-Give an agent multiple tasks and they work on them simultaneously:
+Just send messages naturally. If an agent is already processing, the daemon **automatically** starts a parallel session instead of making you wait:
+
+```
+@albert refactor the auth service     # Starts processing
+@albert build the payment API         # Agent busy → auto-parallel session
+@albert review the database schema    # Agent busy → another parallel session
+```
+
+No special commands needed. The daemon detects busy agents and spawns fresh sessions transparently. Bounded by `max_concurrent` in config (default: 5).
+
+For explicit background tasks, `/spawn` is still available:
 
 ```
 /spawn albert refactor the auth service
-/spawn albert build the payment API
 /spawn luna redesign the settings page
 /tasks                              # Check progress
 ```
-
-Each spawned task gets its own Claude session — no blocking, no queue. Bounded by `max_concurrent` in config (default: 5).
 
 ## Planning Protocol
 
@@ -208,6 +216,29 @@ Multi-step agent orchestration triggered via `/workflow` or `POST /api/workflow`
 - **Parallel**: Fan-out to multiple agents simultaneously, collect all results
 - **Review Loop**: Build-review cycle with retry (Albert builds, Max reviews, fix loop)
 
+## Live Agent Dashboard
+
+A browser-based dashboard showing all agents as a live force graph with real-time status, streaming output, and event log.
+
+```yaml
+daemon:
+  api_enabled: true
+  api_port: 8080
+  dashboard_enabled: true
+  api_bind: "0.0.0.0"    # Accessible from Tailscale/ZeroTier/LAN
+```
+
+Open `http://<your-ip>:8080/` in any browser. Works on any device on your Tailscale or ZeroTier network.
+
+Features:
+- **Force graph**: 7 agent nodes with colour-coded status (idle/busy), pulsing animation when active
+- **Click to expand**: Click any agent node to see their live thought stream in the side panel
+- **Event log**: Scrolling log of heartbeat results, task completions, auto-parallel events
+- **WebSocket**: Real-time updates via `/ws` — no polling
+- **Stats bar**: Active sessions, agent count, cost today
+
+The dashboard uses D3.js (loaded from CDN). No build step, no npm, no bundler — just a single HTML file.
+
 ## HTTP API
 
 Enable with `api_enabled: true`. Exposes the daemon for external automation.
@@ -216,15 +247,18 @@ Enable with `api_enabled: true`. Exposes the daemon for external automation.
 GET  /api/health              — Health check (always public)
 GET  /api/agents              — List agents with roles, models, MCP status
 GET  /api/status              — Daemon status and metrics
+GET  /api/sessions            — Active Claude subprocesses
+GET  /api/tasks               — Spawned background tasks
 GET  /api/metrics             — Per-agent cost/token metrics
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny)
 POST /api/webhook/stripe      — Stripe webhook (→ Penny)
 POST /api/webhook/{source}    — Generic webhook (→ Johnny)
+WS   /ws                      — WebSocket event bus (live dashboard)
 ```
 
-Auth: `Authorization: Bearer <api_key>` header.
+Auth: `Authorization: Bearer <api_key>` header (or `?key=` query param for WebSocket).
 
 ## Architecture
 
