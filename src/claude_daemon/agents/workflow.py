@@ -27,6 +27,7 @@ class WorkflowStep:
     prompt_template: str  # May contain {prev_result}, {original_request}, {step_N_result}
     task_type: str = "default"
     label: str = ""  # Optional human-readable label for this step
+    timeout: int = 600  # Per-step timeout in seconds (default 10 min)
 
 
 @dataclass
@@ -47,6 +48,7 @@ class WorkflowResult:
 
     steps: list[StepResult] = field(default_factory=list)
     success: bool = True
+    max_total_cost: float = 0.0  # 0 = unlimited
 
     @property
     def total_cost(self) -> float:
@@ -58,16 +60,22 @@ class WorkflowResult:
             return self.steps[-1].result
         return ""
 
+    def is_over_budget(self) -> bool:
+        return self.max_total_cost > 0 and self.total_cost >= self.max_total_cost
+
     def summary(self) -> str:
         lines = []
         for i, step in enumerate(self.steps, 1):
             status = "PASS" if not step.is_error else "FAIL"
+            dur = f" {step.duration_ms}ms" if step.duration_ms else ""
             lines.append(
                 f"  {i}. [{status}] {step.agent_name}"
                 f"{' (' + step.label + ')' if step.label else ''}"
-                f" — ${step.cost:.4f}"
+                f" — ${step.cost:.4f}{dur}"
             )
         lines.append(f"  Total: ${self.total_cost:.4f}")
+        if self.max_total_cost > 0:
+            lines.append(f"  Budget: ${self.max_total_cost:.2f}")
         return "\n".join(lines)
 
 
@@ -94,6 +102,7 @@ class WorkflowEngine:
         original_request: str,
         platform: str = "workflow",
         user_id: str = "workflow",
+        max_total_cost: float = 0.0,
     ) -> WorkflowResult:
         """Run steps sequentially. Each step's prompt can reference previous results.
 
@@ -102,11 +111,23 @@ class WorkflowEngine:
             {prev_result} - Output from the immediately previous step
             {step_N_result} - Output from step N (0-indexed)
         """
-        result = WorkflowResult()
+        result = WorkflowResult(max_total_cost=max_total_cost)
         step_results: dict[int, str] = {}
         prev_result = ""
 
         for i, step in enumerate(steps):
+            # Cost cap check
+            if result.is_over_budget():
+                sr = StepResult(
+                    agent_name=step.agent_name, label=step.label,
+                    result=f"Workflow cost cap exceeded (${result.total_cost:.2f} / ${max_total_cost:.2f})",
+                    is_error=True,
+                )
+                result.steps.append(sr)
+                result.success = False
+                log.warning("Workflow cost cap reached at step %d: $%.2f", i, result.total_cost)
+                break
+
             agent = self.registry.get(step.agent_name)
             if not agent:
                 sr = StepResult(
@@ -120,7 +141,6 @@ class WorkflowEngine:
                 log.error("Workflow step %d: agent '%s' not found", i, step.agent_name)
                 break
 
-            # Build prompt from template
             prompt = step.prompt_template.format(
                 original_request=original_request,
                 prev_result=prev_result,
@@ -133,13 +153,25 @@ class WorkflowEngine:
             )
 
             start = time.monotonic()
-            response = await self.orchestrator.send_to_agent(
-                agent=agent,
-                prompt=prompt,
-                platform=platform,
-                user_id=user_id,
-                task_type=step.task_type,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.orchestrator.send_to_agent(
+                        agent=agent, prompt=prompt,
+                        platform=platform, user_id=user_id, task_type=step.task_type,
+                    ),
+                    timeout=step.timeout,
+                )
+            except asyncio.TimeoutError:
+                duration = int((time.monotonic() - start) * 1000)
+                sr = StepResult(
+                    agent_name=step.agent_name, label=step.label,
+                    result=f"Step timed out after {step.timeout}s",
+                    duration_ms=duration, is_error=True,
+                )
+                result.steps.append(sr)
+                result.success = False
+                log.error("Workflow step %d timed out after %ds", i, step.timeout)
+                break
             duration = int((time.monotonic() - start) * 1000)
 
             sr = StepResult(
@@ -169,7 +201,7 @@ class WorkflowEngine:
         platform: str = "workflow",
         user_id: str = "workflow",
     ) -> WorkflowResult:
-        """Run steps in parallel. All receive the original request."""
+        """Run steps in parallel. All receive the original request. Per-step timeout enforced."""
         result = WorkflowResult()
 
         async def _run_step(step: WorkflowStep) -> StepResult:
@@ -182,10 +214,21 @@ class WorkflowEngine:
 
             prompt = step.prompt_template.format(original_request=original_request)
             start = time.monotonic()
-            response = await self.orchestrator.send_to_agent(
-                agent=agent, prompt=prompt,
-                platform=platform, user_id=user_id, task_type=step.task_type,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.orchestrator.send_to_agent(
+                        agent=agent, prompt=prompt,
+                        platform=platform, user_id=user_id, task_type=step.task_type,
+                    ),
+                    timeout=step.timeout,
+                )
+            except asyncio.TimeoutError:
+                duration = int((time.monotonic() - start) * 1000)
+                return StepResult(
+                    agent_name=step.agent_name, label=step.label,
+                    result=f"Step timed out after {step.timeout}s",
+                    duration_ms=duration, is_error=True,
+                )
             duration = int((time.monotonic() - start) * 1000)
             return StepResult(
                 agent_name=step.agent_name, label=step.label,

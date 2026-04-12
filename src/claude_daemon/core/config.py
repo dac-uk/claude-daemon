@@ -43,6 +43,7 @@ class DaemonConfig:
     process_timeout: int = 300
     mcp_config: str | None = None  # Path to MCP server config JSON
     streaming_enabled: bool = True  # Use stream-json for interactive responses
+    per_agent_daily_budget: float = 0.0  # USD per agent per day (0 = unlimited)
 
     # Memory
     daily_log_enabled: bool = True
@@ -158,6 +159,7 @@ class DaemonConfig:
             process_timeout=int(claude_cfg.get("process_timeout", 300)),
             mcp_config=claude_cfg.get("mcp_config"),
             streaming_enabled=claude_cfg.get("streaming", True),
+            per_agent_daily_budget=float(claude_cfg.get("per_agent_daily_budget", 0.0)),
             daily_log_enabled=memory_cfg.get("daily_log", True),
             compaction_threshold=int(memory_cfg.get("compaction_threshold", 50_000)),
             max_session_age_hours=int(memory_cfg.get("max_session_age_hours", 72)),

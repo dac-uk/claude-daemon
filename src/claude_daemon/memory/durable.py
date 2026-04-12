@@ -10,8 +10,10 @@ File layout:
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import shutil
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -50,6 +52,18 @@ class DurableMemory:
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         (self.memory_dir / "archive").mkdir(exist_ok=True)
+        self._lock_path = self.memory_dir / ".memory.lock"
+
+    @contextmanager
+    def _file_lock(self):
+        """Acquire an exclusive file lock to prevent concurrent MEMORY.md writes."""
+        lock_fd = open(self._lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
     @property
     def memory_file(self) -> Path:
@@ -75,35 +89,34 @@ class DurableMemory:
         return ""
 
     def update_memory(self, content: str, validate: bool = True) -> bool:
-        """Write new MEMORY.md content. Returns True if written, False if validation failed."""
-        if validate:
-            old = self.read_memory()
-            if old and content:
-                # Reject if new content is less than 30% the size of old (catastrophic loss)
-                if len(content) < len(old) * 0.3:
-                    log.warning(
-                        "Memory update rejected: new (%d chars) is <30%% of old (%d chars). "
-                        "This looks like data loss. Archive preserved.",
-                        len(content), len(old),
-                    )
+        """Write new MEMORY.md content with file locking. Returns True if written, False if rejected."""
+        with self._file_lock():
+            if validate:
+                old = self.read_memory()
+                if old and content:
+                    if len(content) < len(old) * 0.3:
+                        log.warning(
+                            "Memory update rejected: new (%d chars) is <30%% of old (%d chars). "
+                            "This looks like data loss. Archive preserved.",
+                            len(content), len(old),
+                        )
+                        return False
+                    old_lines = set(old.strip().split("\n"))
+                    new_lines = set(content.strip().split("\n"))
+                    added = len(new_lines - old_lines)
+                    removed = len(old_lines - new_lines)
+                    if added or removed:
+                        self.append_daily_log(
+                            f"MEMORY.md updated: +{added} lines, -{removed} lines "
+                            f"({len(old)} -> {len(content)} chars)"
+                        )
+                elif not content.strip():
+                    log.warning("Memory update rejected: empty content")
                     return False
-                # Log the diff summary
-                old_lines = set(old.strip().split("\n"))
-                new_lines = set(content.strip().split("\n"))
-                added = len(new_lines - old_lines)
-                removed = len(old_lines - new_lines)
-                if added or removed:
-                    self.append_daily_log(
-                        f"MEMORY.md updated: +{added} lines, -{removed} lines "
-                        f"({len(old)} -> {len(content)} chars)"
-                    )
-            elif not content.strip():
-                log.warning("Memory update rejected: empty content")
-                return False
 
-        self.memory_file.write_text(content)
-        log.info("Updated MEMORY.md (%d chars)", len(content))
-        return True
+            self.memory_file.write_text(content)
+            log.info("Updated MEMORY.md (%d chars)", len(content))
+            return True
 
     def archive_memory(self) -> None:
         """Create a timestamped backup of MEMORY.md before overwriting."""

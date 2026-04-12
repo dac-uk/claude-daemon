@@ -66,17 +66,25 @@ class ConversationStore:
         if row:
             return dict(row)
 
-        # Create new conversation
+        # Create new conversation — use INSERT OR IGNORE to handle concurrent inserts
+        # on the same session_id (unique index prevents duplicates).
         new_session_id = session_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
-        cur = self._db.execute(
-            "INSERT INTO conversations (session_id, platform, user_id, started_at, last_active) "
+        self._db.execute(
+            "INSERT OR IGNORE INTO conversations (session_id, platform, user_id, started_at, last_active) "
             "VALUES (?, ?, ?, ?, ?)",
             (new_session_id, platform, user_id, now, now),
         )
         self._db.commit()
+        # Re-fetch to get the actual row (whether we inserted or another thread did)
+        row = self._db.execute(
+            "SELECT * FROM conversations WHERE session_id = ?", (new_session_id,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        # Fallback: should not happen, but construct from what we know
         return {
-            "id": cur.lastrowid,
+            "id": 0,
             "session_id": new_session_id,
             "platform": platform,
             "user_id": user_id,
@@ -246,8 +254,18 @@ class ConversationStore:
 
     # -- Full-Text Search --
 
+    @staticmethod
+    def _escape_fts5(query: str) -> str:
+        """Escape an FTS5 query to prevent syntax errors from special characters."""
+        # Wrap each word in double quotes to treat as literal, strip dangerous chars
+        words = query.strip().split()
+        if not words:
+            return '""'
+        return " ".join(f'"{w.replace(chr(34), "")}"' for w in words)
+
     def search_conversations(self, query: str, limit: int = 20) -> list[dict]:
         """Search message content using FTS5. Returns matching messages with context."""
+        safe_query = self._escape_fts5(query)
         rows = self._db.execute(
             "SELECT m.id, m.conversation_id, m.role, m.content, m.timestamp, "
             "c.platform, c.user_id "
@@ -256,7 +274,7 @@ class ConversationStore:
             "JOIN conversations c ON c.id = m.conversation_id "
             "WHERE messages_fts MATCH ? "
             "ORDER BY m.timestamp DESC LIMIT ?",
-            (query, limit),
+            (safe_query, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 

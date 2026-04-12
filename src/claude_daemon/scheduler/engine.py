@@ -41,6 +41,7 @@ class SchedulerEngine:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._failure_counts: dict[str, int] = {}  # job_id -> consecutive failure count
         self._max_failures: int = 3  # pause job after this many consecutive failures
+        self._load_failure_counts()
 
     def start(self) -> None:
         self._loop = asyncio.get_event_loop()
@@ -283,13 +284,16 @@ class SchedulerEngine:
             )
             if response.is_error:
                 self._failure_counts[job_key] = self._failure_counts.get(job_key, 0) + 1
+                self._save_failure_counts()
                 log.error("Heartbeat %s failed (%d/%d): %s", agent_name, self._failure_counts[job_key], self._max_failures, response.result[:200])
                 if self._failure_counts[job_key] >= self._max_failures:
                     self._alert_failure(f"Heartbeat for {agent_name} circuit-broken after {self._max_failures} consecutive failures")
                 return
 
             # Reset failure counter on success
-            self._failure_counts.pop(job_key, None)
+            if job_key in self._failure_counts:
+                self._failure_counts.pop(job_key, None)
+                self._save_failure_counts()
             log.info("Heartbeat %s complete: cost=$%.4f", agent_name, response.cost)
 
             # Record metric
@@ -393,6 +397,28 @@ class SchedulerEngine:
         if platform == "discord" and self.daemon.config.discord_alert_channel_ids:
             return list(self.daemon.config.discord_alert_channel_ids)
         return []
+
+    def _load_failure_counts(self) -> None:
+        """Load persisted circuit breaker failure counts from disk."""
+        import json as _json
+        path = self.config.data_dir / ".circuit_breaker.json"
+        if path.exists():
+            try:
+                self._failure_counts = _json.loads(path.read_text())
+                if self._failure_counts:
+                    log.info("Loaded circuit breaker state: %d entries", len(self._failure_counts))
+            except Exception:
+                log.warning("Failed to load circuit breaker state — resetting")
+                self._failure_counts = {}
+
+    def _save_failure_counts(self) -> None:
+        """Persist circuit breaker failure counts to disk."""
+        import json as _json
+        path = self.config.data_dir / ".circuit_breaker.json"
+        try:
+            path.write_text(_json.dumps(self._failure_counts))
+        except Exception:
+            log.warning("Failed to persist circuit breaker state")
 
     def list_jobs(self) -> list[dict]:
         jobs = []

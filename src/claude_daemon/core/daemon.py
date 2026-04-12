@@ -62,12 +62,19 @@ class ClaudeDaemon:
         self._shutting_down = True
         self._shutdown_event.set()
 
-    async def reload_config(self) -> None:
+    async def reload_config(self) -> str:
+        """Reload config, re-register custom jobs, refresh agent identities. Returns status."""
         try:
             self.config = DaemonConfig.load()
+            # Refresh agent identities from disk
+            if self.agent_registry:
+                for agent in self.agent_registry:
+                    agent.load_identity()
             log.info("Configuration reloaded successfully")
+            return "Configuration reloaded. Agent identities refreshed."
         except Exception:
             log.exception("Failed to reload configuration")
+            return "Failed to reload configuration — check logs."
 
     async def start(self) -> None:
         pathutil.ensure_dirs()
@@ -463,6 +470,8 @@ class ClaudeDaemon:
         from claude_daemon.integrations.router import MessageRouter
         self.router = MessageRouter(self)
 
+        startup_timeout = 30  # seconds per integration
+
         if self.config.telegram_token:
             try:
                 from claude_daemon.integrations.telegram import TelegramIntegration
@@ -474,10 +483,12 @@ class ClaudeDaemon:
                 )
                 tg.set_message_handler(self.router.handle_incoming)
                 self.router.register("telegram", tg)
-                await tg.start()
+                await asyncio.wait_for(tg.start(), timeout=startup_timeout)
                 log.info("Telegram integration started")
             except ImportError:
                 log.warning("Telegram not available (install claude-daemon[telegram])")
+            except asyncio.TimeoutError:
+                log.error("Telegram startup timed out after %ds — skipping", startup_timeout)
             except Exception:
                 log.exception("Failed to start Telegram")
 
@@ -491,10 +502,12 @@ class ClaudeDaemon:
                 )
                 dc.set_message_handler(self.router.handle_incoming)
                 self.router.register("discord", dc)
-                await dc.start()
+                await asyncio.wait_for(dc.start(), timeout=startup_timeout)
                 log.info("Discord integration started")
             except ImportError:
                 log.warning("Discord not available (install claude-daemon[discord])")
+            except asyncio.TimeoutError:
+                log.error("Discord startup timed out after %ds — skipping", startup_timeout)
             except Exception:
                 log.exception("Failed to start Discord")
 

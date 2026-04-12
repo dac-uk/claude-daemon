@@ -13,6 +13,7 @@ When a message arrives, it either:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import re
 import uuid
@@ -87,6 +88,7 @@ class Orchestrator:
 
         Returns (agent, cleaned_message).
         If the message explicitly addresses an agent (@name or /name), route directly.
+        Uses fuzzy matching for typos (e.g. @jony → johnny).
         Otherwise returns None (caller should use auto-routing).
         """
         match = AGENT_ADDRESS_PATTERN.match(message.strip())
@@ -96,7 +98,15 @@ class Orchestrator:
             agent = self.registry.get(agent_name)
             if agent:
                 return agent, remaining or message
-            # Fall through if agent not found
+
+            # Fuzzy match: suggest closest agent name
+            names = self.registry.agent_names()
+            close = difflib.get_close_matches(agent_name, names, n=1, cutoff=0.6)
+            if close:
+                fuzzy_agent = self.registry.get(close[0])
+                if fuzzy_agent:
+                    log.info("Fuzzy match: '%s' → '%s'", agent_name, close[0])
+                    return fuzzy_agent, remaining or message
 
         return None, message
 
@@ -139,6 +149,18 @@ class Orchestrator:
 
         return orchestrator
 
+    def _check_agent_budget(self, agent_name: str) -> bool:
+        """Check if agent has exceeded its daily budget. Returns True if within budget."""
+        budget = self.pm.config.per_agent_daily_budget
+        if budget <= 0:
+            return True  # Unlimited
+        metrics = self.store.get_agent_metrics(agent_name=agent_name, days=1)
+        spent = sum(m.get("total_cost", 0) for m in metrics)
+        if spent >= budget:
+            log.warning("Agent %s over daily budget: $%.2f / $%.2f", agent_name, spent, budget)
+            return False
+        return True
+
     async def send_to_agent(
         self,
         agent: Agent,
@@ -149,6 +171,14 @@ class Orchestrator:
         task_type: str = "default",
     ) -> ClaudeResponse:
         """Send a message to a specific agent with its full identity context."""
+        # Per-agent daily budget check
+        if not self._check_agent_budget(agent.name):
+            budget = self.pm.config.per_agent_daily_budget
+            return ClaudeResponse.error(
+                f"Agent '{agent.name}' has exceeded its daily budget of ${budget:.2f}. "
+                "Try again tomorrow or adjust per_agent_daily_budget in config."
+            )
+
         correlation_id = str(uuid.uuid4())[:12]
         log.info("[%s] %s <- %s:%s prompt_len=%d", correlation_id, agent.name, platform, user_id, len(prompt))
 
