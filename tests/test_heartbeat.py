@@ -115,22 +115,28 @@ def test_bootstrap_creates_tools_json(tmp_path: Path):
     agents_dir = tmp_path / "agents"
     create_csuite_workspaces(agents_dir)
 
-    # Albert should have tools.json with github and supabase
+    # Bootstrap creates an empty scaffold tools.json; actual servers are
+    # populated by refresh_agent_tools_json() at daemon startup.
     albert_tools = agents_dir / "albert" / "tools.json"
     assert albert_tools.exists()
     import json
     config = json.loads(albert_tools.read_text())
     assert "mcpServers" in config
-    assert "github" in config["mcpServers"]
-    assert "supabase" in config["mcpServers"]
 
-    # Johnny should have slack, gmail, google-calendar
+    # After refresh, zero-config servers should be present for all agents
+    from claude_daemon.agents.bootstrap import refresh_agent_tools_json
+    from unittest.mock import patch as _patch
+    import os
+    with _patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test"}, clear=True):
+        refresh_agent_tools_json(agents_dir)
+    config = json.loads(albert_tools.read_text())
+    assert "github" in config["mcpServers"]  # token was set
+    assert "fetch" in config["mcpServers"]   # zero-config
+
     johnny_tools = agents_dir / "johnny" / "tools.json"
-    assert johnny_tools.exists()
     config = json.loads(johnny_tools.read_text())
-    assert "slack" in config["mcpServers"]
-    assert "gmail" in config["mcpServers"]
-    assert "google-calendar" in config["mcpServers"]
+    assert "github" in config["mcpServers"]
+    assert "fetch" in config["mcpServers"]
 
 
 def test_bootstrap_creates_heartbeat(tmp_path: Path):

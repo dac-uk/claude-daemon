@@ -79,6 +79,72 @@ class ClaudeDaemon:
             log.exception("Failed to reload configuration")
             return "Failed to reload configuration — check logs."
 
+    # -- MCP server pool management ------------------------------------------
+
+    async def refresh_mcp(self) -> str:
+        """Regenerate MCP tools.json for all agents from current env state."""
+        from claude_daemon.agents.bootstrap import refresh_agent_tools_json
+        agents_dir = self.config.data_dir / "agents"
+        counts = refresh_agent_tools_json(
+            agents_dir, disabled_servers=self.config.disabled_mcp_servers,
+        )
+        if self.agent_registry:
+            for agent in self.agent_registry:
+                agent.load_identity()
+        total = sum(counts.values())
+        agents = len(counts)
+        avg = total // agents if agents else 0
+        log.info("MCP configs refreshed: %d servers across %d agents", avg, agents)
+        return f"MCP configs refreshed: {avg} servers active across {agents} agents."
+
+    async def enable_mcp_server(self, name: str) -> str:
+        """Remove a server from the disabled list and refresh tools.json."""
+        from claude_daemon.agents.bootstrap import MCP_SERVER_CATALOG
+        if name not in MCP_SERVER_CATALOG:
+            return f"Unknown MCP server: {name}"
+        if name in self.config.disabled_mcp_servers:
+            self.config.disabled_mcp_servers.remove(name)
+            self._persist_disabled_mcp()
+        return await self.refresh_mcp()
+
+    async def disable_mcp_server(self, name: str) -> str:
+        """Add a server to the disabled list and refresh tools.json."""
+        from claude_daemon.agents.bootstrap import MCP_SERVER_CATALOG
+        if name not in MCP_SERVER_CATALOG:
+            return f"Unknown MCP server: {name}"
+        if name not in self.config.disabled_mcp_servers:
+            self.config.disabled_mcp_servers.append(name)
+            self._persist_disabled_mcp()
+        return await self.refresh_mcp()
+
+    def get_mcp_status(self) -> list[dict]:
+        """Return tier/status for every cataloged MCP server."""
+        from claude_daemon.agents.bootstrap import get_mcp_catalog_status
+        return get_mcp_catalog_status(self.config.disabled_mcp_servers)
+
+    def _persist_disabled_mcp(self) -> None:
+        """Write disabled_mcp_servers back to config.yaml."""
+        import yaml
+        cfg_path = self.config.data_dir / "config.yaml"
+        if not cfg_path.exists():
+            # Also check standard locations
+            for p in [pathutil.config_dir() / "config.yaml", pathutil.config_dir() / "config.yml"]:
+                if p.exists():
+                    cfg_path = p
+                    break
+
+        data: dict = {}
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                data = yaml.safe_load(f) or {}
+
+        claude_section = data.setdefault("claude", {})
+        claude_section["disabled_mcp_servers"] = list(self.config.disabled_mcp_servers)
+
+        with open(cfg_path, "w") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        log.info("Persisted disabled_mcp_servers: %s", self.config.disabled_mcp_servers)
+
     async def start(self) -> None:
         pathutil.ensure_dirs()
         setup_logging(self.config.log_level, self.config.log_dir)
@@ -99,11 +165,20 @@ class ClaudeDaemon:
         self.updater = Updater(self.config, self.process_manager)
 
         # Multi-agent system
-        from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
+        from claude_daemon.agents.bootstrap import (
+            create_csuite_workspaces, create_shared_workspace, refresh_agent_tools_json,
+        )
         agents_dir = self.config.data_dir / "agents"
         shared_dir = self.config.data_dir / "shared"
         create_shared_workspace(self.config.data_dir)
         create_csuite_workspaces(agents_dir)
+        # Regenerate MCP tools.json for all agents based on current env vars
+        mcp_counts = refresh_agent_tools_json(
+            agents_dir, disabled_servers=self.config.disabled_mcp_servers,
+        )
+        if mcp_counts:
+            sample = next(iter(mcp_counts.values()), 0)
+            log.info("MCP pool: %d servers active across %d agents", sample, len(mcp_counts))
         self.agent_registry = AgentRegistry(agents_dir, shared_dir=shared_dir)
         self.agent_registry.load_all()
         self.orchestrator = Orchestrator(

@@ -28,6 +28,13 @@ claude:
   # model_retry_delay: 2.0      # Seconds between fallback retries
   # model_max_retries: 2        # Max fallback attempts (0 disables)
 
+  # MCP Server Pool — tiered auto-enable
+  # Zero-config servers are always available. Token-required servers
+  # auto-enable when their env vars are set. Disable specific servers:
+  # disabled_mcp_servers:
+  #   - snowflake
+  #   - bigquery
+
 memory:
   daily_log: true               # Write daily markdown logs
   compaction_threshold: 50000   # Characters before auto-compaction

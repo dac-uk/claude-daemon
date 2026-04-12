@@ -52,6 +52,10 @@ class HttpApi:
         self._app.router.add_get("/api/audit", self._handle_audit)
         self._app.router.add_get("/api/config/env", self._handle_env_list)
         self._app.router.add_post("/api/config/env", self._handle_env_set)
+        self._app.router.add_get("/api/mcp", self._handle_mcp_list)
+        self._app.router.add_post("/api/mcp/enable", self._handle_mcp_enable)
+        self._app.router.add_post("/api/mcp/disable", self._handle_mcp_disable)
+        self._app.router.add_post("/api/mcp/refresh", self._handle_mcp_refresh)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -407,3 +411,39 @@ class HttpApi:
             return web.json_response({"status": "ok", "key": key, "masked": masked})
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
+
+    # -- MCP server pool --
+
+    async def _handle_mcp_list(self, request: web.Request) -> web.Response:
+        """GET /api/mcp — list all MCP servers with tier and status."""
+        statuses = self.daemon.get_mcp_status()
+        return web.json_response({"servers": statuses})
+
+    async def _handle_mcp_enable(self, request: web.Request) -> web.Response:
+        """POST /api/mcp/enable — enable a disabled server."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        server = body.get("server", "").strip()
+        if not server:
+            return web.json_response({"error": "Missing 'server'"}, status=400)
+        result = await self.daemon.enable_mcp_server(server)
+        return web.json_response({"status": "ok", "message": result})
+
+    async def _handle_mcp_disable(self, request: web.Request) -> web.Response:
+        """POST /api/mcp/disable — disable a server."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        server = body.get("server", "").strip()
+        if not server:
+            return web.json_response({"error": "Missing 'server'"}, status=400)
+        result = await self.daemon.disable_mcp_server(server)
+        return web.json_response({"status": "ok", "message": result})
+
+    async def _handle_mcp_refresh(self, request: web.Request) -> web.Response:
+        """POST /api/mcp/refresh — regenerate tools.json for all agents."""
+        result = await self.daemon.refresh_mcp()
+        return web.json_response({"status": "ok", "message": result})

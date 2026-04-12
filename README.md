@@ -5,7 +5,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 ## Features
 
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
-- **Per-Agent MCP Tools** - Each agent gets their own MCP server config (GitHub, Slack, Gmail, Google Calendar, Supabase) so they can actually interact with the world
+- **MCP Server Pool (36 servers)** - Tiered shared pool of MCP servers available to all agents. Zero-config servers (fetch, git, time, memory, context7, playwright, etc.) are always on. Token-required servers auto-enable when you set the env var. Manage via `/mcp list`, `/mcp enable`, `/mcp disable`.
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
 - **Graceful Model Degradation** - If Opus is rate-limited or unavailable, automatically falls back to Sonnet, then Haiku. Configurable fallback chain — no failed requests from transient capacity issues.
 - **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
@@ -74,6 +74,8 @@ You never need to manually edit `.env` files. Four ways to manage secrets and to
 ```bash
 claude-daemon env list           # Show all vars with set/unset status
 claude-daemon env set GITHUB_TOKEN=ghp_abc123
+claude-daemon mcp list           # Show MCP server pool with tiers
+claude-daemon mcp refresh        # Regenerate tools.json from env
 ```
 
 **Via HTTP API:**
@@ -107,6 +109,123 @@ Fix via CLI:   claude-daemon env set VARIABLE_NAME=your_value
 ```
 
 This means you'll always know immediately if something is misconfigured — the daemon tells you proactively.
+
+## MCP Server Pool
+
+The daemon ships with **36 MCP servers** available as a shared pool to all agents. Servers are organized into three tiers:
+
+| Tier | Description | In tools.json? |
+|------|-------------|-----------------|
+| **Tier 1 (zero-config)** | No tokens needed — always active | Yes |
+| **Tier 2 (token-required)** | Auto-enables when env var is set | Yes (when configured) |
+| **Tier 3 (disabled)** | Explicitly disabled by user | No |
+
+### Available Servers
+
+**Search & Web:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `fetch` | @modelcontextprotocol/server-fetch | *(none)* | T1 |
+| `tavily` | tavily-mcp | `TAVILY_API_KEY` | T2 |
+| `brave-search` | brave-search-mcp | `BRAVE_API_KEY` | T2 |
+| `firecrawl` | firecrawl-mcp | `FIRECRAWL_API_KEY` | T2 |
+
+**File & Data:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `filesystem` | @modelcontextprotocol/server-filesystem | *(none)* | T1 |
+| `sqlite` | @modelcontextprotocol/server-sqlite | *(none)* | T1 |
+| `excel` | excel-mcp-server | *(none)* | T1 |
+| `markdownify` | markdownify-mcp | *(none)* | T1 |
+| `postgres` | @modelcontextprotocol/server-postgres | `POSTGRES_URL` | T2 |
+| `mongodb` | mcp-mongo-server | `MONGODB_URI` | T2 |
+| `supabase` | @anthropic-ai/claude-code-supabase-mcp | `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF` | T2 |
+
+**Developer:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `git` | @modelcontextprotocol/server-git | *(none)* | T1 |
+| `context7` | @upstash/context7-mcp | *(none)* | T1 |
+| `playwright` | @anthropic-ai/mcp-playwright | *(none)* | T1 |
+| `docker` | @modelcontextprotocol/server-docker | *(none)* | T1 |
+| `codebase-memory` | codebase-memory-mcp | *(none)* | T1 |
+| `github` | @anthropic-ai/claude-code-github-mcp | `GITHUB_TOKEN` | T2 |
+| `sentry` | @sentry/mcp-server-sentry | `SENTRY_AUTH_TOKEN` | T2 |
+
+**Productivity:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `slack` | @anthropic-ai/claude-code-slack-mcp | `SLACK_BOT_TOKEN`, `SLACK_TEAM_ID` | T2 |
+| `gmail` | @anthropic-ai/claude-code-gmail-mcp | `GMAIL_OAUTH_CREDENTIALS` | T2 |
+| `google-calendar` | @anthropic-ai/claude-code-google-calendar-mcp | `GCAL_OAUTH_CREDENTIALS` | T2 |
+| `gdrive` | @modelcontextprotocol/server-gdrive | `GDRIVE_OAUTH_CREDENTIALS` | T2 |
+| `notion` | @modelcontextprotocol/server-notion | `NOTION_API_KEY` | T2 |
+| `linear` | linear-mcp-server | `LINEAR_API_KEY` | T2 |
+| `obsidian` | obsidian-mcp | `OBSIDIAN_VAULT_PATH` | T2 |
+
+**Analytics:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `snowflake` | mcp-snowflake-service | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_WAREHOUSE` | T2 |
+| `bigquery` | mcp-server-bigquery | `GOOGLE_APPLICATION_CREDENTIALS` | T2 |
+
+**AI & Models:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `elevenlabs` | elevenlabs-mcp | `ELEVENLABS_API_KEY` | T2 |
+| `huggingface` | @huggingface/mcp-server | `HF_TOKEN` | T2 |
+| `replicate` | mcp-replicate | `REPLICATE_API_TOKEN` | T2 |
+
+**Infrastructure:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `kubernetes` | mcp-k8s | *(none, uses kubeconfig)* | T1 |
+| `aws` | @aws-samples/mcp-server | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | T2 |
+| `cloudflare` | @cloudflare/mcp-server-cloudflare | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | T2 |
+| `vercel` | @vercel/mcp | `VERCEL_TOKEN` | T2 |
+
+**Utility:**
+| Server | Package | Env Var(s) | Tier |
+|--------|---------|-----------|------|
+| `puppeteer` | @modelcontextprotocol/server-puppeteer | *(none)* | T1 |
+| `time` | @modelcontextprotocol/server-time | *(none)* | T1 |
+| `memory` | @modelcontextprotocol/server-memory | *(none)* | T1 |
+
+### Managing MCP Servers
+
+**Enable a server** — just set its env var:
+```
+/setenv TAVILY_API_KEY tvly-abc123
+/mcp refresh
+```
+
+**View all servers:**
+```
+/mcp list          # via Telegram/Discord
+claude-daemon mcp list  # via CLI
+GET /api/mcp       # via HTTP API
+```
+
+**Disable a server:**
+```
+/mcp disable snowflake
+```
+
+**Re-enable a server:**
+```
+/mcp enable snowflake
+```
+
+**Soft refresh** (regenerate tools.json without restart):
+```
+/mcp refresh
+```
+
+When you `/setenv` a token that enables an MCP server, the daemon prompts you to refresh.
+
+### Adding New Servers in the Future
+
+To add a new MCP server, add one entry to `MCP_SERVER_CATALOG` in `src/claude_daemon/agents/bootstrap.py` and its env vars to `KNOWN_ENV_VARS` in `env_manager.py`. It will automatically appear in `/mcp list` and be included in agents' tools.json when configured.
 
 ## Manual Setup
 
@@ -180,6 +299,10 @@ All commands are available on **both** Telegram and Discord with full feature pa
 | `/tasks` | List all spawned background tasks and their status |
 | `/setenv` | Set an environment variable (e.g. `/setenv GITHUB_TOKEN ghp_...`) |
 | `/getenv` | Show which env vars are set/unset (values are masked) |
+| `/mcp` | List all MCP servers with tier and status |
+| `/mcp enable X` | Enable a disabled MCP server |
+| `/mcp disable X` | Disable an MCP server |
+| `/mcp refresh` | Regenerate MCP configs from current env vars |
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
@@ -521,6 +644,10 @@ GET  /api/metrics             — Per-agent cost/token metrics
 GET  /api/audit               — Structured audit log (filter by action, agent, paginate)
 GET  /api/config/env          — List env vars with set/unset status (masked values)
 POST /api/config/env          — Set an env var {"key": "...", "value": "..."}
+GET  /api/mcp                 — List all MCP servers with tier and status
+POST /api/mcp/enable          — Enable a disabled server {"server": "tavily"}
+POST /api/mcp/disable         — Disable a server {"server": "snowflake"}
+POST /api/mcp/refresh         — Regenerate tools.json for all agents
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
@@ -562,6 +689,7 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Log retention** | Daily agent logs older than `log_retention_days` (default: 30) are garbage-collected nightly. |
 | **Context priority** | SOUL + steering always included. Low-priority blocks (vision, playbooks) trimmed first when tight. |
 | **MCP health** | `/api/agents` includes `mcp_health` for each agent — detects unresolved `${ENV_VAR}` placeholders. |
+| **MCP tiered pool** | 36 MCP servers in a shared pool. Zero-config servers always active; token-required auto-enable when vars set. Managed via `/mcp list/enable/disable/refresh`. |
 | **Model fallback** | Rate-limited or unavailable models automatically retry with the next model in the chain (default: opus -> sonnet -> haiku). Configurable via `model_fallback_chain`. |
 | **Agent hot-reload** | File watcher polls every 10s for changes to IDENTITY.md, SOUL.md, AGENTS.md. Edits take effect on the next message — no daemon restart needed. |
 | **Alert webhooks** | Failures, circuit breaker events, and updates are POSTed as JSON to configured webhook URLs (Slack, PagerDuty, custom). Fire-and-forget with timeout — never blocks the scheduler. |
@@ -637,6 +765,9 @@ claude:
     - sonnet
     - haiku
   permission_mode: auto
+  # disabled_mcp_servers:          # MCP servers to exclude even if configured
+  #   - snowflake
+  #   - bigquery
 
 memory:
   daily_log: true

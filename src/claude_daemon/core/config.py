@@ -65,6 +65,9 @@ class DaemonConfig:
     heartbeat_interval: int = 1800
     custom_jobs: list[dict] = field(default_factory=list)
 
+    # MCP server pool
+    disabled_mcp_servers: list[str] = field(default_factory=list)  # Explicitly disabled servers
+
     # Agent hot-reload
     agent_hot_reload: bool = True  # Auto-detect config file changes
     agent_reload_interval: int = 10  # Seconds between file change polls
@@ -174,6 +177,7 @@ class DaemonConfig:
             model_fallback_chain=claude_cfg.get("model_fallback_chain", ["sonnet", "haiku"]),
             model_retry_delay=float(claude_cfg.get("model_retry_delay", 2.0)),
             model_max_retries=int(claude_cfg.get("model_max_retries", 2)),
+            disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),
             daily_log_enabled=memory_cfg.get("daily_log", True),

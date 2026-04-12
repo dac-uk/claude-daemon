@@ -351,6 +351,13 @@ class DiscordIntegration(BaseIntegration):
                 note = ""
                 if key in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"):
                     note = "\nNote: integration tokens require a daemon restart to take effect."
+                from claude_daemon.core.env_manager import detect_mcp_server_for_var
+                mcp_server = detect_mcp_server_for_var(key)
+                if mcp_server:
+                    note += (
+                        f"\nThis enables the `{mcp_server}` MCP server."
+                        f"\nUse `/mcp refresh` to apply now."
+                    )
                 await interaction.response.send_message(
                     f"Set `{key}` = `{masked}`{note}", ephemeral=True,
                 )
@@ -369,6 +376,65 @@ class DiscordIntegration(BaseIntegration):
                     lines.append(f"`{var['key']}`: *(not set)*")
             lines.append("\nSet with: `/setenv KEY value`")
             await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+        @self._bot.tree.command(name="mcp", description="MCP server pool management")
+        @discord.app_commands.describe(
+            action="list, enable, disable, or refresh",
+            server="Server name (for enable/disable)",
+        )
+        async def slash_mcp(
+            interaction: discord.Interaction,
+            action: str = "list",
+            server: str = "",
+        ):
+            if not self.daemon:
+                await interaction.response.send_message("Daemon not ready.", ephemeral=True)
+                return
+
+            if action == "list":
+                statuses = self.daemon.get_mcp_status()
+                lines = ["**MCP Server Pool**\n"]
+                by_cat: dict[str, list] = {}
+                for s in statuses:
+                    by_cat.setdefault(s["category"], []).append(s)
+                for cat, servers_list in sorted(by_cat.items()):
+                    lines.append(f"**[{cat}]**")
+                    for s in servers_list:
+                        icon = {"active": ":white_check_mark:", "inactive": ":orange_circle:",
+                                "disabled": ":no_entry:"}
+                        mark = icon.get(s["status"], ":grey_question:")
+                        extra = ""
+                        if s["status"] == "inactive":
+                            missing = [k for k, v in s["env_status"].items() if v == "unset"]
+                            extra = f" *(needs: {', '.join(missing)})*"
+                        lines.append(f"{mark} `{s['name']}` — {s['description']}{extra}")
+                lines.append(
+                    "\n`/mcp enable <name>` | `/mcp disable <name>` | `/mcp refresh`"
+                )
+                text = "\n".join(lines)
+                # Discord 2000 char limit — truncate if needed
+                if len(text) > 1990:
+                    text = text[:1990] + "..."
+                await interaction.response.send_message(text, ephemeral=True)
+
+            elif action == "enable" and server:
+                result = await self.daemon.enable_mcp_server(server)
+                await interaction.response.send_message(result, ephemeral=True)
+
+            elif action == "disable" and server:
+                result = await self.daemon.disable_mcp_server(server)
+                await interaction.response.send_message(result, ephemeral=True)
+
+            elif action == "refresh":
+                result = await self.daemon.refresh_mcp()
+                await interaction.response.send_message(result, ephemeral=True)
+
+            else:
+                await interaction.response.send_message(
+                    "Usage: `/mcp list` | `/mcp enable <server>` | "
+                    "`/mcp disable <server>` | `/mcp refresh`",
+                    ephemeral=True,
+                )
 
     async def _handle_streaming(
         self, message: discord.Message, content: str,

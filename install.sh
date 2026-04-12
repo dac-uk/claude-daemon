@@ -346,6 +346,12 @@ fi
 printf "    ${CYAN}claude-daemon status${NC}                    # Quick check\n"
 printf "\n"
 
+printf "  ${BOLD}MCP Servers:${NC}\n"
+printf "    36 MCP servers available. Zero-config servers enabled automatically.\n"
+printf "    Set tokens to enable more:  ${CYAN}claude-daemon env set TAVILY_API_KEY=tvly-...${NC}\n"
+printf "    View all servers:           ${CYAN}claude-daemon mcp list${NC}\n"
+printf "\n"
+
 if [ "$INTERACTIVE" = true ]; then
     printf "  ${YELLOW}What's next:${NC}\n"
     printf "    1. Set up channels — see the Channel Setup Guide in README.md\n"

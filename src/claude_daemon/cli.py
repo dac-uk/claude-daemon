@@ -279,6 +279,107 @@ def _cmd_env(args: argparse.Namespace) -> None:
             sys.exit(1)
 
 
+def _cmd_mcp(args: argparse.Namespace) -> None:
+    """Manage MCP server pool."""
+    from claude_daemon.agents.bootstrap import (
+        get_mcp_catalog_status, refresh_agent_tools_json,
+    )
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+    action = getattr(args, "mcp_action", None) or "list"
+
+    if action == "list":
+        statuses = get_mcp_catalog_status(config.disabled_mcp_servers)
+        by_cat: dict[str, list] = {}
+        for s in statuses:
+            by_cat.setdefault(s["category"], []).append(s)
+
+        print(f"MCP Server Pool ({len(statuses)} servers):\n")
+        for cat, servers in sorted(by_cat.items()):
+            print(f"  [{cat}]")
+            for s in servers:
+                icon = {"active": "+", "inactive": "-", "disabled": "x"}
+                mark = icon.get(s["status"], "?")
+                tier_label = {"zero-config": "T1", "configured": "T2",
+                              "needs-token": "T2", "disabled": "T3"}
+                tier = tier_label.get(s["tier"], "?")
+                extra = ""
+                if s["status"] == "inactive":
+                    missing = [k for k, v in s["env_status"].items() if v == "unset"]
+                    extra = f" (needs: {', '.join(missing)})"
+                print(f"    {mark} {s['name']:20s} [{tier}]  {s['description']}{extra}")
+        print()
+        print("+ active  - needs token  x disabled")
+        print("T1=zero-config  T2=token-required  T3=disabled")
+        print()
+        print("claude-daemon mcp enable <name>  — enable a disabled server")
+        print("claude-daemon mcp disable <name> — disable a server")
+        print("claude-daemon mcp refresh        — regenerate tools.json from env")
+
+    elif action == "enable":
+        name = args.server
+        import yaml
+        cfg_path = config.data_dir / "config.yaml"
+        for p in [cfg_path, config.data_dir.parent / "config.yaml"]:
+            if p.exists():
+                cfg_path = p
+                break
+        data: dict = {}
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                data = yaml.safe_load(f) or {}
+        claude_sec = data.setdefault("claude", {})
+        disabled = claude_sec.get("disabled_mcp_servers", [])
+        if name in disabled:
+            disabled.remove(name)
+            claude_sec["disabled_mcp_servers"] = disabled
+            with open(cfg_path, "w") as f:
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+            print(f"Enabled '{name}'. Refreshing configs...")
+        else:
+            print(f"'{name}' is not disabled.")
+        agents_dir = config.data_dir / "agents"
+        counts = refresh_agent_tools_json(agents_dir, disabled_servers=disabled)
+        sample = next(iter(counts.values()), 0) if counts else 0
+        print(f"Done. {sample} servers active across {len(counts)} agents.")
+
+    elif action == "disable":
+        name = args.server
+        import yaml
+        cfg_path = config.data_dir / "config.yaml"
+        for p in [cfg_path, config.data_dir.parent / "config.yaml"]:
+            if p.exists():
+                cfg_path = p
+                break
+        data: dict = {}
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                data = yaml.safe_load(f) or {}
+        claude_sec = data.setdefault("claude", {})
+        disabled = claude_sec.get("disabled_mcp_servers", [])
+        if name not in disabled:
+            disabled.append(name)
+            claude_sec["disabled_mcp_servers"] = disabled
+            with open(cfg_path, "w") as f:
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+            print(f"Disabled '{name}'. Refreshing configs...")
+        else:
+            print(f"'{name}' is already disabled.")
+        agents_dir = config.data_dir / "agents"
+        counts = refresh_agent_tools_json(agents_dir, disabled_servers=disabled)
+        sample = next(iter(counts.values()), 0) if counts else 0
+        print(f"Done. {sample} servers active across {len(counts)} agents.")
+
+    elif action == "refresh":
+        agents_dir = config.data_dir / "agents"
+        counts = refresh_agent_tools_json(
+            agents_dir, disabled_servers=config.disabled_mcp_servers,
+        )
+        sample = next(iter(counts.values()), 0) if counts else 0
+        print(f"MCP configs refreshed: {sample} servers active across {len(counts)} agents.")
+
+
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
     from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
@@ -398,6 +499,16 @@ def main() -> None:
     p_env_set = p_env_sub.add_parser("set", help="Set an env var (KEY=VALUE)")
     p_env_set.add_argument("pair", help="KEY=VALUE")
 
+    # mcp
+    p_mcp = sub.add_parser("mcp", help="Manage MCP server pool")
+    p_mcp_sub = p_mcp.add_subparsers(dest="mcp_action")
+    p_mcp_sub.add_parser("list", help="List all MCP servers with tier and status")
+    p_mcp_en = p_mcp_sub.add_parser("enable", help="Enable a disabled server")
+    p_mcp_en.add_argument("server", help="Server name")
+    p_mcp_dis = p_mcp_sub.add_parser("disable", help="Disable a server")
+    p_mcp_dis.add_argument("server", help="Server name")
+    p_mcp_sub.add_parser("refresh", help="Regenerate tools.json from current env")
+
     # agents
     p_agents = sub.add_parser("agents", help="Manage agents")
     p_agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -422,6 +533,7 @@ def main() -> None:
         "install-service": _cmd_install_service,
         "jobs": _cmd_jobs,
         "env": _cmd_env,
+        "mcp": _cmd_mcp,
         "agents": _cmd_agents,
     }
 

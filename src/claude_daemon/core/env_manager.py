@@ -19,9 +19,15 @@ log = logging.getLogger(__name__)
 
 # All known environment variables the daemon and its MCP tools may use
 KNOWN_ENV_VARS: list[str] = [
+    # Core daemon integrations
     "TELEGRAM_BOT_TOKEN",
     "DISCORD_BOT_TOKEN",
     "CLAUDE_DAEMON_API_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+    "STRIPE_WEBHOOK_SECRET",
+    "PAPERCLIP_URL",
+    "PAPERCLIP_API_KEY",
+    # MCP — existing
     "GITHUB_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_TEAM_ID",
@@ -29,10 +35,37 @@ KNOWN_ENV_VARS: list[str] = [
     "SUPABASE_PROJECT_REF",
     "GMAIL_OAUTH_CREDENTIALS",
     "GCAL_OAUTH_CREDENTIALS",
-    "GITHUB_WEBHOOK_SECRET",
-    "STRIPE_WEBHOOK_SECRET",
-    "PAPERCLIP_URL",
-    "PAPERCLIP_API_KEY",
+    # MCP — search & web
+    "TAVILY_API_KEY",
+    "BRAVE_API_KEY",
+    "FIRECRAWL_API_KEY",
+    # MCP — data
+    "POSTGRES_URL",
+    "MONGODB_URI",
+    # MCP — developer
+    "SENTRY_AUTH_TOKEN",
+    # MCP — productivity
+    "GDRIVE_OAUTH_CREDENTIALS",
+    "NOTION_API_KEY",
+    "LINEAR_API_KEY",
+    "OBSIDIAN_VAULT_PATH",
+    # MCP — analytics
+    "SNOWFLAKE_ACCOUNT",
+    "SNOWFLAKE_USER",
+    "SNOWFLAKE_PASSWORD",
+    "SNOWFLAKE_WAREHOUSE",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    # MCP — AI & models
+    "ELEVENLABS_API_KEY",
+    "HF_TOKEN",
+    "REPLICATE_API_TOKEN",
+    # MCP — infrastructure
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_REGION",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "VERCEL_TOKEN",
 ]
 
 _KEY_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -144,3 +177,17 @@ def get_missing_env_report(agent_registry) -> str | None:
     lines.append("Fix via API:   POST /api/config/env {\"key\": \"...\", \"value\": \"...\"}")
 
     return "\n".join(lines)
+
+
+def detect_mcp_server_for_var(key: str) -> str | None:
+    """Return the MCP server name that *key* enables, or ``None``.
+
+    Used by ``/setenv`` handlers to prompt the user about refreshing MCP
+    configs when they set a new token.
+    """
+    from claude_daemon.agents.bootstrap import MCP_SERVER_CATALOG, _server_env_vars
+
+    for name, tmpl in MCP_SERVER_CATALOG.items():
+        if key in _server_env_vars(tmpl):
+            return name
+    return None

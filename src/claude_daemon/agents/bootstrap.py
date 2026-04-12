@@ -66,7 +66,7 @@ CSUITE_AGENTS = [
             "4. If the plan changes during execution, update the user.\n"
             "This applies to all agents. Simple single-step queries skip planning.\n"
         ),
-        "mcp_servers": ["slack", "gmail", "google-calendar", "github"],
+        # mcp_servers: all agents now share the full MCP pool via refresh_agent_tools_json()
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## Morning Briefing\n"
@@ -125,7 +125,7 @@ CSUITE_AGENTS = [
             "- Research better tools, libraries, and architectural patterns for our stack.\n"
             "- When you find a better way, write it to shared/playbooks/ for the whole team.\n"
         ),
-        "mcp_servers": ["github", "supabase", "slack"],
+        # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## PR Status Check\n"
@@ -177,7 +177,7 @@ CSUITE_AGENTS = [
             "- Build and maintain a design system. Document patterns in shared/playbooks/.\n"
             "- When you solve a tricky layout or animation, write a playbook for next time.\n"
         ),
-        "mcp_servers": ["github", "slack"],
+        # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## Design Review Queue\n"
@@ -217,7 +217,7 @@ CSUITE_AGENTS = [
             "- Maintain a quality checklist in shared/checklists/ and evolve it based on what you find.\n"
             "- Propose automated checks for the most common failure modes.\n"
         ),
-        "mcp_servers": ["github", "supabase", "slack"],
+        # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## Daily PR Review\n"
@@ -260,7 +260,7 @@ CSUITE_AGENTS = [
             "- Track ROI per agent and per initiative. Propose cuts and investments.\n"
             "- Research new pricing models, discounts, or efficiency tools.\n"
         ),
-        "mcp_servers": ["supabase", "gmail", "slack"],
+        # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## Daily Cost Audit\n"
@@ -306,7 +306,7 @@ CSUITE_AGENTS = [
             "- Maintain a risk register in shared/playbooks/risk-register.md.\n"
             "- When a vulnerability is found and fixed, write the pattern to prevent recurrence.\n"
         ),
-        "mcp_servers": ["github", "supabase", "slack"],
+        # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## Nightly Security Scan\n"
@@ -352,7 +352,7 @@ CSUITE_AGENTS = [
             "- Maintain a compliance checklist in shared/checklists/compliance.md.\n"
             "- When a legal question is answered, write the ruling to shared/playbooks/ for reuse.\n"
         ),
-        "mcp_servers": ["gmail", "slack"],
+        # mcp_servers: shared pool
         "heartbeat": (
             "# Heartbeat Tasks\n\n"
             "## Weekly Compliance Scan\n"
@@ -371,28 +371,47 @@ CSUITE_AGENTS = [
     },
 ]
 
-# MCP server templates - users must fill in their actual credentials/endpoints.
-# These are scaffolds that show which servers each agent should have access to.
-MCP_SERVER_TEMPLATES: dict[str, dict] = {
+# ---------------------------------------------------------------------------
+# MCP Server Catalog — tiered shared pool
+#
+# Every server is available to every agent.  Tier determination:
+#   Tier 1 (zero-config): env dict is empty → always included in tools.json
+#   Tier 2 (token-required): env dict non-empty → included only when vars are set
+#   Tier 3 (disabled): user added name to disabled_mcp_servers → excluded
+#
+# To add a new server in the future, just append an entry here and add its
+# env-var names to env_manager.KNOWN_ENV_VARS.
+# ---------------------------------------------------------------------------
+
+MCP_SERVER_CATALOG: dict[str, dict] = {
+    # ── Existing (Anthropic Claude-Code wrappers) ──────────────────────────
     "slack": {
         "command": "npx",
         "args": ["-y", "@anthropic-ai/claude-code-slack-mcp"],
         "env": {"SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}", "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"},
+        "category": "productivity",
+        "description": "Slack messaging and channels",
     },
     "gmail": {
         "command": "npx",
         "args": ["-y", "@anthropic-ai/claude-code-gmail-mcp"],
         "env": {"GMAIL_OAUTH_CREDENTIALS": "${GMAIL_OAUTH_CREDENTIALS}"},
+        "category": "productivity",
+        "description": "Read, send, and search Gmail",
     },
     "google-calendar": {
         "command": "npx",
         "args": ["-y", "@anthropic-ai/claude-code-google-calendar-mcp"],
         "env": {"GCAL_OAUTH_CREDENTIALS": "${GCAL_OAUTH_CREDENTIALS}"},
+        "category": "productivity",
+        "description": "Google Calendar events and scheduling",
     },
     "github": {
         "command": "npx",
         "args": ["-y", "@anthropic-ai/claude-code-github-mcp"],
         "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+        "category": "developer",
+        "description": "GitHub repos, issues, and pull requests",
     },
     "supabase": {
         "command": "npx",
@@ -401,8 +420,370 @@ MCP_SERVER_TEMPLATES: dict[str, dict] = {
             "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}",
             "SUPABASE_PROJECT_REF": "${SUPABASE_PROJECT_REF}",
         },
+        "category": "data",
+        "description": "Supabase database, auth, and storage",
+    },
+    # ── Search & Web ───────────────────────────────────────────────────────
+    "tavily": {
+        "command": "npx",
+        "args": ["-y", "tavily-mcp@latest"],
+        "env": {"TAVILY_API_KEY": "${TAVILY_API_KEY}"},
+        "category": "search",
+        "description": "AI-optimized web search",
+    },
+    "brave-search": {
+        "command": "npx",
+        "args": ["-y", "brave-search-mcp@latest"],
+        "env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"},
+        "category": "search",
+        "description": "Brave independent web search",
+    },
+    "firecrawl": {
+        "command": "npx",
+        "args": ["-y", "firecrawl-mcp@latest"],
+        "env": {"FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"},
+        "category": "search",
+        "description": "Web scraping and content extraction",
+    },
+    "fetch": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-fetch@latest"],
+        "env": {},
+        "category": "search",
+        "description": "Fetch web page content from URLs",
+    },
+    # ── File & Data ────────────────────────────────────────────────────────
+    "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem@latest"],
+        "env": {},
+        "category": "data",
+        "description": "Local filesystem read/write/search",
+    },
+    "sqlite": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sqlite@latest"],
+        "env": {},
+        "category": "data",
+        "description": "Query and manage SQLite databases",
+    },
+    "postgres": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-postgres@latest"],
+        "env": {"POSTGRES_URL": "${POSTGRES_URL}"},
+        "category": "data",
+        "description": "PostgreSQL database queries",
+    },
+    "excel": {
+        "command": "npx",
+        "args": ["-y", "excel-mcp-server@latest"],
+        "env": {},
+        "category": "data",
+        "description": "Read, write, and manipulate Excel files",
+    },
+    "markdownify": {
+        "command": "npx",
+        "args": ["-y", "markdownify-mcp@latest"],
+        "env": {},
+        "category": "data",
+        "description": "Convert PDFs, images, docs to Markdown",
+    },
+    "mongodb": {
+        "command": "npx",
+        "args": ["-y", "mcp-mongo-server@latest"],
+        "env": {"MONGODB_URI": "${MONGODB_URI}"},
+        "category": "data",
+        "description": "MongoDB document queries",
+    },
+    # ── Developer ──────────────────────────────────────────────────────────
+    "git": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-git@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Direct Git operations (clone, commit, diff)",
+    },
+    "context7": {
+        "command": "npx",
+        "args": ["-y", "@upstash/context7-mcp@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Up-to-date library documentation",
+    },
+    "playwright": {
+        "command": "npx",
+        "args": ["-y", "@anthropic-ai/mcp-playwright@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Browser automation and testing",
+    },
+    "docker": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-docker@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Docker container management",
+    },
+    "sentry": {
+        "command": "npx",
+        "args": ["-y", "@sentry/mcp-server-sentry@latest"],
+        "env": {"SENTRY_AUTH_TOKEN": "${SENTRY_AUTH_TOKEN}"},
+        "category": "developer",
+        "description": "Error monitoring and stack traces",
+    },
+    "codebase-memory": {
+        "command": "npx",
+        "args": ["-y", "codebase-memory-mcp@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Persistent codebase knowledge graph",
+    },
+    # ── Productivity ───────────────────────────────────────────────────────
+    "gdrive": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-gdrive@latest"],
+        "env": {"GDRIVE_OAUTH_CREDENTIALS": "${GDRIVE_OAUTH_CREDENTIALS}"},
+        "category": "productivity",
+        "description": "Google Drive file management",
+    },
+    "notion": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-notion@latest"],
+        "env": {"NOTION_API_KEY": "${NOTION_API_KEY}"},
+        "category": "productivity",
+        "description": "Notion pages and databases",
+    },
+    "linear": {
+        "command": "npx",
+        "args": ["-y", "linear-mcp-server@latest"],
+        "env": {"LINEAR_API_KEY": "${LINEAR_API_KEY}"},
+        "category": "productivity",
+        "description": "Linear issue tracking and projects",
+    },
+    "obsidian": {
+        "command": "npx",
+        "args": ["-y", "obsidian-mcp@latest"],
+        "env": {"OBSIDIAN_VAULT_PATH": "${OBSIDIAN_VAULT_PATH}"},
+        "category": "productivity",
+        "description": "Obsidian vault notes and search",
+    },
+    # ── Data & Analytics ───────────────────────────────────────────────────
+    "snowflake": {
+        "command": "npx",
+        "args": ["-y", "mcp-snowflake-service@latest"],
+        "env": {
+            "SNOWFLAKE_ACCOUNT": "${SNOWFLAKE_ACCOUNT}",
+            "SNOWFLAKE_USER": "${SNOWFLAKE_USER}",
+            "SNOWFLAKE_PASSWORD": "${SNOWFLAKE_PASSWORD}",
+            "SNOWFLAKE_WAREHOUSE": "${SNOWFLAKE_WAREHOUSE}",
+        },
+        "category": "analytics",
+        "description": "Snowflake data warehouse queries",
+    },
+    "bigquery": {
+        "command": "npx",
+        "args": ["-y", "mcp-server-bigquery@latest"],
+        "env": {"GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}"},
+        "category": "analytics",
+        "description": "Google BigQuery large-scale analytics",
+    },
+    # ── AI & Models ────────────────────────────────────────────────────────
+    "elevenlabs": {
+        "command": "npx",
+        "args": ["-y", "elevenlabs-mcp@latest"],
+        "env": {"ELEVENLABS_API_KEY": "${ELEVENLABS_API_KEY}"},
+        "category": "ai",
+        "description": "Text-to-speech voice generation",
+    },
+    "huggingface": {
+        "command": "npx",
+        "args": ["-y", "@huggingface/mcp-server@latest"],
+        "env": {"HF_TOKEN": "${HF_TOKEN}"},
+        "category": "ai",
+        "description": "Hugging Face models and datasets",
+    },
+    "replicate": {
+        "command": "npx",
+        "args": ["-y", "mcp-replicate@latest"],
+        "env": {"REPLICATE_API_TOKEN": "${REPLICATE_API_TOKEN}"},
+        "category": "ai",
+        "description": "Open-source AI model inference",
+    },
+    # ── Infrastructure ─────────────────────────────────────────────────────
+    "aws": {
+        "command": "npx",
+        "args": ["-y", "@aws-samples/mcp-server@latest"],
+        "env": {
+            "AWS_ACCESS_KEY_ID": "${AWS_ACCESS_KEY_ID}",
+            "AWS_SECRET_ACCESS_KEY": "${AWS_SECRET_ACCESS_KEY}",
+            "AWS_REGION": "${AWS_REGION}",
+        },
+        "category": "infrastructure",
+        "description": "AWS cloud resource management",
+    },
+    "cloudflare": {
+        "command": "npx",
+        "args": ["-y", "@cloudflare/mcp-server-cloudflare@latest"],
+        "env": {
+            "CLOUDFLARE_API_TOKEN": "${CLOUDFLARE_API_TOKEN}",
+            "CLOUDFLARE_ACCOUNT_ID": "${CLOUDFLARE_ACCOUNT_ID}",
+        },
+        "category": "infrastructure",
+        "description": "Cloudflare Workers, KV, R2, and DNS",
+    },
+    "kubernetes": {
+        "command": "npx",
+        "args": ["-y", "mcp-k8s@latest"],
+        "env": {},
+        "category": "infrastructure",
+        "description": "Kubernetes cluster management",
+    },
+    "vercel": {
+        "command": "npx",
+        "args": ["-y", "@vercel/mcp@latest"],
+        "env": {"VERCEL_TOKEN": "${VERCEL_TOKEN}"},
+        "category": "infrastructure",
+        "description": "Vercel deployments and domains",
+    },
+    # ── Utility ────────────────────────────────────────────────────────────
+    "puppeteer": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-puppeteer@latest"],
+        "env": {},
+        "category": "utility",
+        "description": "Headless browser automation",
+    },
+    "time": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-time@latest"],
+        "env": {},
+        "category": "utility",
+        "description": "Current time and timezone operations",
+    },
+    "memory": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory@latest"],
+        "env": {},
+        "category": "utility",
+        "description": "Persistent key-value memory across sessions",
     },
 }
+
+# Backwards-compat alias used by tests referencing the old name
+MCP_SERVER_TEMPLATES = MCP_SERVER_CATALOG
+
+
+# ---------------------------------------------------------------------------
+# MCP config generation — tiered filtering
+# ---------------------------------------------------------------------------
+
+def _server_env_vars(server: dict) -> list[str]:
+    """Extract env-var names from a server template's ${VAR} placeholders."""
+    names: list[str] = []
+    for v in server.get("env", {}).values():
+        if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+            names.append(v[2:-1])
+    return names
+
+
+def _server_is_configured(env_vars: list[str]) -> bool:
+    """True if every required env var is set in os.environ."""
+    import os
+    return all(os.environ.get(v) for v in env_vars)
+
+
+def generate_mcp_config(disabled_servers: list[str] | None = None) -> dict:
+    """Build mcpServers dict with only enabled + configured servers.
+
+    - Skips servers in *disabled_servers*
+    - Zero-config servers (no env vars) are always included
+    - Token-required servers are included only when their env vars are set
+    """
+    disabled = set(disabled_servers or [])
+    servers: dict[str, dict] = {}
+
+    for name, tmpl in MCP_SERVER_CATALOG.items():
+        if name in disabled:
+            continue
+
+        env_vars = _server_env_vars(tmpl)
+        if env_vars and not _server_is_configured(env_vars):
+            continue  # token-required but not yet configured
+
+        # Build the runtime entry (strip catalog-only metadata)
+        entry: dict = {"command": tmpl["command"], "args": list(tmpl["args"])}
+        if tmpl.get("env"):
+            entry["env"] = dict(tmpl["env"])
+        servers[name] = entry
+
+    return {"mcpServers": servers}
+
+
+def refresh_agent_tools_json(
+    agents_dir: Path,
+    disabled_servers: list[str] | None = None,
+) -> dict[str, int]:
+    """Regenerate tools.json for every agent workspace.
+
+    Returns ``{agent_name: server_count}`` for each agent updated.
+    """
+    mcp_config = generate_mcp_config(disabled_servers)
+    server_count = len(mcp_config.get("mcpServers", {}))
+    payload = json.dumps(mcp_config, indent=2) + "\n"
+
+    results: dict[str, int] = {}
+    if not agents_dir.is_dir():
+        return results
+
+    for child in sorted(agents_dir.iterdir()):
+        if child.is_dir() and (child / "IDENTITY.md").exists():
+            (child / "tools.json").write_text(payload)
+            results[child.name] = server_count
+
+    return results
+
+
+def get_mcp_catalog_status(disabled_servers: list[str] | None = None) -> list[dict]:
+    """Return the status of every cataloged server for display.
+
+    Each entry: ``{name, category, description, tier, status, env_vars}``.
+    """
+    import os
+    disabled = set(disabled_servers or [])
+    result: list[dict] = []
+
+    for name, tmpl in MCP_SERVER_CATALOG.items():
+        env_vars = _server_env_vars(tmpl)
+        requires_token = bool(env_vars)
+
+        if name in disabled:
+            tier = "disabled"
+            status = "disabled"
+        elif not requires_token:
+            tier = "zero-config"
+            status = "active"
+        elif _server_is_configured(env_vars):
+            tier = "configured"
+            status = "active"
+        else:
+            tier = "needs-token"
+            status = "inactive"
+
+        env_status = {}
+        for v in env_vars:
+            env_status[v] = "set" if os.environ.get(v) else "unset"
+
+        result.append({
+            "name": name,
+            "category": tmpl.get("category", ""),
+            "description": tmpl.get("description", ""),
+            "tier": tier,
+            "status": status,
+            "env_vars": env_vars,
+            "env_status": env_status,
+        })
+
+    return result
 
 
 def create_csuite_workspaces(agents_dir: Path) -> int:
@@ -425,8 +806,8 @@ def create_csuite_workspaces(agents_dir: Path) -> int:
         # SOUL.md
         (workspace / "SOUL.md").write_text(agent_def.get("soul", f"# Soul\n\nI am {name}.\n"))
 
-        # IDENTITY.md (includes MCP config reference)
-        mcp_line = "MCP-Config: tools.json\n" if agent_def.get("mcp_servers") else ""
+        # IDENTITY.md (includes MCP config reference — all agents get MCP)
+        mcp_line = "MCP-Config: tools.json\n"
         (workspace / "IDENTITY.md").write_text(
             f"# Identity\n\n"
             f"Name: {name}\n"
@@ -444,17 +825,11 @@ def create_csuite_workspaces(agents_dir: Path) -> int:
         if rules:
             (workspace / "AGENTS.md").write_text(rules)
 
-        # tools.json (MCP server configuration)
-        mcp_servers = agent_def.get("mcp_servers", [])
-        if mcp_servers:
-            mcp_config = {"mcpServers": {}}
-            for server_name in mcp_servers:
-                template = MCP_SERVER_TEMPLATES.get(server_name)
-                if template:
-                    mcp_config["mcpServers"][server_name] = template
-            (workspace / "tools.json").write_text(
-                json.dumps(mcp_config, indent=2) + "\n"
-            )
+        # tools.json is generated at daemon startup by refresh_agent_tools_json()
+        # to ensure it reflects the current env-var state.  Write an empty
+        # scaffold here so the file exists for identity loading.
+        if not (workspace / "tools.json").exists():
+            (workspace / "tools.json").write_text('{"mcpServers": {}}\n')
 
         # HEARTBEAT.md
         heartbeat = agent_def.get("heartbeat", "")

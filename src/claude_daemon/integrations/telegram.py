@@ -80,6 +80,7 @@ class TelegramIntegration(BaseIntegration):
         self._app.add_handler(CommandHandler("tasks", self._cmd_tasks))
         self._app.add_handler(CommandHandler("setenv", self._cmd_setenv))
         self._app.add_handler(CommandHandler("getenv", self._cmd_getenv))
+        self._app.add_handler(CommandHandler("mcp", self._cmd_mcp))
         self._app.add_handler(
             TGMessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -542,6 +543,14 @@ class TelegramIntegration(BaseIntegration):
             note = ""
             if key in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"):
                 note = "\nNote: integration tokens require a daemon restart to take effect."
+            # Check if this token enables an MCP server
+            from claude_daemon.core.env_manager import detect_mcp_server_for_var
+            mcp_server = detect_mcp_server_for_var(key)
+            if mcp_server:
+                note += (
+                    f"\nThis enables the '{mcp_server}' MCP server."
+                    f"\nUse /mcp refresh to apply now, or it takes effect on next restart."
+                )
             await update.message.reply_text(f"Set {key} = {masked}{note}")
         except ValueError as e:
             await update.message.reply_text(f"Error: {e}")
@@ -563,3 +572,63 @@ class TelegramIntegration(BaseIntegration):
                 lines.append(f"  {var['key']}: (not set)")
         lines.append("\nSet with: /setenv KEY value")
         await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_mcp(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """MCP server management: /mcp [list|enable|disable|refresh] [server]"""
+        user = update.effective_user
+        if not user or not self._is_allowed(user.id):
+            return
+        if not self.daemon:
+            return
+
+        args = (update.message.text or "").split()
+        action = args[1] if len(args) > 1 else "list"
+        server_name = args[2] if len(args) > 2 else None
+
+        if action == "list":
+            statuses = self.daemon.get_mcp_status()
+            lines = ["MCP Server Pool:\n"]
+            # Group by category
+            by_cat: dict[str, list] = {}
+            for s in statuses:
+                by_cat.setdefault(s["category"], []).append(s)
+            for cat, servers in sorted(by_cat.items()):
+                lines.append(f"  [{cat}]")
+                for s in servers:
+                    icon = {"active": "+", "inactive": "-", "disabled": "x"}
+                    mark = icon.get(s["status"], "?")
+                    tier_label = {"zero-config": "T1", "configured": "T2",
+                                  "needs-token": "T2", "disabled": "T3"}
+                    tier = tier_label.get(s["tier"], "?")
+                    extra = ""
+                    if s["status"] == "inactive":
+                        missing = [k for k, v in s["env_status"].items() if v == "unset"]
+                        extra = f" (needs: {', '.join(missing)})"
+                    lines.append(f"    {mark} {s['name']} [{tier}] — {s['description']}{extra}")
+            lines.append(
+                "\n+ active  - needs token  x disabled"
+                "\nT1=zero-config  T2=token-required  T3=disabled"
+                "\n\n/mcp enable <name> | /mcp disable <name> | /mcp refresh"
+            )
+            await update.message.reply_text("\n".join(lines))
+
+        elif action == "enable" and server_name:
+            result = await self.daemon.enable_mcp_server(server_name)
+            await update.message.reply_text(result)
+
+        elif action == "disable" and server_name:
+            result = await self.daemon.disable_mcp_server(server_name)
+            await update.message.reply_text(result)
+
+        elif action == "refresh":
+            result = await self.daemon.refresh_mcp()
+            await update.message.reply_text(result)
+
+        else:
+            await update.message.reply_text(
+                "Usage: /mcp [list|enable|disable|refresh] [server]\n"
+                "  /mcp             — list all servers with status\n"
+                "  /mcp enable X    — enable a disabled server\n"
+                "  /mcp disable X   — disable a server\n"
+                "  /mcp refresh     — regenerate configs from current env"
+            )
