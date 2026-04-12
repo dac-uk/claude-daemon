@@ -135,24 +135,133 @@ fi
 step "Setting up configuration"
 
 mkdir -p "$CONFIG_DIR"
+ENV_FILE="$CONFIG_DIR/.env"
+YAML_FILE="$CONFIG_DIR/config.yaml"
 
 # Copy config template (never overwrite)
-if [ -f "$CONFIG_DIR/config.yaml" ]; then
+if [ -f "$YAML_FILE" ]; then
     ok "config.yaml already exists — skipping"
 else
-    cp "$REPO_DIR/config.example.yaml" "$CONFIG_DIR/config.yaml"
-    ok "Created $CONFIG_DIR/config.yaml"
+    cp "$REPO_DIR/config.example.yaml" "$YAML_FILE"
+    ok "Created $YAML_FILE"
 fi
 
 # Copy .env template (never overwrite)
-if [ -f "$CONFIG_DIR/.env" ]; then
+if [ -f "$ENV_FILE" ]; then
     ok ".env already exists — skipping"
 else
-    cp "$REPO_DIR/.env.example" "$CONFIG_DIR/.env"
-    ok "Created $CONFIG_DIR/.env"
+    cp "$REPO_DIR/.env.example" "$ENV_FILE"
+    ok "Created $ENV_FILE"
 fi
 
-# -- 5. Install system service -------------------------------------------------
+# -- 5. Interactive token setup ------------------------------------------------
+# Helper: set a value in the .env file (append or update)
+_set_env() {
+    local key="$1" value="$2"
+    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+    elif grep -q "^# *${key}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i.bak "s|^# *${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+    else
+        echo "${key}=${value}" >> "$ENV_FILE"
+    fi
+}
+
+# Only run interactive setup if stdin is a terminal (not piped) AND .env is fresh
+INTERACTIVE=false
+if [ -t 0 ]; then
+    INTERACTIVE=true
+fi
+
+if [ "$INTERACTIVE" = true ]; then
+    step "Integration setup (press Enter to skip any step)"
+    printf "\n"
+
+    # -- Telegram --
+    printf "  ${BOLD}Telegram${NC}\n"
+    printf "  To create a bot: open Telegram, search for @BotFather, send /newbot\n"
+    printf "  BotFather will give you a token like: 7123456789:AAF1234...\n\n"
+    printf "  Telegram bot token (or Enter to skip): "
+    read -r TG_TOKEN
+    if [ -n "$TG_TOKEN" ]; then
+        _set_env "TELEGRAM_BOT_TOKEN" "$TG_TOKEN"
+        ok "Telegram token saved"
+    else
+        info "Skipped Telegram — add later in $ENV_FILE"
+    fi
+
+    printf "\n"
+
+    # -- Discord --
+    printf "  ${BOLD}Discord${NC}\n"
+    printf "  To create a bot: go to discord.com/developers/applications\n"
+    printf "  Create an app > Bot > Reset Token > copy it\n"
+    printf "  Also enable 'Message Content Intent' under Privileged Gateway Intents\n\n"
+    printf "  Discord bot token (or Enter to skip): "
+    read -r DC_TOKEN
+    if [ -n "$DC_TOKEN" ]; then
+        _set_env "DISCORD_BOT_TOKEN" "$DC_TOKEN"
+        ok "Discord token saved"
+    else
+        info "Skipped Discord — add later in $ENV_FILE"
+    fi
+
+    printf "\n"
+
+    # -- API key --
+    printf "  ${BOLD}HTTP API${NC}\n"
+    printf "  Set a secret key to protect the REST API and dashboard.\n"
+    printf "  Leave empty to auto-generate one.\n\n"
+    printf "  API key (or Enter to auto-generate): "
+    read -r API_KEY
+    if [ -z "$API_KEY" ]; then
+        API_KEY=$($PYTHON -c 'import secrets; print(secrets.token_urlsafe(32))')
+        info "Auto-generated API key"
+    fi
+    _set_env "CLAUDE_DAEMON_API_KEY" "$API_KEY"
+    ok "API key saved"
+
+    printf "\n"
+
+    # -- GitHub token --
+    printf "  ${BOLD}GitHub (for MCP tools)${NC}\n"
+    printf "  Create a token at: github.com/settings/tokens (classic, repo scope)\n\n"
+    printf "  GitHub token (or Enter to skip): "
+    read -r GH_TOKEN
+    if [ -n "$GH_TOKEN" ]; then
+        _set_env "GITHUB_TOKEN" "$GH_TOKEN"
+        ok "GitHub token saved"
+    else
+        info "Skipped GitHub — agents won't have GitHub access until configured"
+    fi
+
+    printf "\n"
+
+    # -- Enable API + dashboard in config.yaml --
+    printf "  ${BOLD}Dashboard${NC}\n"
+    printf "  Enable the live web dashboard? Shows agents, status, streaming output.\n"
+    printf "  Accessible at http://your-ip:8080/ (Tailscale/ZeroTier/LAN)\n\n"
+    printf "  Enable dashboard? [Y/n]: "
+    read -r ENABLE_DASH
+    ENABLE_DASH="${ENABLE_DASH:-Y}"
+    if [[ "$ENABLE_DASH" =~ ^[Yy] ]]; then
+        # Uncomment api_enabled and dashboard_enabled in config.yaml
+        sed -i.bak \
+            -e 's|^  # api_enabled: true|  api_enabled: true|' \
+            -e 's|^  # api_port: 8080|  api_port: 8080|' \
+            -e 's|^  # dashboard_enabled: true|  dashboard_enabled: true|' \
+            -e 's|^  # api_bind: "0.0.0.0"|  api_bind: "0.0.0.0"|' \
+            "$YAML_FILE" && rm -f "${YAML_FILE}.bak"
+        ok "Dashboard enabled at http://0.0.0.0:8080/"
+    else
+        info "Dashboard not enabled — uncomment in config.yaml later"
+    fi
+
+else
+    info "Non-interactive mode — edit tokens in $ENV_FILE"
+fi
+
+# -- 6. Install system service -------------------------------------------------
 step "Installing system service"
 
 OS="$(uname -s)"
@@ -176,7 +285,7 @@ if [ "$OS" = "Linux" ]; then
         info "Service already running — restarting"
         systemctl --user restart claude-daemon
     else
-        systemctl --user start claude-daemon 2>/dev/null || warn "Service start failed — edit .env first, then: systemctl --user start claude-daemon"
+        systemctl --user start claude-daemon 2>/dev/null || warn "Service failed to start — check tokens are set, then: systemctl --user start claude-daemon"
     fi
 
     # Enable linger so user services survive logout
@@ -196,40 +305,45 @@ elif [ "$OS" = "Darwin" ]; then
 
     # Unload if already loaded, then load
     launchctl unload "$PLIST_FILE" 2>/dev/null || true
-    launchctl load "$PLIST_FILE" 2>/dev/null || warn "launchctl load failed — edit .env first, then: launchctl load $PLIST_FILE"
+    launchctl load "$PLIST_FILE" 2>/dev/null || warn "launchctl load failed — check tokens are set, then: launchctl load $PLIST_FILE"
     ok "Service loaded"
 
 else
     warn "Unsupported OS ($OS) — skipping service install. Start manually: claude-daemon start --foreground"
 fi
 
-# -- 6. Summary ----------------------------------------------------------------
+# -- 7. Summary ----------------------------------------------------------------
 step "Installation complete"
 
 printf "\n"
-printf "  ${BOLD}Config:${NC}     %s/config.yaml\n" "$CONFIG_DIR"
-printf "  ${BOLD}Env vars:${NC}   %s/.env\n" "$CONFIG_DIR"
+printf "  ${BOLD}Config:${NC}     %s\n" "$YAML_FILE"
+printf "  ${BOLD}Env vars:${NC}   %s\n" "$ENV_FILE"
 printf "  ${BOLD}Source:${NC}     %s\n" "$REPO_DIR"
 printf "  ${BOLD}Binary:${NC}     %s\n" "$DAEMON_BIN"
 printf "\n"
 
-printf "  ${YELLOW}Next steps:${NC}\n"
-printf "    1. Edit ${BOLD}%s/.env${NC} with your bot tokens\n" "$CONFIG_DIR"
-printf "       (TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN, GITHUB_TOKEN, etc.)\n"
-printf "\n"
-printf "    2. Edit ${BOLD}%s/config.yaml${NC} to enable integrations\n" "$CONFIG_DIR"
-printf "       (api_enabled, dashboard_enabled, telegram, discord)\n"
-printf "\n"
-printf "    3. Check status:\n"
 if [ "$OS" = "Linux" ]; then
-    printf "       ${CYAN}systemctl --user status claude-daemon${NC}\n"
-    printf "       ${CYAN}journalctl --user -u claude-daemon -f${NC}\n"
+    printf "  ${BOLD}Service:${NC}\n"
+    printf "    ${CYAN}systemctl --user status claude-daemon${NC}    # Check status\n"
+    printf "    ${CYAN}systemctl --user restart claude-daemon${NC}   # Restart after config changes\n"
+    printf "    ${CYAN}journalctl --user -u claude-daemon -f${NC}   # Stream logs\n"
 elif [ "$OS" = "Darwin" ]; then
-    printf "       ${CYAN}launchctl list | grep claude-daemon${NC}\n"
-    printf "       ${CYAN}tail -f /tmp/claude-daemon.stdout.log${NC}\n"
+    printf "  ${BOLD}Service:${NC}\n"
+    printf "    ${CYAN}launchctl list | grep claude-daemon${NC}     # Check status\n"
+    printf "    ${CYAN}tail -f /tmp/claude-daemon.stdout.log${NC}   # Stream logs\n"
 fi
-printf "       ${CYAN}claude-daemon status${NC}\n"
+printf "    ${CYAN}claude-daemon status${NC}                    # Quick check\n"
 printf "\n"
-printf "    4. Dashboard (once api_enabled + dashboard_enabled are set):\n"
-printf "       ${CYAN}http://localhost:8080/${NC}\n"
+
+if [ "$INTERACTIVE" = true ]; then
+    printf "  ${YELLOW}What's next:${NC}\n"
+    printf "    1. Set up channels — see the Channel Setup Guide in README.md\n"
+    printf "    2. The bot will bootstrap 7 AI agents on first message\n"
+    printf "    3. Just start talking — type naturally, no special commands needed\n"
+else
+    printf "  ${YELLOW}What's next:${NC}\n"
+    printf "    1. Edit ${BOLD}%s${NC} with your bot tokens\n" "$ENV_FILE"
+    printf "    2. Edit ${BOLD}%s${NC} to enable integrations\n" "$YAML_FILE"
+    printf "    3. Restart: ${CYAN}systemctl --user restart claude-daemon${NC}\n"
+fi
 printf "\n"

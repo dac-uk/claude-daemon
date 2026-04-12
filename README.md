@@ -120,113 +120,184 @@ Send any message to chat with the active agent (Johnny by default). Use `@agent_
 
 ## Channel Setup Guide
 
-### How routing works
+This section walks you through connecting the daemon to Telegram and/or Discord from scratch. You don't need both — pick whichever you use.
 
-Messages flow through a routing chain:
+### How messages get routed
 
-1. **Channel binding** — if the message arrives in a channel mapped to a specific agent in config, that agent handles it directly
-2. **@agent addressing** — `@albert build the API` routes to Albert regardless of which channel you're in
-3. **Auto-routing** — if neither of the above, Johnny (the orchestrator) decides who should handle it
+Every message goes through three checks in order:
 
-In **DMs**, the bot always listens. In **groups/channels**, the bot only responds when mentioned or when the channel is bound to an agent.
+1. **Is this channel bound to an agent?** If yes, that agent handles it. No @mention needed.
+2. **Does the message start with `@agent_name`?** If yes, that specific agent handles it.
+3. **Neither?** Johnny (the orchestrator) receives it and decides which agent should handle it.
 
-### Telegram setup
+**Tip:** Bind your main/general channel to `johnny`. That way Johnny orchestrates everything in that channel and you never need to @mention the bot — just type naturally.
 
-**1. Create a bot** via [@BotFather](https://t.me/BotFather) on Telegram. Copy the token to your `.env`:
+---
 
+### Telegram
+
+#### Step 1: Create a Telegram bot
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot` and follow the prompts — pick a name and username
+3. BotFather gives you a token that looks like: `7123456789:AAF1234567890abcdefghijklmnop`
+4. Copy it
+
+#### Step 2: Add the token
+
+The install script (`./install.sh`) will prompt you for this token automatically. If you already ran the installer, add it manually:
+
+Open `~/.config/claude-daemon/.env` and set:
 ```
-TELEGRAM_BOT_TOKEN=bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+TELEGRAM_BOT_TOKEN=7123456789:AAF1234567890abcdefghijklmnop
 ```
 
-**2. Main channel (Johnny / orchestrator):** Just DM the bot or add it to any group. Unbound groups route through Johnny, who auto-routes to the right agent. No config needed.
+#### Step 3: Find your user ID (recommended)
 
-**3. Direct agent channels:** Create a Telegram group per agent, add the bot, then get the chat ID. The easiest way to find it: add [@userinfobot](https://t.me/userinfobot) to the group, or send a message and check the bot's log output. Group IDs are negative numbers.
+Restricting who can talk to the bot prevents strangers from using it.
+
+1. Open Telegram, search for **@userinfobot**, and start a chat
+2. It replies with your numeric user ID (e.g. `123456789`)
+
+#### Step 4: Create your channels
+
+Create Telegram groups for each agent you want a dedicated channel for. You need the **chat ID** of each group:
+
+1. Create a group in Telegram (e.g. "AI General", "Albert CIO", "Luna Design")
+2. Add your bot to each group
+3. Add **@userinfobot** to the group — it will post the group's chat ID (a negative number like `-1001234567890`)
+4. Remove @userinfobot after noting the ID
+
+#### Step 5: Configure
+
+Open `~/.config/claude-daemon/config.yaml` and set up the `telegram` section:
 
 ```yaml
-# ~/.config/claude-daemon/config.yaml
 integrations:
   telegram:
-    allowed_user_ids: []           # Empty = allow all (restrict in production)
-    agent_channels:
-      "-1001234567890": "albert"   # "Albert CIO" group → Albert handles all messages
-      "-1009876543210": "luna"     # "Luna Design" group → Luna handles all messages
-      "-1001111111111": "max"      # "Max QA" group → Max handles all messages
-      "-1002222222222": "penny"    # "Penny Finance" group → Penny handles all messages
-```
-
-**4. Restrict access** (recommended): Set `allowed_user_ids` to your Telegram user ID(s). Only listed users can interact with the bot.
-
-```yaml
+    # Your Telegram user ID — only you can talk to the bot
+    # Leave empty [] to allow everyone (not recommended)
     allowed_user_ids:
-      - 123456789                  # Your Telegram user ID
+      - 123456789
+
+    # Map each group to an agent. The bot responds to ALL messages
+    # in these groups — no @mention needed.
+    agent_channels:
+      "-1001234567890": "johnny"     # Your main group — Johnny orchestrates
+      "-1009876543210": "albert"     # Albert handles architecture/backend
+      "-1001111111111": "luna"       # Luna handles UI/design
+      "-1002222222222": "max"        # Max handles QA/testing
 ```
 
-In any channel (bound or not), you can still override with `@agent_name`:
+**That's it for Telegram.** Restart the daemon and send a message in any of those groups. The bot responds immediately — no @mention required.
 
+On Telegram, the bot listens to **all messages** from authorised users in any group it's a member of. Even groups not listed in `agent_channels` work — they route through Johnny by default.
+
+You can always override the channel binding by starting your message with `@agent_name`:
 ```
-@luna redesign the login page     # Routes to Luna even in Albert's group
+@luna redesign the login page     # Goes to Luna, even in Albert's group
 ```
 
-### Discord setup
+---
 
-**1. Create a bot** in the [Discord Developer Portal](https://discord.com/developers/applications). Enable MESSAGE CONTENT intent. Copy the token to your `.env`:
+### Discord
 
+#### Step 1: Create a Discord bot
+
+1. Go to the **Discord Developer Portal**: `discord.com/developers/applications`
+2. Click **New Application**, give it a name, click **Create**
+3. In the left sidebar, click **Bot**
+4. Click **Reset Token** and copy the token — you'll only see it once
+5. Scroll down to **Privileged Gateway Intents** and enable **Message Content Intent** (required)
+6. Click **Save Changes**
+
+#### Step 2: Invite the bot to your server
+
+1. In the Developer Portal, click **OAuth2** in the left sidebar
+2. Under **Scopes**, tick **bot**
+3. Under **Bot Permissions**, tick:
+   - Send Messages
+   - Read Message History
+   - Embed Links
+4. Copy the generated URL at the bottom and open it in your browser
+5. Select your server and click **Authorize**
+
+#### Step 3: Add the token
+
+The install script (`./install.sh`) will prompt you for this token automatically. If you already ran the installer, add it manually:
+
+Open `~/.config/claude-daemon/.env` and set:
 ```
 DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.AbCdEf.GhIjKlMnOpQrStUvWxYz
 ```
 
-**2. Invite the bot** to your server with the OAuth2 URL from the portal. It needs: Send Messages, Read Message History, and Embed Links permissions.
+#### Step 4: Get channel and server IDs
 
-**3. Main channel (Johnny / orchestrator):** In any channel, @mention the bot. Unbound channels route through Johnny. In DMs, the bot always listens — no mention needed.
+You need to enable **Developer Mode** in Discord to copy IDs:
 
-**4. Direct agent channels:** Create text channels for each agent. Right-click the channel → Copy Channel ID (enable Developer Mode in Discord settings first).
+1. Open Discord Settings (gear icon next to your name)
+2. Go to **App Settings > Advanced**
+3. Turn on **Developer Mode**
+
+Now you can right-click things to copy their IDs:
+- **Server ID**: Right-click the server name at the top of the channel list > **Copy Server ID**
+- **Channel ID**: Right-click any channel > **Copy Channel ID**
+
+#### Step 5: Configure
+
+Open `~/.config/claude-daemon/config.yaml` and set up the `discord` section:
 
 ```yaml
-# ~/.config/claude-daemon/config.yaml
 integrations:
   discord:
-    allowed_guild_ids: []          # Empty = allow all guilds
-    agent_channels:
-      "1100000000000000001": "albert"   # #albert-cio → Albert
-      "1100000000000000002": "luna"     # #luna-design → Luna
-      "1100000000000000003": "max"      # #max-qa → Max
-      "1100000000000000004": "penny"    # #penny-finance → Penny
-      "1100000000000000005": "jeremy"   # #jeremy-security → Jeremy
-      "1100000000000000006": "sophie"   # #sophie-legal → Sophie
-```
-
-**5. Alert channel** (optional): Designate a channel for heartbeat results, improvement plans, and system notifications:
-
-```yaml
-    alert_channel_ids:
-      - "1100000000000000007"      # #agent-alerts channel
-```
-
-**6. Restrict to your server** (recommended):
-
-```yaml
+    # Lock the bot to your server only
     allowed_guild_ids:
-      - 987654321098765432         # Your server ID
+      - 987654321098765432           # Your server ID
+
+    # Map channels to agents. The bot responds to ALL messages
+    # in bound channels — no @mention needed.
+    agent_channels:
+      "1100000000000000000": "johnny"    # #general — Johnny orchestrates
+      "1100000000000000001": "albert"    # #albert-cio — architecture/backend
+      "1100000000000000002": "luna"      # #luna-design — UI/design
+      "1100000000000000003": "max"       # #max-qa — testing/quality
+      "1100000000000000004": "penny"     # #penny-finance — costs/budgets
+      "1100000000000000005": "jeremy"    # #jeremy-security — security
+      "1100000000000000006": "sophie"    # #sophie-legal — legal/regulatory
+
+    # Channel for system alerts, heartbeat results, improvement plans
+    alert_channel_ids:
+      - "1100000000000000007"            # #agent-alerts
 ```
 
-In agent-bound channels, the bot responds to **all messages** — no @mention needed. In unbound channels, @mention the bot to talk to Johnny, or use `@agent_name` to address a specific agent.
+**Important:** On Discord, the bot **only responds** in channels that are either:
+- Bound to an agent in `agent_channels` (responds to all messages, no @mention)
+- Where someone @mentions the bot directly
 
-### Recommended server layout
+If you want a channel where you can just type freely without @mentioning, **bind it to an agent** — even if it's `johnny` for general use.
 
-For a full Discord setup with all agents:
+DMs always work without any config.
+
+#### Recommended Discord server layout
 
 ```
-#general            → Unbound (mention bot → Johnny routes)
-#albert-cio         → Bound to albert (architecture, backend)
-#luna-design        → Bound to luna (UI, design systems)
-#max-qa             → Bound to max (testing, quality)
-#penny-finance      → Bound to penny (costs, budgets)
-#jeremy-security    → Bound to jeremy (security, compliance)
-#sophie-legal       → Bound to sophie (legal, regulatory)
-#agent-alerts       → Alert channel (heartbeat results, improvements)
+#general            → Bind to "johnny" (orchestrates, routes to specialists)
+#albert-cio         → Bind to "albert" (architecture, backend, APIs)
+#luna-design        → Bind to "luna" (UI, design systems, styling)
+#max-qa             → Bind to "max" (testing, quality, reviews)
+#penny-finance      → Bind to "penny" (costs, budgets, billing)
+#jeremy-security    → Bind to "jeremy" (security, compliance, risk)
+#sophie-legal       → Bind to "sophie" (legal, regulatory)
+#agent-alerts       → Alert channel (automated notifications)
 ```
 
-The same structure works with Telegram groups — one group per agent, plus one general group for Johnny.
+The same structure works with Telegram groups.
+
+---
+
+### Using both platforms
+
+Sessions follow the user, not the platform. You can start a conversation with Albert on Telegram and continue it on Discord (or the HTTP API, or CLI). The agent remembers the context.
 
 ## Auto-Parallel Execution
 
