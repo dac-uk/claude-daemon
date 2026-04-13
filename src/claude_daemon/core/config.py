@@ -63,6 +63,11 @@ class DaemonConfig:
     evolution_enabled: bool = True  # Generate proposals to update SOUL.md/AGENTS.md
     evolution_dry_run: bool = True  # Log proposals but don't apply (safe default)
 
+    # Evo — code optimization via experiments (requires evo plugin: evo-hq/evo)
+    evo_enabled: bool = True       # Enable [OPTIMIZE] tag and optimization workflows
+    evo_max_variants: int = 3      # Max parallel variants per optimization run
+    evo_max_budget: float = 2.00   # USD cost cap per optimization run
+
     # Semantic Memory (vector embeddings)
     embeddings_enabled: bool = True  # Enable semantic search (requires sqlite-vec for full quality)
     embedding_model: str = "voyage-code-3"  # Voyage model (voyage-code-3, voyage-3, voyage-3-lite)
@@ -219,6 +224,9 @@ class DaemonConfig:
             ]),
             evolution_enabled=claude_cfg.get("evolution_enabled", True),
             evolution_dry_run=claude_cfg.get("evolution_dry_run", True),
+            evo_enabled=claude_cfg.get("evo_enabled", True),
+            evo_max_variants=int(claude_cfg.get("evo_max_variants", 3)),
+            evo_max_budget=float(claude_cfg.get("evo_max_budget", 2.00)),
             embeddings_enabled=memory_cfg.get("embeddings_enabled", True),
             embedding_model=memory_cfg.get("embedding_model", "voyage-code-3"),
             embedding_dim=int(memory_cfg.get("embedding_dim", 1024)),

@@ -297,6 +297,7 @@ class ClaudeDaemon:
             hub=getattr(self, "_dashboard_hub", None),
         )
         self.orchestrator.set_discussion_engine(self.discussion_engine)
+        self.orchestrator.set_workflow_engine(self.workflow_engine)
         from claude_daemon.agents.evolution import EvolutionActuator
         self.evolution_actuator = EvolutionActuator(
             self.agent_registry, self.process_manager, self.store,

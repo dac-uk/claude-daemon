@@ -57,6 +57,12 @@ Generate a prioritised improvement plan:
    - Prioritise by ROI (impact / effort)
 5. **Suggestions for the user** — 1-3 ideas that need human input or approval:
    - New integrations, business ideas, strategic pivots, investment decisions
+6. **Optimization targets** — 1-3 code areas where evo could improve performance,
+   reduce flakiness, or fix quality issues. For each:
+   - Target: specific file, module, or function
+   - Benchmark: test suite or metric to measure against
+   - Current baseline: what the metric is now
+   - Owner: use [OPTIMIZE:agent_name] to trigger automated optimization
 
 Be specific and actionable. No vague advice. Each proposal should be something
 an agent can start working on in their next heartbeat cycle.
