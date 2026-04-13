@@ -60,17 +60,21 @@ class HttpApi:
         self._app.router.add_post("/api/settings/effort", self._handle_settings_effort)
         self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
         self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
+        self._app.router.add_get("/api/discussions", self._handle_discussions)
+        self._app.router.add_get("/api/failures", self._handle_failures)
+        self._app.router.add_get("/api/evolution", self._handle_evolution)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
             self._app.router.add_get("/ws", self._handle_ws)
+            self._app.router.add_static("/static", STATIC_DIR, show_index=False)
             self._app.router.add_get("/", self._handle_dashboard)
             log.info("Dashboard enabled — serving at http://localhost:%d/", self.port)
 
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler):
-        # Public endpoints: health check and dashboard static
-        if request.path in ("/api/health", "/"):
+        # Public endpoints: health check, dashboard, and static assets
+        if request.path in ("/api/health", "/") or request.path.startswith("/static/"):
             return await handler(request)
 
         # Webhooks use their own signature verification, not bearer tokens
@@ -277,10 +281,38 @@ class HttpApi:
 
     async def _handle_dashboard(self, request: web.Request) -> web.Response:
         """Serve the dashboard HTML."""
-        html_path = STATIC_DIR / "dashboard.html"
-        if not html_path.exists():
-            return web.Response(text="Dashboard not found", status=404)
-        return web.FileResponse(html_path)
+        # Try index.html first, fall back to dashboard.html
+        for name in ("index.html", "dashboard.html"):
+            path = STATIC_DIR / name
+            if path.exists():
+                return web.FileResponse(path)
+        return web.Response(text="Dashboard not found", status=404)
+
+    async def _handle_discussions(self, request: web.Request) -> web.Response:
+        """GET /api/discussions — list recent inter-agent discussions."""
+        dtype = request.query.get("type")
+        limit = int(request.query.get("limit", "20"))
+        store = self.daemon.store
+        discussions = store.get_recent_discussions(discussion_type=dtype, limit=limit)
+        stats = store.get_discussion_stats(days=7)
+        return web.json_response({"discussions": discussions, "stats": stats})
+
+    async def _handle_failures(self, request: web.Request) -> web.Response:
+        """GET /api/failures — list recent failure analyses."""
+        agent = request.query.get("agent")
+        limit = int(request.query.get("limit", "20"))
+        store = self.daemon.store
+        failures = store.get_recent_failures(agent_name=agent, limit=limit)
+        patterns = store.get_failure_patterns(days=7)
+        return web.json_response({"failures": failures, "patterns": patterns})
+
+    async def _handle_evolution(self, request: web.Request) -> web.Response:
+        """GET /api/evolution — list evolution history."""
+        agent = request.query.get("agent")
+        limit = int(request.query.get("limit", "20"))
+        store = self.daemon.store
+        history = store.get_evolution_history(agent_name=agent, limit=limit)
+        return web.json_response({"evolution": history})
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Receive external webhooks and route to appropriate agent.
