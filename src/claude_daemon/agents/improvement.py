@@ -55,7 +55,7 @@ Generate a prioritised improvement plan:
 4. **Proposed initiatives** — 3-5 specific, actionable improvement proposals:
    - Each should have: title, owner (agent name), expected outcome, effort estimate
    - Prioritise by ROI (impact / effort)
-5. **Suggestions for Dave** — 1-3 ideas that need human input or approval:
+5. **Suggestions for the user** — 1-3 ideas that need human input or approval:
    - New integrations, business ideas, strategic pivots, investment decisions
 
 Be specific and actionable. No vague advice. Each proposal should be something
