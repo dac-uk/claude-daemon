@@ -19,6 +19,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Domain Gotchas** - Per-agent failure-point documentation injected as high-priority context. Highest-signal content type per best practices research.
 - **Managed Agents Backend** - Dual-backend execution: CLI subprocess for fast/cheap tasks (chat, heartbeats), Anthropic's Managed Agents API for long-running/complex tasks (planning, workflows, REM sleep). Automatic fallback to CLI if API fails. Control via `/backend` command.
 - **Self-Evolution (EvolutionActuator)** - The improvement loop is now closed: weekly improvement plans generate targeted SOUL.md/AGENTS.md mutations. Safety guards (size check, protected sections, archive-before-write) prevent data loss. Starts in dry-run mode — proposals logged but not applied until you're confident. Evolution log tracks every mutation.
+- **Code Optimization (Evo)** - Experimental code optimization via tree search over hill-climbing. The weekly improvement plan identifies targets (`[OPTIMIZE:albert] Reduce test suite from 45s to under 30s`). Albert (or any code agent) runs [evo](https://github.com/evo-hq/evo) — an Apache 2.0 Claude Code plugin — which spawns N parallel agents in git worktrees, shares failure traces across them, measures each variant against a regression benchmark, keeps winners and discards losers. No new API keys required — evo uses the same Claude Code session agents already run in. Install with `/plugin marketplace add evo-hq/evo`. Configurable via `evo_max_variants` and `evo_max_budget`.
 - **Semantic Memory Search** - Vector embedding index (sqlite-vec) using Voyage AI's `voyage-code-3` model (1024 dims, best-in-class for code). Cosine similarity search across all memory, playbooks, reflections, and failure lessons. Hybrid search falls back to FTS5 keyword matching when semantic results are sparse. Incremental indexing via SHA-256 content hashing — only changed files are re-embedded. Configurable model, top-k, similarity threshold, and batch size. Graceful degradation — FTS5 still works without sqlite-vec or a Voyage API key.
 - **Failure Analysis & Lesson Extraction** - Every failed agent task is auto-classified via Haiku ($0.02/failure): category, root cause, severity, actionable lesson. Lessons written to `shared/failure-lessons.md` for cross-agent learning. Recurring patterns surfaced in the weekly improvement plan.
 - **Task Persistence** - Spawned background tasks survive daemon restarts. SQLite `task_queue` table tracks full lifecycle (pending → running → completed/failed). Stale tasks from crashed runs are auto-marked as failed on startup.
@@ -26,7 +27,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, evolution proposals applied, results delivered to you automatically.
 - **Agent Heartbeats** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings, Albert audits tech debt, Max runs quality retrospectives.
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
-- **Inter-Agent Communication** - Four communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, and `[COUNCIL]` for full team deliberation. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
+- **Inter-Agent Communication** - Five communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, and `[OPTIMIZE:name]` to trigger evo code optimization. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
 - **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel. All real-time via WebSocket — no polling.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
@@ -893,6 +894,9 @@ claude:
     - improvement
   evolution_enabled: true          # Generate SOUL.md/AGENTS.md mutation proposals
   evolution_dry_run: true          # Log proposals but don't apply (safe default)
+  evo_enabled: true                # Enable evo code optimization workflows
+  evo_max_variants: 3              # Parallel variants per optimization run
+  evo_max_budget: 2.00             # USD cost cap per evo optimization run
 
 memory:
   daily_log: true
