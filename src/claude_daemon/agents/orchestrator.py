@@ -38,22 +38,32 @@ AGENT_ADDRESS_PATTERN = re.compile(
 
 # Pattern to detect delegation requests in agent responses: [DELEGATE:agent_name] message
 DELEGATION_PATTERN = re.compile(
-    r'\[DELEGATE:(\w+)\]\s*(.*?)(?=\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\Z)', re.DOTALL
+    r'\[DELEGATE:(\w+)\]\s*(.*?)(?=\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|\Z)',
+    re.DOTALL,
 )
 
 # [DISCUSS:agent_name] topic — request a bilateral discussion
 DISCUSS_PATTERN = re.compile(
-    r'\[DISCUSS:(\w+)\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\Z)', re.DOTALL
+    r'\[DISCUSS:(\w+)\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\[OPTIMIZE:|\Z)',
+    re.DOTALL,
 )
 
 # [COUNCIL] topic — request a full council deliberation
 COUNCIL_PATTERN = re.compile(
-    r'\[COUNCIL\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\Z)', re.DOTALL
+    r'\[COUNCIL\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\[OPTIMIZE:|\Z)',
+    re.DOTALL,
 )
 
 # [HELP:agent_name] question — quick single-turn consultation
 HELP_PATTERN = re.compile(
-    r'\[HELP:(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\Z)', re.DOTALL
+    r'\[HELP:(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[OPTIMIZE:|\Z)',
+    re.DOTALL,
+)
+
+# [OPTIMIZE:agent_name] target — trigger evo code optimization workflow
+OPTIMIZE_PATTERN = re.compile(
+    r'\[OPTIMIZE:(\w+)\]\s*(.*?)(?=\[OPTIMIZE:|\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\Z)',
+    re.DOTALL,
 )
 
 _CODE_BLOCK_RE = re.compile(r'```[\s\S]*?```', re.DOTALL)
@@ -109,11 +119,16 @@ class Orchestrator:
         self._failure_analyzer = failure_analyzer
         self._embedding_store = embedding_store
         self._discussion_engine = None
+        self._workflow_engine = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
 
     def set_discussion_engine(self, engine) -> None:
         """Inject discussion engine (avoids circular init)."""
         self._discussion_engine = engine
+
+    def set_workflow_engine(self, engine) -> None:
+        """Inject workflow engine (avoids circular init)."""
+        self._workflow_engine = engine
 
     async def _semantic_search(self, prompt: str) -> list[dict]:
         """Hybrid search: semantic vector search with FTS5 keyword fallback.
@@ -377,12 +392,14 @@ class Orchestrator:
         if appended:
             response.result += "\n".join(appended)
 
-        # Skip discussion/help/council tags inside discussion turns (prevent recursion)
+        # Skip discussion/help/council/optimize tags inside discussion turns (prevent recursion)
         if platform not in ("discussion", "council", "intercom"):
             response = await self._process_help_requests(from_agent, response)
             if self._discussion_engine:
                 response = await self._process_discussions(from_agent, response)
                 response = await self._process_councils(from_agent, response)
+            if self._workflow_engine:
+                response = await self._process_optimizations(from_agent, response)
 
         return response
 
@@ -494,6 +511,43 @@ class Orchestrator:
             except Exception:
                 log.exception("Council session failed")
                 appended.append("\n[Council session failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+        return response
+
+    async def _process_optimizations(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [OPTIMIZE:agent_name] tags — trigger evo code optimization."""
+        optimizations = OPTIMIZE_PATTERN.findall(_strip_code_blocks(response.result))
+        if not optimizations:
+            return response
+
+        appended = []
+        for target_name, description in optimizations:
+            target = self.registry.get(target_name.lower())
+            if not target:
+                appended.append(f"\n[Optimization for '{target_name}' failed: agent not found]")
+                continue
+
+            log.info("Optimization: %s -> %s: %s", from_agent.name, target_name, description[:80])
+            self.store.record_audit(
+                action="evo_optimization", agent_name=from_agent.name,
+                details=f"optimize via {target_name}: {description.strip()[:200]}",
+            )
+            try:
+                result = await self._workflow_engine.execute_optimization(
+                    agent_name=target_name.lower(),
+                    target=description.strip(),
+                )
+                appended.append(
+                    f"\n\n--- Optimization Result ({target.identity.display_name}) ---\n"
+                    f"{result.final_result[:1000]}"
+                )
+            except Exception:
+                log.exception("Optimization %s -> %s failed", from_agent.name, target_name)
+                appended.append(f"\n[Optimization for '{target_name}' failed: error]")
 
         if appended:
             response.result += "\n".join(appended)

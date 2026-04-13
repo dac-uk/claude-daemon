@@ -369,3 +369,88 @@ class WorkflowEngine:
             all_results.success = False
 
         return all_results
+
+    # ------------------------------------------------------------------ #
+    # Evo-powered code optimization
+    # ------------------------------------------------------------------ #
+
+    _EVO_PROMPT = """\
+You have been asked to optimize code using evo (tree search over hill-climbing).
+
+## Optimization Target
+{target}
+
+## Instructions
+1. Identify a benchmark or test suite for the target (pytest, vitest, cargo test, etc.)
+2. Run the baseline: measure current performance / pass rate
+3. Use evo to explore variants:
+   - evo will spawn parallel agents in git worktrees
+   - Each variant is tested against the benchmark
+   - Variants that improve the baseline are kept; others are discarded
+4. Report results: what changed, baseline vs. result, which variant won
+
+## Constraints
+- Maximum {max_variants} parallel variants
+- Do NOT commit changes that break existing tests
+- If evo is not available, fall back to manual iteration
+
+Begin by finding a suitable benchmark, then run the optimization.
+"""
+
+    async def execute_optimization(
+        self,
+        agent_name: str,
+        target: str,
+        max_budget: float = 0.0,
+        max_variants: int = 3,
+    ) -> WorkflowResult:
+        """Run evo-powered code optimization as a single-step workflow.
+
+        The target agent receives a structured prompt instructing it to use evo's
+        tree search for parallel variant exploration with regression gates.
+        """
+        agent = self.registry.get(agent_name)
+        if not agent:
+            result = WorkflowResult(success=False)
+            result.steps.append(StepResult(
+                agent_name=agent_name, label="optimize",
+                result=f"Agent '{agent_name}' not found", is_error=True,
+            ))
+            return result
+
+        prompt = self._EVO_PROMPT.format(
+            target=target.strip(),
+            max_variants=max_variants,
+        )
+
+        log.info("Evo optimization: agent=%s target=%s", agent_name, target[:80])
+
+        start = time.monotonic()
+        response = await self.orchestrator.send_to_agent(
+            agent=agent, prompt=prompt,
+            platform="optimization", user_id="evo",
+            task_type="workflow",
+        )
+        duration = int((time.monotonic() - start) * 1000)
+
+        step = StepResult(
+            agent_name=agent_name, label="evo-optimization",
+            result=response.result, cost=response.cost,
+            duration_ms=duration, is_error=response.is_error,
+        )
+
+        wf_result = WorkflowResult(
+            steps=[step],
+            success=not response.is_error,
+            max_total_cost=max_budget,
+        )
+
+        if not response.is_error:
+            log.info(
+                "Evo optimization complete: agent=%s cost=$%.4f duration=%dms",
+                agent_name, response.cost, duration,
+            )
+        else:
+            log.warning("Evo optimization failed: agent=%s", agent_name)
+
+        return wf_result
