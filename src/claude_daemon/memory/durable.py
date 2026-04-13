@@ -56,13 +56,25 @@ class DurableMemory:
 
     @contextmanager
     def _file_lock(self):
-        """Acquire an exclusive file lock to prevent concurrent MEMORY.md writes."""
-        lock_fd = open(self._lock_path, "w")
+        """Acquire an exclusive file lock to prevent concurrent MEMORY.md writes.
+
+        Uses append mode to avoid truncating the lock file on open, and
+        a reentrant check so nested calls (e.g. update_memory → append_daily_log)
+        don't deadlock.
+        """
+        if getattr(self, "_lock_held", False):
+            yield  # already holding the lock — reentrant
+            return
+        lock_fd = open(self._lock_path, "a")  # append — don't truncate
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            yield
+            self._lock_held = True
+            try:
+                yield
+            finally:
+                self._lock_held = False
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
     @property
