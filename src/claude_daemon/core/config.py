@@ -65,6 +65,12 @@ class DaemonConfig:
 
     # Semantic Memory (vector embeddings)
     embeddings_enabled: bool = True  # Enable semantic search (requires sqlite-vec for full quality)
+    embedding_model: str = "voyage-code-3"  # Voyage model (voyage-code-3, voyage-3, voyage-3-lite)
+    embedding_dim: int = 1024  # Must match model output dimensions
+    embedding_top_k: int = 3  # Number of semantic matches to inject into context
+    embedding_similarity_threshold: float = 0.3  # Minimum similarity score (0-1) to include
+    embedding_chunk_size: int = 500  # Max chars per memory chunk
+    embedding_batch_size: int = 128  # Texts per API call (Voyage max = 128)
 
     # Inter-agent discussions
     discussions_enabled: bool = True  # Enable multi-turn discussions and council
@@ -214,6 +220,14 @@ class DaemonConfig:
             evolution_enabled=claude_cfg.get("evolution_enabled", True),
             evolution_dry_run=claude_cfg.get("evolution_dry_run", True),
             embeddings_enabled=memory_cfg.get("embeddings_enabled", True),
+            embedding_model=memory_cfg.get("embedding_model", "voyage-code-3"),
+            embedding_dim=int(memory_cfg.get("embedding_dim", 1024)),
+            embedding_top_k=int(memory_cfg.get("embedding_top_k", 3)),
+            embedding_similarity_threshold=float(
+                memory_cfg.get("embedding_similarity_threshold", 0.3)
+            ),
+            embedding_chunk_size=int(memory_cfg.get("embedding_chunk_size", 500)),
+            embedding_batch_size=int(memory_cfg.get("embedding_batch_size", 128)),
             discussions_enabled=claude_cfg.get("discussions_enabled", True),
             discussion_max_turns=int(claude_cfg.get("discussion_max_turns", 6)),
             discussion_max_cost=float(claude_cfg.get("discussion_max_cost", 1.00)),

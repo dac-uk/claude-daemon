@@ -53,6 +53,15 @@ class AgentFileWatcher:
                 except OSError:
                     self._mtimes[key] = 0.0
 
+        # Shared USER.md — changes here affect all agents
+        shared_dir = getattr(self.registry, "shared_dir", None)
+        if shared_dir:
+            path = shared_dir / "USER.md"
+            try:
+                self._mtimes["__shared__:USER.md"] = os.stat(path).st_mtime
+            except OSError:
+                self._mtimes["__shared__:USER.md"] = 0.0
+
     async def _poll_loop(self) -> None:
         """Infinite polling loop that checks for file changes."""
         while True:
@@ -87,3 +96,21 @@ class AgentFileWatcher:
                     agent.load_identity()
                 except Exception:
                     log.exception("Failed to reload identity for %s", agent.name)
+
+        # Check shared USER.md — reload ALL agents if it changed
+        shared_dir = getattr(self.registry, "shared_dir", None)
+        if shared_dir:
+            path = shared_dir / "USER.md"
+            key = "__shared__:USER.md"
+            try:
+                current_mtime = os.stat(path).st_mtime
+            except OSError:
+                current_mtime = 0.0
+            if current_mtime != self._mtimes.get(key, 0.0):
+                self._mtimes[key] = current_mtime
+                log.info("Hot-reload: shared USER.md changed, reloading all agents")
+                for agent in self.registry:
+                    try:
+                        agent.load_identity()
+                    except Exception:
+                        log.exception("Failed to reload identity for %s", agent.name)

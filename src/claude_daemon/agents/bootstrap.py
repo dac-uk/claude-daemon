@@ -1078,3 +1078,11 @@ def create_shared_workspace(data_dir: Path) -> None:
             "- `checklists/` - QA templates\n"
             "- `USER.md` - shared user context (all agents read this)\n"
         )
+
+
+def is_user_profile_unconfigured(data_dir: Path) -> bool:
+    """Check if shared/USER.md still contains placeholder text."""
+    user_md = data_dir / "shared" / "USER.md"
+    if not user_md.exists():
+        return True
+    return "(your name here)" in user_md.read_text()

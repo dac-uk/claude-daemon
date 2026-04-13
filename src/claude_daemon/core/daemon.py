@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
+from claude_daemon.agents.bootstrap import is_user_profile_unconfigured
 from claude_daemon.agents.failure_analyzer import FailureAnalyzer
 from claude_daemon.agents.improvement import ImprovementPlanner
 from claude_daemon.agents.orchestrator import Orchestrator
@@ -31,6 +32,9 @@ from claude_daemon.utils import paths as pathutil
 from claude_daemon.utils.logging import setup_logging
 
 log = logging.getLogger(__name__)
+
+# Platforms where messages originate from a human user (not internal agent traffic)
+_HUMAN_PLATFORMS = {"cli", "telegram", "slack", "discord", "api", "paperclip"}
 
 
 class ClaudeDaemon:
@@ -464,6 +468,20 @@ class ClaudeDaemon:
 
         assert self.store and self.process_manager and self.durable
 
+        # Onboarding: prompt user for profile if USER.md is unconfigured
+        if platform in _HUMAN_PLATFORMS and is_user_profile_unconfigured(self.config.data_dir):
+            user_md_path = self.config.data_dir / "shared" / "USER.md"
+            prompt = (
+                "[ONBOARDING] The user hasn't set up their profile yet. "
+                "Before addressing their request, briefly introduce yourself and ask for "
+                "their name, role, communication style, and escalation preferences. "
+                "If they provide details, write them to "
+                f"'{user_md_path}' using the format:\n"
+                "# User Context\\n\\nName: ...\\nRole: ...\\nStyle: ...\\nEscalation: ...\\n\n"
+                "If they say 'skip', proceed normally. "
+                "Their message follows.\n\n"
+            ) + prompt
+
         # Multi-agent routing
         if self.orchestrator and self.agent_registry and len(self.agent_registry) > 0:
             agent, cleaned_prompt = self._resolve_agent(prompt, agent_name)
@@ -510,6 +528,20 @@ class ClaudeDaemon:
             return
 
         assert self.store and self.process_manager and self.durable
+
+        # Onboarding: prompt user for profile if USER.md is unconfigured
+        if platform in _HUMAN_PLATFORMS and is_user_profile_unconfigured(self.config.data_dir):
+            user_md_path = self.config.data_dir / "shared" / "USER.md"
+            prompt = (
+                "[ONBOARDING] The user hasn't set up their profile yet. "
+                "Before addressing their request, briefly introduce yourself and ask for "
+                "their name, role, communication style, and escalation preferences. "
+                "If they provide details, write them to "
+                f"'{user_md_path}' using the format:\n"
+                "# User Context\\n\\nName: ...\\nRole: ...\\nStyle: ...\\nEscalation: ...\\n\n"
+                "If they say 'skip', proceed normally. "
+                "Their message follows.\n\n"
+            ) + prompt
 
         # Multi-agent streaming
         if self.orchestrator and self.agent_registry and len(self.agent_registry) > 0:

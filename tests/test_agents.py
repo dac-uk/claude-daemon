@@ -264,3 +264,28 @@ def test_agent_reads_shared_user(tmp_path: Path):
     ws = tmp_path / "agent"
     agent = Agent(name="test", workspace=ws, shared_dir=shared)
     assert "Alice" in agent.identity.user_context
+
+
+# -- Onboarding detection tests --
+
+def test_user_profile_unconfigured_detects_placeholder(tmp_path: Path):
+    """Unconfigured USER.md (with placeholders) should be detected."""
+    from claude_daemon.agents.bootstrap import is_user_profile_unconfigured
+    create_shared_workspace(tmp_path)
+    assert is_user_profile_unconfigured(tmp_path) is True
+
+
+def test_user_profile_configured_after_edit(tmp_path: Path):
+    """After the user fills in their details, detection should return False."""
+    from claude_daemon.agents.bootstrap import is_user_profile_unconfigured
+    create_shared_workspace(tmp_path)
+    (tmp_path / "shared" / "USER.md").write_text(
+        "# User Context\n\nName: Alice\nRole: CTO\nStyle: direct\nEscalation: budget >$500\n"
+    )
+    assert is_user_profile_unconfigured(tmp_path) is False
+
+
+def test_user_profile_missing_file(tmp_path: Path):
+    """Missing USER.md should count as unconfigured."""
+    from claude_daemon.agents.bootstrap import is_user_profile_unconfigured
+    assert is_user_profile_unconfigured(tmp_path) is True
