@@ -5,7 +5,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 ## Features
 
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
-- **MCP Server Pool (37 servers)** - Tiered shared pool of MCP servers available to all agents. Zero-config servers (fetch, git, time, memory, context7, playwright, etc.) are always on. Token-required servers auto-enable when you set the env var. Manage via `/mcp list`, `/mcp enable`, `/mcp disable`.
+- **MCP Server Pool (39 servers)** - Tiered shared pool of MCP servers available to all agents. Zero-config servers (fetch, git, time, memory, context7, playwright, etc.) are always on. Token-required servers auto-enable when you set the env var. Manage via `/mcp list`, `/mcp enable`, `/mcp disable`.
 - **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
 - **Graceful Model Degradation** - If Opus is rate-limited or unavailable, automatically falls back to Sonnet, then Haiku. Configurable fallback chain — no failed requests from transient capacity issues.
 - **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
@@ -122,7 +122,7 @@ This means you'll always know immediately if something is misconfigured — the 
 
 ## MCP Server Pool
 
-The daemon ships with **37 MCP servers** available as a shared pool to all agents. Servers are organized into three tiers:
+The daemon ships with **39 MCP servers** available as a shared pool to all agents. Servers are organized into three tiers:
 
 | Tier | Description | In tools.json? |
 |------|-------------|-----------------|
@@ -201,6 +201,7 @@ The daemon ships with **37 MCP servers** available as a shared pool to all agent
 | `puppeteer` | @modelcontextprotocol/server-puppeteer | *(none)* | T1 |
 | `time` | @modelcontextprotocol/server-time | *(none)* | T1 |
 | `memory` | @modelcontextprotocol/server-memory | *(none)* | T1 |
+| `sequential-thinking` | @modelcontextprotocol/server-sequential-thinking | *(none)* | T1 |
 
 ### Managing MCP Servers
 
@@ -716,7 +717,7 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Log retention** | Daily agent logs older than `log_retention_days` (default: 30) are garbage-collected nightly. |
 | **Context priority** | SOUL + steering always included. Low-priority blocks (vision, playbooks) trimmed first when tight. |
 | **MCP health** | `/api/agents` includes `mcp_health` for each agent — detects unresolved `${ENV_VAR}` placeholders. |
-| **MCP tiered pool** | 37 MCP servers in a shared pool. Zero-config servers always active; token-required auto-enable when vars set. Managed via `/mcp list/enable/disable/refresh`. |
+| **MCP tiered pool** | 39 MCP servers in a shared pool. Zero-config servers always active; token-required auto-enable when vars set. Managed via `/mcp list/enable/disable/refresh`. |
 | **Model fallback** | Rate-limited or unavailable models automatically retry with the next model in the chain (default: opus -> sonnet -> haiku). Configurable via `model_fallback_chain`. |
 | **Agent hot-reload** | File watcher polls every 10s for changes to IDENTITY.md, SOUL.md, AGENTS.md. Edits take effect on the next message — no daemon restart needed. |
 | **Alert webhooks** | Failures, circuit breaker events, and updates are POSTed as JSON to configured webhook URLs (Slack, PagerDuty, custom). Fire-and-forget with timeout — never blocks the scheduler. |
