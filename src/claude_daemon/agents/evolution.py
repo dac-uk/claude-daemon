@@ -214,9 +214,10 @@ class EvolutionActuator:
             if not section or not new_content:
                 continue
 
-            # Protect critical sections in SOUL.md
+            # Protect critical sections in SOUL.md (normalize heading format)
             if file_name == "SOUL.md" and operation == "replace_section":
-                if any(section.startswith(ps) for ps in PROTECTED_SECTIONS):
+                normalized = "## " + section.lstrip("#").strip()
+                if any(normalized.lower().startswith(ps.lower()) for ps in PROTECTED_SECTIONS):
                     log.warning("Rejected: cannot replace protected section %s in SOUL.md", section)
                     continue
 
@@ -260,13 +261,20 @@ class EvolutionActuator:
             self._log_evolution(agent.name, file_name, operation, section, rationale, dry_run)
 
             if not dry_run:
-                # Archive before writing
-                from claude_daemon.memory.durable import DurableMemory
-                DurableMemory(agent.workspace / "memory").archive_file(
-                    file_path, self._archive_dir, prefix=f"{agent.name}_{file_name.replace('.md', '')}",
-                )
+                # Archive before writing — abort if archive fails
+                try:
+                    from claude_daemon.memory.durable import DurableMemory
+                    DurableMemory(agent.workspace / "memory").archive_file(
+                        file_path, self._archive_dir,
+                        prefix=f"{agent.name}_{file_name.replace('.md', '')}",
+                    )
+                except Exception:
+                    log.error(
+                        "Evolution archive failed for %s/%s — aborting write to prevent data loss",
+                        agent.name, file_name,
+                    )
+                    continue
                 file_path.write_text(new_file_content)
-                # Hot-reload the agent's identity
                 agent.load_identity()
                 log.info("Applied evolution to %s/%s: %s", agent.name, file_name, section)
 

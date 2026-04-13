@@ -169,6 +169,13 @@ class DiscussionEngine:
         user_id: str = "discussion",
     ) -> DiscussionResult:
         """Two agents discuss a topic, alternating turns."""
+        if agent_a.lower() == agent_b.lower():
+            log.warning("Bilateral discussion rejected: agent_a == agent_b (%s)", agent_a)
+            return DiscussionResult(
+                discussion_id="rejected", outcome="error",
+                config=DiscussionConfig(topic=topic, initiator=agent_a,
+                                        participants=[agent_a], discussion_type="bilateral"),
+            )
         effective_max_turns = max_turns or (self.config.discussion_max_turns if self.config else 6)
         effective_max_cost = max_cost if max_cost is not None else (
             self.config.discussion_max_cost if self.config else 1.00
