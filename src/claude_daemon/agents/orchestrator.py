@@ -115,6 +115,37 @@ class Orchestrator:
         """Inject discussion engine (avoids circular init)."""
         self._discussion_engine = engine
 
+    async def _semantic_search(self, prompt: str) -> list[dict]:
+        """Hybrid search: semantic vector search with FTS5 keyword fallback.
+
+        Returns combined results when semantic matches are sparse.
+        """
+        matches: list[dict] = []
+        if self._embedding_store and self._embedding_store.available:
+            try:
+                matches = await self._embedding_store.search(prompt[:500])
+            except Exception:
+                pass
+
+        # Hybrid fallback: supplement with FTS5 if semantic results are sparse
+        if len(matches) < 2:
+            try:
+                fts_results = self.store.search_conversations(prompt[:200], limit=3)
+                seen = {m["chunk"] for m in matches}
+                for r in fts_results:
+                    snippet = r["content"][:300]
+                    if snippet not in seen:
+                        matches.append({
+                            "chunk": snippet,
+                            "source": "conversation",
+                            "agent_name": r.get("user_id", ""),
+                            "score": 0.5,
+                        })
+            except Exception:
+                pass
+
+        return matches
+
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
 
@@ -215,12 +246,7 @@ class Orchestrator:
         log.info("[%s] %s <- %s:%s prompt_len=%d", correlation_id, agent.name, platform, user_id, len(prompt))
 
         # Semantic memory search for task-relevant context
-        semantic_matches = []
-        if self._embedding_store and self._embedding_store.available:
-            try:
-                semantic_matches = await self._embedding_store.search(prompt[:500], top_k=3)
-            except Exception:
-                pass
+        semantic_matches = await self._semantic_search(prompt)
 
         agent_context = agent.build_system_context(semantic_matches=semantic_matches)
         agent_context += f"\n\n{self.registry.get_agent_summary()}"
@@ -483,12 +509,7 @@ class Orchestrator:
         task_type: str = "default",
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a message to a specific agent."""
-        semantic_matches = []
-        if self._embedding_store and self._embedding_store.available:
-            try:
-                semantic_matches = await self._embedding_store.search(prompt[:500], top_k=3)
-            except Exception:
-                pass
+        semantic_matches = await self._semantic_search(prompt)
 
         agent_context = agent.build_system_context(semantic_matches=semantic_matches)
         agent_context += f"\n\n{self.registry.get_agent_summary()}"
