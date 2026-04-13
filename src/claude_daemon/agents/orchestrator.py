@@ -38,7 +38,22 @@ AGENT_ADDRESS_PATTERN = re.compile(
 
 # Pattern to detect delegation requests in agent responses: [DELEGATE:agent_name] message
 DELEGATION_PATTERN = re.compile(
-    r'\[DELEGATE:(\w+)\]\s*(.*?)(?=\[DELEGATE:|\Z)', re.DOTALL
+    r'\[DELEGATE:(\w+)\]\s*(.*?)(?=\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\Z)', re.DOTALL
+)
+
+# [DISCUSS:agent_name] topic — request a bilateral discussion
+DISCUSS_PATTERN = re.compile(
+    r'\[DISCUSS:(\w+)\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\Z)', re.DOTALL
+)
+
+# [COUNCIL] topic — request a full council deliberation
+COUNCIL_PATTERN = re.compile(
+    r'\[COUNCIL\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\Z)', re.DOTALL
+)
+
+# [HELP:agent_name] question — quick single-turn consultation
+HELP_PATTERN = re.compile(
+    r'\[HELP:(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\Z)', re.DOTALL
 )
 
 ROUTING_PROMPT = """\
@@ -85,7 +100,12 @@ class Orchestrator:
         self.hub = hub
         self._failure_analyzer = failure_analyzer
         self._embedding_store = embedding_store
+        self._discussion_engine = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
+
+    def set_discussion_engine(self, engine) -> None:
+        """Inject discussion engine (avoids circular init)."""
+        self._discussion_engine = engine
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
@@ -319,6 +339,127 @@ class Orchestrator:
         if appended:
             response.result += "\n".join(appended)
 
+        # Process [HELP:name] tags (lightweight single-turn consultation)
+        response = await self._process_help_requests(from_agent, response)
+
+        # Process [DISCUSS:name] and [COUNCIL] tags (multi-turn discussions)
+        if self._discussion_engine:
+            response = await self._process_discussions(from_agent, response)
+            response = await self._process_councils(from_agent, response)
+
+        return response
+
+    async def _process_help_requests(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [HELP:name] tags — quick single-turn consultation."""
+        helps = HELP_PATTERN.findall(response.result)
+        if not helps:
+            return response
+
+        appended = []
+        for target_name, question in helps:
+            target = self.registry.get(target_name.lower())
+            if not target:
+                appended.append(f"\n[Help from '{target_name}' failed: agent not found]")
+                continue
+
+            log.info("Help request: %s -> %s", from_agent.name, target_name)
+            self.store.record_audit(
+                action="agent_help_request", agent_name=from_agent.name,
+                details=f"help from {target_name}: {question.strip()[:200]}",
+            )
+            try:
+                result = await self.agent_to_agent(
+                    from_agent, target,
+                    f"[Help request from {from_agent.name}]\n\n{question.strip()}",
+                )
+                appended.append(
+                    f"\n\n--- Help from {target.identity.display_name} ---\n{result}"
+                )
+            except Exception:
+                log.exception("Help request %s -> %s failed", from_agent.name, target_name)
+                appended.append(f"\n[Help from '{target_name}' failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+        return response
+
+    async def _process_discussions(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [DISCUSS:name] tags — launch bilateral discussions."""
+        discussions = DISCUSS_PATTERN.findall(response.result)
+        if not discussions:
+            return response
+
+        appended = []
+        for target_name, topic in discussions:
+            target = self.registry.get(target_name.lower())
+            if not target:
+                appended.append(f"\n[Discussion with '{target_name}' failed: agent not found]")
+                continue
+
+            log.info("Discussion: %s <-> %s on: %s", from_agent.name, target_name, topic[:80])
+            self.store.record_audit(
+                action="agent_discussion", agent_name=from_agent.name,
+                details=f"bilateral with {target_name}: {topic.strip()[:200]}",
+            )
+            try:
+                result = await self._discussion_engine.run_bilateral(
+                    agent_a=from_agent.name,
+                    agent_b=target_name.lower(),
+                    topic=topic.strip(),
+                )
+                summary = result.synthesis or (
+                    result.turns[-1].content if result.turns else "No conclusion"
+                )
+                appended.append(
+                    f"\n\n--- Discussion with {target.identity.display_name} ---\n"
+                    f"Outcome: {result.outcome} | "
+                    f"Cost: ${result.total_cost:.4f} | "
+                    f"Turns: {len(result.turns)}\n\n{summary}"
+                )
+            except Exception:
+                log.exception("Discussion %s <-> %s failed", from_agent.name, target_name)
+                appended.append(f"\n[Discussion with '{target_name}' failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+        return response
+
+    async def _process_councils(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [COUNCIL] tags — launch full council deliberation."""
+        councils = COUNCIL_PATTERN.findall(response.result)
+        if not councils:
+            return response
+
+        appended = []
+        for topic in councils:
+            log.info("Council convened by %s on: %s", from_agent.name, topic[:80])
+            self.store.record_audit(
+                action="council_session", agent_name=from_agent.name,
+                details=f"council: {topic.strip()[:200]}",
+            )
+            try:
+                result = await self._discussion_engine.run_council(
+                    topic=topic.strip(),
+                )
+                appended.append(
+                    f"\n\n--- Council Decision ---\n"
+                    f"Outcome: {result.outcome} | "
+                    f"Cost: ${result.total_cost:.4f} | "
+                    f"Participants: {', '.join(result.config.participants)}\n\n"
+                    f"{result.synthesis}"
+                )
+            except Exception:
+                log.exception("Council session failed")
+                appended.append("\n[Council session failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
         return response
 
     async def stream_to_agent(

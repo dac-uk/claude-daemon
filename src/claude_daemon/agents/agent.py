@@ -70,6 +70,7 @@ _EFFORT_BY_TASK_TYPE: dict[str, str] = {
     "chat": "medium",
     "default": "medium",
     "planning": "high",
+    "discussion": "medium",
 }
 
 
@@ -311,6 +312,42 @@ class Agent:
                 "- For bulk operations, run the same command across multiple files\n"
                 "- For debugging, methodically isolate: read error, check assumptions, targeted fix\n"
                 "- Always verify changes: run tests, check builds, confirm behaviour matches intent"
+            )
+            medium.append(
+                "## Inter-Agent Communication\n"
+                "You can communicate with other agents using these tags in your response:\n\n"
+                "**[DELEGATE:name] message** — One-shot handoff. Use when: clear task for "
+                "another agent, no discussion needed.\n\n"
+                "**[HELP:name] question** — Quick consultation. Use when: you have a specific "
+                "question, need a fact-check or sanity check from another agent.\n\n"
+                "**[DISCUSS:name] topic** — Multi-turn bilateral discussion. Use when:\n"
+                "- You need to align on an approach that spans your domains\n"
+                "- You're uncertain about something in another agent's domain\n"
+                "- A decision requires input from both sides before proceeding\n\n"
+                "**[COUNCIL] topic** — Full council deliberation with all agents. Use when:\n"
+                "- Decision affects multiple domains (architecture + design + cost)\n"
+                "- High-stakes choice with significant consequences\n"
+                "- You're stuck and need diverse perspectives\n\n"
+                "**Decision guide:** Simple task → DELEGATE | Quick question → HELP | "
+                "Need alignment → DISCUSS | High-stakes/multi-domain → COUNCIL | "
+                "Unsure? Start with HELP, escalate to DISCUSS if needed."
+            )
+        else:
+            medium.append(
+                "## Inter-Agent Communication\n"
+                "As orchestrator, you have these communication powers:\n\n"
+                "**[DELEGATE:name] message** — Assign a task to a specific agent.\n\n"
+                "**[HELP:name] question** — Quick consultation with a specialist.\n\n"
+                "**[DISCUSS:name] topic** — Bilateral discussion with another agent.\n\n"
+                "**[COUNCIL] topic** — Convene the full council for deliberation. Use for:\n"
+                "- Strategic decisions affecting multiple domains\n"
+                "- Disagreements that need resolution\n"
+                "- High-stakes choices (before escalating to Dave)\n"
+                "- Architecture decisions, major refactors, new initiatives\n\n"
+                "**Council Protocol:** State the topic clearly → each agent provides their "
+                "domain perspective → you synthesize into a clear decision → only escalate "
+                "to Dave if: capital >500, legal exposure, public commitments, or genuine "
+                "deadlock after council."
             )
 
         if self.shared_dir:

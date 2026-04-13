@@ -26,7 +26,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, evolution proposals applied, results delivered to you automatically.
 - **Agent Heartbeats** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings, Albert audits tech debt, Max runs quality retrospectives.
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
-- **Inter-Agent Delegation** - Agents can request help from other agents mid-task using `[DELEGATE:name]` tags
+- **Inter-Agent Communication** - Four communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, and `[COUNCIL]` for full team deliberation. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
 - **Live Agent Dashboard** - Browser-based D3 force graph showing all agents, real-time status, streaming thought output, and event log. Accessible over Tailscale/ZeroTier.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
@@ -560,6 +560,7 @@ Shared workspace at `~/.config/claude-daemon/shared/`:
 | `events.md` | Auto-maintained agent activity log (inter-agent awareness) |
 | `steer/` | Mid-task steering files (e.g. `steer/albert.md`) |
 | `checklists/` | QA templates and quality gate checklists |
+| `discussions/` | Inter-agent discussion transcripts (bilateral + council) |
 
 Edit any `.md` file directly to change an agent's behaviour. No restart needed.
 
@@ -630,6 +631,54 @@ POST /api/workflow
   "max_total_cost": 2.00   # Stop if total cost exceeds $2
 }
 ```
+
+## Inter-Agent Communication
+
+Agents communicate using four modes, from lightweight to heavyweight:
+
+| Tag | Mode | When to Use |
+|-----|------|-------------|
+| `[DELEGATE:name] message` | One-shot handoff | Clear task for another agent |
+| `[HELP:name] question` | Quick consultation | Specific question, fact-check, sanity check |
+| `[DISCUSS:name] topic` | Bilateral discussion | Align on approach, cross-domain uncertainty |
+| `[COUNCIL] topic` | Full council | High-stakes, multi-domain, architecture decisions |
+
+**Bilateral discussions** alternate turns between two agents until they converge (either agent says "CONSENSUS"), hit the cost cap, or exhaust the turn limit. Each agent sees the full growing transcript.
+
+**Council sessions** convene all agents (or a specified subset). Each agent speaks once per round, seeing all previous responses. The orchestrator (Johnny) synthesizes a final decision with rationale, dissent notes, and action items.
+
+All discussions are recorded to the `discussions` SQLite table and as markdown transcripts in `shared/discussions/`.
+
+### Cost Controls
+
+| Guard | Default |
+|-------|---------|
+| Per-discussion cost cap | $1.00 bilateral, $2.00 council |
+| Turn limit | 6 bilateral, 2 rounds × N agents for council |
+| Early convergence | "CONSENSUS" keyword stops early |
+| Per-agent daily budget | Still enforced per-turn |
+| Global toggle | `discussions_enabled: true` |
+
+```yaml
+# config.yaml
+claude:
+  discussions_enabled: true
+  discussion_max_turns: 6
+  discussion_max_cost: 1.00
+  council_max_cost: 2.00
+  council_max_rounds: 2
+```
+
+### Built-In Guidance
+
+Every agent's system context includes a decision guide:
+- Simple task for another agent → **DELEGATE**
+- Quick question → **HELP**
+- Need to align on approach → **DISCUSS**
+- High-stakes or multi-domain → **COUNCIL**
+- Unsure? Start with HELP, escalate to DISCUSS if needed
+
+Discussion insights (stats, recent topics, convergence rates) feed into the weekly improvement cycle.
 
 ## Live Agent Dashboard
 
@@ -733,6 +782,8 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 | **Session lock eviction** | Per-session asyncio locks are bounded (`max 500`). When the ceiling is hit, idle locks are evicted to prevent unbounded memory growth in long-running instances. |
 | **Background task cleanup** | Spawned background tasks are tracked and cleaned up on each new spawn. Completed tasks are pruned (capped at 100 finished entries) so the task registry doesn't grow forever. |
 | **Managed Agents fallback** | If the Managed Agents API fails (network, quota, beta issues), the daemon automatically falls back to CLI subprocess with a warning log. No user-visible failure for backend outages. |
+| **Discussion cost caps** | Bilateral discussions capped at $1.00, council sessions at $2.00 by default. Early convergence detection ("CONSENSUS") stops discussions when agreement is reached. Per-agent daily budgets still enforced per-turn. |
+| **Discussion transcripts** | All inter-agent discussions recorded to SQLite `discussions` table + markdown files in `shared/discussions/`. Full audit trail with participants, outcomes, costs, and turn-by-turn content. |
 | **Crash alerting** | systemd `Type=notify` with `WatchdogSec=120`. On startup, detects unclean previous shutdown and alerts you via Telegram/Discord. 60-second watchdog ping prevents restart on silent hangs. |
 | **Task persistence** | Spawned background tasks are persisted to SQLite `task_queue` before launching. On daemon restart, stale tasks are marked as failed. Full lifecycle tracking: pending → running → completed/failed. |
 | **Failure post-mortems** | Every failed agent task is auto-analyzed via Haiku ($0.02): classified by category (timeout, rate_limit, tool_error, etc.), root cause extracted, actionable lesson written to `shared/failure-lessons.md`. Deduplicated by error hash. |
@@ -837,6 +888,13 @@ memory:
   log_retention_days: 30           # Delete daily logs older than this
   embeddings_enabled: true         # Semantic search (requires sqlite-vec for full quality)
 
+claude:
+  discussions_enabled: true        # Enable multi-turn discussions and council
+  discussion_max_turns: 6          # Max turns per bilateral discussion
+  discussion_max_cost: 1.00        # USD cost cap per bilateral discussion
+  council_max_cost: 2.00           # USD cost cap per council session
+  council_max_rounds: 2            # Rounds per council (each agent speaks once per round)
+
 integrations:
   telegram:
     enabled: true
@@ -875,7 +933,7 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 ~/.config/claude-daemon/
 ├── config.yaml
-├── claude_daemon.db              # SQLite (conversations, FTS5, agent_metrics, task_queue, failure_analyses, evolution_log, memory_vec)
+├── claude_daemon.db              # SQLite (conversations, FTS5, agent_metrics, task_queue, failure_analyses, evolution_log, discussions, memory_vec)
 ├── agents/
 │   ├── johnny/
 │   │   ├── SOUL.md               # Identity + improvement directives

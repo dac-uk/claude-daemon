@@ -40,6 +40,9 @@ reflections and metrics into concrete improvement actions.
 ## Failure Patterns (last 7 days)
 {failure_patterns}
 
+## Inter-Agent Discussions (last 7 days)
+{discussion_insights}
+
 ## Previous Improvement Plan
 {previous_plan}
 
@@ -314,11 +317,33 @@ class ImprovementPlanner:
             pass
         failure_str = "\n".join(failure_lines) if failure_lines else "(no failures recorded)"
 
+        # Discussion insights
+        discussion_lines: list[str] = []
+        try:
+            disc_stats = self.store.get_discussion_stats(days=7)
+            if disc_stats.get("total", 0) > 0:
+                discussion_lines.append(
+                    f"- Total: {disc_stats['total']} discussions, "
+                    f"cost: ${disc_stats.get('total_cost', 0):.2f}, "
+                    f"avg turns: {disc_stats.get('avg_turns', 0):.1f}, "
+                    f"converged: {disc_stats.get('converged', 0)}"
+                )
+            recent = self.store.get_recent_discussions(limit=5)
+            for d in recent:
+                discussion_lines.append(
+                    f"- [{d['discussion_type']}] {d['topic'][:80]} "
+                    f"({d['outcome']}, ${d.get('total_cost_usd', 0):.2f})"
+                )
+        except Exception:
+            pass
+        discussion_str = "\n".join(discussion_lines) if discussion_lines else "(no discussions)"
+
         prompt = IMPROVEMENT_PLAN_PROMPT.format(
             agent_reflections=agent_reflections,
             metrics_summary=metrics_summary,
             playbook_index=playbook_str,
             failure_patterns=failure_str,
+            discussion_insights=discussion_str,
             previous_plan=previous,
         )
 

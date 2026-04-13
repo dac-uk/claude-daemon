@@ -71,6 +71,32 @@ class ConversationStore:
             """)
             self._db.commit()
 
+        try:
+            self._db.execute("SELECT 1 FROM discussions LIMIT 0")
+        except sqlite3.OperationalError:
+            log.info("Migrating schema: creating discussions table")
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS discussions (
+                    id TEXT PRIMARY KEY,
+                    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    discussion_type TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    initiator TEXT NOT NULL,
+                    participants TEXT NOT NULL,
+                    outcome TEXT NOT NULL DEFAULT 'running',
+                    total_turns INTEGER DEFAULT 0,
+                    total_cost_usd REAL DEFAULT 0.0,
+                    duration_ms INTEGER DEFAULT 0,
+                    synthesis TEXT,
+                    transcript TEXT,
+                    completed_at TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_discussions_type ON discussions(discussion_type);
+                CREATE INDEX IF NOT EXISTS idx_discussions_ts ON discussions(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_discussions_initiator ON discussions(initiator);
+            """)
+            self._db.commit()
+
     def close(self) -> None:
         self._db.close()
 
@@ -530,3 +556,59 @@ class ConversationStore:
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # -- Discussions --
+
+    def record_discussion(
+        self, discussion_id: str, discussion_type: str, topic: str,
+        initiator: str, participants: list[str], outcome: str,
+        total_turns: int, total_cost_usd: float, duration_ms: int,
+        synthesis: str = "", transcript: str = "",
+    ) -> None:
+        import json as _json
+        now = datetime.now(timezone.utc).isoformat()
+        self._db.execute(
+            "INSERT OR REPLACE INTO discussions "
+            "(id, discussion_type, topic, initiator, participants, outcome, "
+            "total_turns, total_cost_usd, duration_ms, synthesis, transcript, completed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (discussion_id, discussion_type, topic[:2000], initiator,
+             _json.dumps(participants), outcome, total_turns, total_cost_usd,
+             duration_ms, synthesis[:5000], transcript[:10000], now),
+        )
+        self._db.commit()
+
+    def get_recent_discussions(
+        self, discussion_type: str | None = None,
+        initiator: str | None = None, limit: int = 20,
+    ) -> list[dict]:
+        query = "SELECT * FROM discussions WHERE 1=1"
+        params: list = []
+        if discussion_type:
+            query += " AND discussion_type = ?"
+            params.append(discussion_type)
+        if initiator:
+            query += " AND initiator = ?"
+            params.append(initiator)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self._db.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_discussion(self, discussion_id: str) -> dict | None:
+        row = self._db.execute(
+            "SELECT * FROM discussions WHERE id = ?", (discussion_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_discussion_stats(self, days: int = 7) -> dict:
+        row = self._db.execute(
+            "SELECT COUNT(*) as total, "
+            "COALESCE(SUM(total_cost_usd), 0) as total_cost, "
+            "COALESCE(AVG(total_turns), 0) as avg_turns, "
+            "SUM(CASE WHEN outcome = 'converged' THEN 1 ELSE 0 END) as converged "
+            "FROM discussions "
+            "WHERE timestamp >= datetime('now', ?)",
+            (f"-{days} days",),
+        ).fetchone()
+        return dict(row) if row else {}
