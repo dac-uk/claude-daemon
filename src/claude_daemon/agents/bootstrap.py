@@ -728,6 +728,13 @@ MCP_SERVER_CATALOG: dict[str, dict] = {
         "category": "utility",
         "description": "Persistent key-value memory across sessions",
     },
+    "sequential-thinking": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking@latest"],
+        "env": {},
+        "category": "utility",
+        "description": "Structured multi-step reasoning with branching, backtracking, and hypothesis revision",
+    },
 }
 
 # Backwards-compat alias used by tests referencing the old name
