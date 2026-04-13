@@ -286,6 +286,13 @@ class ClaudeDaemon:
         self.workflow_engine = WorkflowEngine(
             self.orchestrator, self.agent_registry,
         )
+        from claude_daemon.agents.discussion import DiscussionEngine
+        self.discussion_engine = DiscussionEngine(
+            self.orchestrator, self.agent_registry, self.store,
+            self.config, shared_dir,
+            hub=getattr(self, "_dashboard_hub", None),
+        )
+        self.orchestrator.set_discussion_engine(self.discussion_engine)
         from claude_daemon.agents.evolution import EvolutionActuator
         self.evolution_actuator = EvolutionActuator(
             self.agent_registry, self.process_manager, self.store,

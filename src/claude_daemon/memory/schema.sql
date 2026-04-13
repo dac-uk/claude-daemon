@@ -136,3 +136,23 @@ CREATE TABLE IF NOT EXISTS evolution_log (
     dry_run BOOLEAN DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_evolution_agent ON evolution_log(agent_name);
+
+-- Inter-agent discussion session records
+CREATE TABLE IF NOT EXISTS discussions (
+    id TEXT PRIMARY KEY,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    discussion_type TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    initiator TEXT NOT NULL,
+    participants TEXT NOT NULL,
+    outcome TEXT NOT NULL DEFAULT 'running',
+    total_turns INTEGER DEFAULT 0,
+    total_cost_usd REAL DEFAULT 0.0,
+    duration_ms INTEGER DEFAULT 0,
+    synthesis TEXT,
+    transcript TEXT,
+    completed_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_discussions_type ON discussions(discussion_type);
+CREATE INDEX IF NOT EXISTS idx_discussions_ts ON discussions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_discussions_initiator ON discussions(initiator);

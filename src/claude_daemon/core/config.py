@@ -66,6 +66,13 @@ class DaemonConfig:
     # Semantic Memory (vector embeddings)
     embeddings_enabled: bool = True  # Enable semantic search (requires sqlite-vec for full quality)
 
+    # Inter-agent discussions
+    discussions_enabled: bool = True  # Enable multi-turn discussions and council
+    discussion_max_turns: int = 6  # Default max turns per bilateral discussion
+    discussion_max_cost: float = 1.00  # USD cost cap per bilateral discussion
+    council_max_cost: float = 2.00  # USD cost cap per council session
+    council_max_rounds: int = 2  # Rounds per council (each agent speaks once per round)
+
     # Memory
     daily_log_enabled: bool = True
     compaction_threshold: int = 50_000
@@ -207,6 +214,11 @@ class DaemonConfig:
             evolution_enabled=claude_cfg.get("evolution_enabled", True),
             evolution_dry_run=claude_cfg.get("evolution_dry_run", True),
             embeddings_enabled=memory_cfg.get("embeddings_enabled", True),
+            discussions_enabled=claude_cfg.get("discussions_enabled", True),
+            discussion_max_turns=int(claude_cfg.get("discussion_max_turns", 6)),
+            discussion_max_cost=float(claude_cfg.get("discussion_max_cost", 1.00)),
+            council_max_cost=float(claude_cfg.get("council_max_cost", 2.00)),
+            council_max_rounds=int(claude_cfg.get("council_max_rounds", 2)),
             disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),
