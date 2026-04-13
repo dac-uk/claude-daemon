@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Daemon — Command Center</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+<div class="app">
+  <!-- ═══ Sidebar ═══ -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">C</div>
+    <div class="sidebar-nav">
+      <button class="nav-btn active" data-view="overview" title="Overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      </button>
+      <button class="nav-btn" data-view="agents" title="Agents">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </button>
+      <button class="nav-btn" data-view="tasks" title="Tasks & Discussions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      </button>
+      <button class="nav-btn" data-view="analytics" title="Analytics">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      </button>
+      <button class="nav-btn" data-view="activity" title="Activity Log">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      </button>
+      <button class="nav-btn" data-view="settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+    <div class="sidebar-spacer"></div>
+    <div class="ws-indicator" id="wsIndicator" title="WebSocket disconnected"></div>
+  </nav>
+
+  <!-- ═══ Main ═══ -->
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-title"><span>Claude</span> Command Center</div>
+      <div class="topbar-stats">
+        <div class="stat">Agents <span class="stat-val" id="statAgents">0</span></div>
+        <div class="stat">Active <span class="stat-val" id="statActive">0</span></div>
+        <div class="stat">Sessions <span class="stat-val" id="statSessions">0</span></div>
+        <div class="stat">Cost <span class="stat-val" id="statCost">$0.00</span></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <!-- ═══ OVERVIEW ═══ -->
+      <div class="view active" id="view-overview">
+        <div class="metrics-row" id="overviewMetrics"></div>
+        <div class="overview-grid">
+          <div class="overview-graph glass" id="forceGraphContainer">
+            <div class="graph-container" id="graphEl"></div>
+          </div>
+          <div class="overview-agents glass" id="agentSidebar"></div>
+          <div class="overview-feed glass">
+            <div class="feed-title">Live Activity</div>
+            <div class="feed-list" id="feedList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ AGENTS ═══ -->
+      <div class="view" id="view-agents">
+        <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Agent Fleet</h2>
+        <div class="agents-grid" id="agentsGrid"></div>
+      </div>
+
+      <!-- ═══ TASKS ═══ -->
+      <div class="view" id="view-tasks">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="tasks-active">Active Tasks</button>
+          <button class="tab-btn" data-tab="tasks-discussions">Discussions</button>
+        </div>
+        <div class="tab-content active" id="tasks-active">
+          <div class="task-list" id="taskList"></div>
+        </div>
+        <div class="tab-content" id="tasks-discussions">
+          <div id="discList"></div>
+        </div>
+      </div>
+
+      <!-- ═══ ANALYTICS ═══ -->
+      <div class="view" id="view-analytics">
+        <div class="stats-cards" id="analyticsStats"></div>
+        <div class="charts-grid">
+          <div class="chart-card glass"><h4>Cost by Agent</h4><canvas id="chartCost"></canvas></div>
+          <div class="chart-card glass"><h4>Token Usage</h4><canvas id="chartTokens"></canvas></div>
+          <div class="chart-card glass"><h4>Task Outcomes</h4><canvas id="chartTasks"></canvas></div>
+          <div class="chart-card glass"><h4>Failure Categories</h4><canvas id="chartFailures"></canvas></div>
+        </div>
+      </div>
+
+      <!-- ═══ ACTIVITY ═══ -->
+      <div class="view" id="view-activity">
+        <div class="filters-bar">
+          <select class="filter-select" id="filterAgent"><option value="">All Agents</option></select>
+          <select class="filter-select" id="filterAction"><option value="">All Actions</option></select>
+          <input class="filter-input" id="filterSearch" placeholder="Search details..." style="flex:1;min-width:200px">
+          <button class="page-btn" id="filterGo">Apply</button>
+        </div>
+        <table class="audit-table">
+          <thead><tr><th>Time</th><th>Agent</th><th>Action</th><th>Platform</th><th>Details</th><th>Cost</th><th>OK</th></tr></thead>
+          <tbody id="auditBody"></tbody>
+        </table>
+        <div class="pagination" id="auditPagination"></div>
+      </div>
+
+      <!-- ═══ SETTINGS ═══ -->
+      <div class="view" id="view-settings">
+        <div class="settings-section">
+          <h3>MCP Server Pool</h3>
+          <table class="mcp-table">
+            <thead><tr><th>Server</th><th>Category</th><th>Tier</th><th>Status</th><th>Description</th></tr></thead>
+            <tbody id="mcpBody"></tbody>
+          </table>
+        </div>
+        <div class="settings-section">
+          <h3>System</h3>
+          <div id="systemInfo" class="glass-sm" style="padding:16px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Stream panel (slide-in) ═══ -->
+<div class="stream-overlay" id="streamOverlay"></div>
+<div class="stream-panel" id="streamPanel">
+  <div class="stream-header">
+    <h3 id="streamTitle">Agent Output</h3>
+    <button class="stream-close" id="streamClose">&times;</button>
+  </div>
+  <div class="stream-body" id="streamBody"></div>
+</div>
+
+<script src="/static/js/state.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/websocket.js"></script>
+<script src="/static/js/graph.js"></script>
+<script src="/static/js/views-overview.js"></script>
+<script src="/static/js/views-agents.js"></script>
+<script src="/static/js/views-tasks.js"></script>
+<script src="/static/js/views-rest.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
