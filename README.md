@@ -19,7 +19,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Domain Gotchas** - Per-agent failure-point documentation injected as high-priority context. Highest-signal content type per best practices research.
 - **Managed Agents Backend** - Dual-backend execution: CLI subprocess for fast/cheap tasks (chat, heartbeats), Anthropic's Managed Agents API for long-running/complex tasks (planning, workflows, REM sleep). Automatic fallback to CLI if API fails. Control via `/backend` command.
 - **Self-Evolution (EvolutionActuator)** - The improvement loop is now closed: weekly improvement plans generate targeted SOUL.md/AGENTS.md mutations. Safety guards (size check, protected sections, archive-before-write) prevent data loss. Starts in dry-run mode — proposals logged but not applied until you're confident. Evolution log tracks every mutation.
-- **Semantic Memory Search** - Vector embedding index (sqlite-vec) for cosine similarity search across all memory, playbooks, reflections, and failure lessons. Agents find conceptually related context ("deployment process" matches "CI/CD pipeline"), not just keyword matches. Graceful degradation — FTS5 still works without sqlite-vec.
+- **Semantic Memory Search** - Vector embedding index (sqlite-vec) using Voyage AI's `voyage-code-3` model (1024 dims, best-in-class for code). Cosine similarity search across all memory, playbooks, reflections, and failure lessons. Hybrid search falls back to FTS5 keyword matching when semantic results are sparse. Incremental indexing via SHA-256 content hashing — only changed files are re-embedded. Configurable model, top-k, similarity threshold, and batch size. Graceful degradation — FTS5 still works without sqlite-vec or a Voyage API key.
 - **Failure Analysis & Lesson Extraction** - Every failed agent task is auto-classified via Haiku ($0.02/failure): category, root cause, severity, actionable lesson. Lessons written to `shared/failure-lessons.md` for cross-agent learning. Recurring patterns surfaced in the weekly improvement plan.
 - **Task Persistence** - Spawned background tasks survive daemon restarts. SQLite `task_queue` table tracks full lifecycle (pending → running → completed/failed). Stale tasks from crashed runs are auto-marked as failed on startup.
 - **Crash Alerting & Watchdog** - systemd `Type=notify` with `WatchdogSec=120`. 60-second watchdog ping prevents restart on silent hangs. Crash detection on startup alerts you via Telegram/Discord. No more silent failures.
@@ -554,7 +554,7 @@ Shared workspace at `~/.config/claude-daemon/shared/`:
 
 | Path | Purpose |
 |------|---------|
-| `USER.md` | Your context — all agents read this |
+| `USER.md` | Your profile — fill in your name/role/style on first run; all agents read this |
 | `playbooks/` | Cross-agent lessons learned (compounding knowledge) |
 | `learnings.md` | Weekly synthesis of cross-agent insights |
 | `events.md` | Auto-maintained agent activity log (inter-agent awareness) |
@@ -902,6 +902,11 @@ memory:
   self_improve: true               # Enable self-assessment cycle
   log_retention_days: 30           # Delete daily logs older than this
   embeddings_enabled: true         # Semantic search (requires sqlite-vec for full quality)
+  embedding_model: voyage-code-3   # Voyage model (voyage-code-3, voyage-3, voyage-3-lite)
+  embedding_dim: 1024              # Must match model dimensions
+  embedding_top_k: 3               # Semantic matches injected into agent context
+  embedding_similarity_threshold: 0.3  # Minimum score (0-1); below this is discarded
+  embedding_chunk_size: 500        # Max chars per memory chunk
 
 claude:
   discussions_enabled: true        # Enable multi-turn discussions and council
