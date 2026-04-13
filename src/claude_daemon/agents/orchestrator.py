@@ -56,6 +56,14 @@ HELP_PATTERN = re.compile(
     r'\[HELP:(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\Z)', re.DOTALL
 )
 
+_CODE_BLOCK_RE = re.compile(r'```[\s\S]*?```', re.DOTALL)
+
+
+def _strip_code_blocks(text: str) -> str:
+    """Remove fenced code blocks to prevent false tag matches in examples."""
+    return _CODE_BLOCK_RE.sub('', text)
+
+
 ROUTING_PROMPT = """\
 You are the orchestrator. A message has arrived that needs routing to the right agent.
 
@@ -296,20 +304,24 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # Process delegation tags in response
+        # Process delegation tags in response (skip discussion tags when inside a discussion)
         if not response.is_error:
-            response = await self._process_delegations(agent, response)
+            response = await self._process_delegations(agent, response, platform=platform)
 
         return response
 
     async def _process_delegations(
         self, from_agent: Agent, response: ClaudeResponse,
+        platform: str = "cli",
     ) -> ClaudeResponse:
         """Scan agent response for [DELEGATE:name] tags and execute inter-agent calls.
 
         Appends delegation results to the response text.
+        Skips discussion/council/help tags when platform='discussion' to prevent recursion.
         """
-        delegations = DELEGATION_PATTERN.findall(response.result)
+        # Strip code blocks to avoid matching example tags in markdown
+        scan_text = _strip_code_blocks(response.result)
+        delegations = DELEGATION_PATTERN.findall(scan_text)
         if not delegations:
             return response
 
@@ -339,13 +351,12 @@ class Orchestrator:
         if appended:
             response.result += "\n".join(appended)
 
-        # Process [HELP:name] tags (lightweight single-turn consultation)
-        response = await self._process_help_requests(from_agent, response)
-
-        # Process [DISCUSS:name] and [COUNCIL] tags (multi-turn discussions)
-        if self._discussion_engine:
-            response = await self._process_discussions(from_agent, response)
-            response = await self._process_councils(from_agent, response)
+        # Skip discussion/help/council tags inside discussion turns (prevent recursion)
+        if platform not in ("discussion", "council", "intercom"):
+            response = await self._process_help_requests(from_agent, response)
+            if self._discussion_engine:
+                response = await self._process_discussions(from_agent, response)
+                response = await self._process_councils(from_agent, response)
 
         return response
 
@@ -353,7 +364,7 @@ class Orchestrator:
         self, from_agent: Agent, response: ClaudeResponse,
     ) -> ClaudeResponse:
         """Process [HELP:name] tags — quick single-turn consultation."""
-        helps = HELP_PATTERN.findall(response.result)
+        helps = HELP_PATTERN.findall(_strip_code_blocks(response.result))
         if not helps:
             return response
 
@@ -389,7 +400,7 @@ class Orchestrator:
         self, from_agent: Agent, response: ClaudeResponse,
     ) -> ClaudeResponse:
         """Process [DISCUSS:name] tags — launch bilateral discussions."""
-        discussions = DISCUSS_PATTERN.findall(response.result)
+        discussions = DISCUSS_PATTERN.findall(_strip_code_blocks(response.result))
         if not discussions:
             return response
 
@@ -432,7 +443,7 @@ class Orchestrator:
         self, from_agent: Agent, response: ClaudeResponse,
     ) -> ClaudeResponse:
         """Process [COUNCIL] tags — launch full council deliberation."""
-        councils = COUNCIL_PATTERN.findall(response.result)
+        councils = COUNCIL_PATTERN.findall(_strip_code_blocks(response.result))
         if not councils:
             return response
 

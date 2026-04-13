@@ -28,7 +28,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
 - **Inter-Agent Communication** - Four communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, and `[COUNCIL]` for full team deliberation. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
-- **Live Agent Dashboard** - Browser-based D3 force graph showing all agents, real-time status, streaming thought output, and event log. Accessible over Tailscale/ZeroTier.
+- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel. All real-time via WebSocket — no polling.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
 - **Hardened Webhooks** - GitHub and Stripe webhooks verify HMAC-SHA256 signatures. Invalid requests get 403. Handlers run async (202 Accepted) so webhooks never block the HTTP server.
 - **Resilient Heartbeats** - Circuit breaker pauses autonomous jobs after 3 consecutive failures. Auto-resumes on success. All delivery failures are logged — no silent drops.
@@ -680,9 +680,9 @@ Every agent's system context includes a decision guide:
 
 Discussion insights (stats, recent topics, convergence rates) feed into the weekly improvement cycle.
 
-## Live Agent Dashboard
+## AI Command Center
 
-A browser-based dashboard showing all agents as a live force graph with real-time status, streaming output, and event log.
+A multi-view glassmorphism dashboard serving as mission control for the agent fleet. Dark theme, real-time WebSocket updates, no polling.
 
 ```yaml
 daemon:
@@ -694,14 +694,26 @@ daemon:
 
 Open `http://<your-ip>:8080/` in any browser. Works on any device on your Tailscale or ZeroTier network.
 
-Features:
-- **Force graph**: 7 agent nodes with colour-coded status (idle/busy), pulsing animation when active
-- **Click to expand**: Click any agent node to see their live thought stream in the side panel
-- **Event log**: Scrolling log of heartbeat results, task completions, auto-parallel events
-- **WebSocket**: Real-time updates via `/ws` — no polling
-- **Stats bar**: Active sessions, agent count, cost today
+### Views
 
-The dashboard uses D3.js (loaded from CDN). No build step, no npm, no bundler — just a single HTML file.
+| View | What it shows |
+|------|---------------|
+| **Overview** | D3 force graph (agent nodes with emoji, glow rings, pulse on busy), live activity feed, agent sidebar, metric cards |
+| **Agents** | Fleet cards with status, model, cost, MCP health, heartbeat count. Click to open streaming output panel |
+| **Tasks** | Active task queue + inter-agent discussion transcripts (bilateral + council). Expandable cards with synthesis |
+| **Analytics** | Chart.js visualizations: cost by agent, token usage (input/output), task outcomes, failure categories |
+| **Activity** | Filterable audit log with pagination. Filter by agent, action type. Search details text |
+| **Settings** | MCP server pool table (tier, status, description), system info |
+
+### Preserved Features
+- **Force graph**: 7 agent nodes with colour-coded status, emoji labels, role sublabels, pulsing animation when busy, glow rings on active agents
+- **Click to expand**: Click any agent node or card to see their live thought stream in a slide-in panel
+- **Event log**: Scrolling real-time log of agent status changes, task completions, auto-parallel events, discussions, delegations
+- **WebSocket**: All updates via `/ws` — no polling (30s status refresh only)
+- **Stats bar**: Active agents, session count, cost today
+
+### Architecture
+12 files — CSS design system + 8 JS modules + HTML shell. D3.js and Chart.js loaded from CDN. No build step, no npm, no bundler.
 
 ## HTTP API
 
@@ -725,6 +737,9 @@ POST /api/settings/thinking   — Toggle extended thinking {"enabled": true/fals
 POST /api/settings/effort     — Set effort level {"level": "low/medium/high/max"}
 GET  /api/settings/backend    — Get Managed Agents backend status
 POST /api/settings/backend    — Enable/disable Managed Agents {"enabled": true/false}
+GET  /api/discussions         — Inter-agent discussion history (filter by type, initiator)
+GET  /api/failures            — Failure analyses and patterns (filter by agent)
+GET  /api/evolution           — Self-evolution mutation history (filter by agent)
 POST /api/message             — Send a message to an agent
 POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted

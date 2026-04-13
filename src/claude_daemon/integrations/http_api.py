@@ -290,28 +290,31 @@ class HttpApi:
 
     async def _handle_discussions(self, request: web.Request) -> web.Response:
         """GET /api/discussions — list recent inter-agent discussions."""
+        if not self.daemon.store:
+            return web.json_response({"discussions": [], "stats": {}})
         dtype = request.query.get("type")
-        limit = int(request.query.get("limit", "20"))
-        store = self.daemon.store
-        discussions = store.get_recent_discussions(discussion_type=dtype, limit=limit)
-        stats = store.get_discussion_stats(days=7)
+        limit = min(int(request.query.get("limit", "20")), 100)
+        discussions = self.daemon.store.get_recent_discussions(discussion_type=dtype, limit=limit)
+        stats = self.daemon.store.get_discussion_stats(days=7)
         return web.json_response({"discussions": discussions, "stats": stats})
 
     async def _handle_failures(self, request: web.Request) -> web.Response:
         """GET /api/failures — list recent failure analyses."""
+        if not self.daemon.store:
+            return web.json_response({"failures": [], "patterns": []})
         agent = request.query.get("agent")
-        limit = int(request.query.get("limit", "20"))
-        store = self.daemon.store
-        failures = store.get_recent_failures(agent_name=agent, limit=limit)
-        patterns = store.get_failure_patterns(days=7)
+        limit = min(int(request.query.get("limit", "20")), 100)
+        failures = self.daemon.store.get_recent_failures(agent_name=agent, limit=limit)
+        patterns = self.daemon.store.get_failure_patterns(days=7)
         return web.json_response({"failures": failures, "patterns": patterns})
 
     async def _handle_evolution(self, request: web.Request) -> web.Response:
         """GET /api/evolution — list evolution history."""
+        if not self.daemon.store:
+            return web.json_response({"evolution": []})
         agent = request.query.get("agent")
-        limit = int(request.query.get("limit", "20"))
-        store = self.daemon.store
-        history = store.get_evolution_history(agent_name=agent, limit=limit)
+        limit = min(int(request.query.get("limit", "20")), 100)
+        history = self.daemon.store.get_evolution_history(agent_name=agent, limit=limit)
         return web.json_response({"evolution": history})
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
