@@ -252,15 +252,15 @@ def test_shared_workspace(tmp_path: Path):
     assert (shared / "playbooks").is_dir()
     assert (shared / "steer").is_dir()
     assert (shared / "reflections").is_dir()
-    assert "Dave" in (shared / "USER.md").read_text()
+    assert "your name here" in (shared / "USER.md").read_text()
 
 
 def test_agent_reads_shared_user(tmp_path: Path):
     """Test that agents read shared USER.md when no local one exists."""
     shared = tmp_path / "shared"
     shared.mkdir()
-    (shared / "USER.md").write_text("Name: Dave\nRole: Chairman")
+    (shared / "USER.md").write_text("Name: Alice\nRole: Chairman")
 
     ws = tmp_path / "agent"
     agent = Agent(name="test", workspace=ws, shared_dir=shared)
-    assert "Dave" in agent.identity.user_context
+    assert "Alice" in agent.identity.user_context

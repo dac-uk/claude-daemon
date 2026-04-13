@@ -342,11 +342,11 @@ class Agent:
                 "**[COUNCIL] topic** — Convene the full council for deliberation. Use for:\n"
                 "- Strategic decisions affecting multiple domains\n"
                 "- Disagreements that need resolution\n"
-                "- High-stakes choices (before escalating to Dave)\n"
+                "- High-stakes choices (before escalating to the user)\n"
                 "- Architecture decisions, major refactors, new initiatives\n\n"
                 "**Council Protocol:** State the topic clearly → each agent provides their "
                 "domain perspective → you synthesize into a clear decision → only escalate "
-                "to Dave if: capital >500, legal exposure, public commitments, or genuine "
+                "to the user if: capital >500, legal exposure, public commitments, or genuine "
                 "deadlock after council."
             )
 
