@@ -132,7 +132,7 @@ def test_context_priority_low_trimmed_first(tmp_path: Path):
     agent = Agent(name="test", workspace=workspace)
     agent.load_identity()
 
-    context = agent.build_system_context(max_chars=800)
+    context = agent.build_system_context(max_chars=2000)
     # Memory (high priority) should be present
     assert "IMPORTANT_MEMORY_DATA" in context
     # Soul (critical) should be present

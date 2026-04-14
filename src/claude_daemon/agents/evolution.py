@@ -7,7 +7,7 @@ with safety guards to prevent catastrophic data loss.
 Safety model:
 - Archive-before-write (timestamped backup of every mutated file)
 - Size guard: reject if new content < 30% of old (data loss detection)
-- Critical section preservation: ## Identity and ## Values never removed from SOUL.md
+- Critical section preservation: ## Identity, ## Values, and ## Operating Directive never removed from SOUL.md
 - Dry-run mode: proposals logged but not applied (default)
 - All mutations recorded to evolution_log table and shared/evolution-log.md
 """
@@ -54,7 +54,7 @@ Propose 0-3 minimal, targeted mutations to this agent's SOUL.md or AGENTS.md
 that would address issues identified in the improvement plan.
 
 Rules:
-- NEVER remove or modify ## Identity or ## Values sections in SOUL.md
+- NEVER remove or modify ## Identity, ## Values, or ## Operating Directive sections in SOUL.md
 - Prefer APPENDING new sections over rewriting existing ones
 - Each change should be small and focused (1-5 lines)
 - Only propose changes that are clearly supported by the improvement plan
@@ -75,7 +75,7 @@ If no changes needed, respond with: []
 """
 
 # These sections in SOUL.md cannot be removed or replaced
-PROTECTED_SECTIONS = {"## Identity", "## Values"}
+PROTECTED_SECTIONS = {"## Identity", "## Values", "## Operating Directive"}
 
 
 class EvolutionActuator:
