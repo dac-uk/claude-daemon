@@ -294,20 +294,34 @@ def test_user_profile_missing_file(tmp_path: Path):
 # -- Operating Directive tests --
 
 
-def test_bootstrap_includes_operating_directive(tmp_path: Path):
-    """All bootstrapped agents should have the Operating Directive in SOUL.md."""
-    agents_dir = tmp_path / "agents"
-    create_csuite_workspaces(agents_dir)
-    for name in ["johnny", "albert", "luna", "max", "penny", "jeremy", "sophie"]:
-        soul = (agents_dir / name / "SOUL.md").read_text()
-        assert "## Operating Directive" in soul
-        assert "Boil the ocean" in soul
+def test_shared_workspace_creates_directive(tmp_path: Path):
+    """create_shared_workspace should create shared/DIRECTIVE.md."""
+    create_shared_workspace(tmp_path)
+    directive = tmp_path / "shared" / "DIRECTIVE.md"
+    assert directive.exists()
+    content = directive.read_text()
+    assert "Operating Directive" in content
+    assert "Boil the ocean" in content
 
 
-def test_directive_in_system_context(tmp_path: Path):
-    """Operating directive is present in agent's built system context."""
-    from claude_daemon.agents.bootstrap import TEAM_DIRECTIVE
+def test_directive_injected_into_system_context(tmp_path: Path):
+    """DIRECTIVE.md is injected into agent's Tier 1 system context."""
+    shared = tmp_path / "shared"
+    shared.mkdir(parents=True)
+    (shared / "DIRECTIVE.md").write_text("# Team Operating Directive\n\nBoil the ocean.")
 
+    ws = tmp_path / "testbot"
+    ws.mkdir(parents=True)
+    (ws / "memory").mkdir()
+    (ws / "SOUL.md").write_text("# Soul\nI am a test agent.")
+
+    agent = Agent(name="testbot", workspace=ws, shared_dir=shared)
+    ctx = agent.build_system_context()
+    assert "Boil the ocean" in ctx
+
+
+def test_directive_not_injected_without_shared_dir(tmp_path: Path):
+    """Without shared_dir, no directive is injected (graceful degradation)."""
     ws = tmp_path / "testbot"
     ws.mkdir(parents=True)
     (ws / "memory").mkdir()
@@ -315,46 +329,14 @@ def test_directive_in_system_context(tmp_path: Path):
 
     agent = Agent(name="testbot", workspace=ws)
     ctx = agent.build_system_context()
-    # Directive injected via belt-and-suspenders (not in SOUL.md, so appended)
-    assert "Boil the ocean" in ctx
+    assert "Boil the ocean" not in ctx
 
 
-def test_directive_not_duplicated_when_in_soul(tmp_path: Path):
-    """If SOUL.md already contains the directive, it should not be injected twice."""
-    from claude_daemon.agents.bootstrap import TEAM_DIRECTIVE
-
-    ws = tmp_path / "testbot"
-    ws.mkdir(parents=True)
-    (ws / "memory").mkdir()
-    (ws / "SOUL.md").write_text("# Soul\n\n" + TEAM_DIRECTIVE + "\nI am a test agent.")
-
-    agent = Agent(name="testbot", workspace=ws)
-    ctx = agent.build_system_context()
-    assert ctx.count("Boil the ocean") == 1
-
-
-def test_ensure_directive_patches_existing(tmp_path: Path):
-    """Existing SOUL.md files without the directive should be patched."""
-    from claude_daemon.agents.bootstrap import ensure_directive_in_souls
-
-    agents_dir = tmp_path / "agents"
-    ws = agents_dir / "testbot"
-    ws.mkdir(parents=True)
-    (ws / "SOUL.md").write_text("# Soul\n\nI am testbot.\n")
-
-    patched = ensure_directive_in_souls(agents_dir)
-    assert patched == 1
-    content = (ws / "SOUL.md").read_text()
-    assert "## Operating Directive" in content
-    assert "I am testbot" in content  # Original content preserved
-
-
-def test_ensure_directive_idempotent(tmp_path: Path):
-    """Running ensure_directive twice should not double-inject."""
-    from claude_daemon.agents.bootstrap import ensure_directive_in_souls
-
+def test_soul_md_does_not_contain_directive(tmp_path: Path):
+    """SOUL.md should be clean — directive lives in shared/DIRECTIVE.md, not SOUL.md."""
     agents_dir = tmp_path / "agents"
     create_csuite_workspaces(agents_dir)
-
-    patched = ensure_directive_in_souls(agents_dir)
-    assert patched == 0  # Already present from bootstrap
+    for name in ["johnny", "albert", "luna", "max", "penny", "jeremy", "sophie"]:
+        soul = (agents_dir / name / "SOUL.md").read_text()
+        assert "## Operating Directive" not in soul
+        assert "Boil the ocean" not in soul

@@ -261,13 +261,11 @@ class ClaudeDaemon:
         # Multi-agent system
         from claude_daemon.agents.bootstrap import (
             create_csuite_workspaces, create_shared_workspace, refresh_agent_configs,
-            ensure_directive_in_souls,
         )
         agents_dir = self.config.data_dir / "agents"
         shared_dir = self.config.data_dir / "shared"
         create_shared_workspace(self.config.data_dir)
         create_csuite_workspaces(agents_dir)
-        ensure_directive_in_souls(agents_dir)
         # Regenerate tools.json + settings.json for all agents based on current env vars
         mcp_counts = refresh_agent_configs(
             agents_dir,

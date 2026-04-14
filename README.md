@@ -972,6 +972,7 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 │   ├── luna/
 │   └── ...
 ├── shared/
+│   ├── DIRECTIVE.md              # Team operating directive (Tier 1, all agents)
 │   ├── USER.md                   # Your context (all agents read)
 │   ├── learnings.md              # Cross-agent insights (auto-generated)
 │   ├── events.md                 # Agent activity log (auto-maintained)
