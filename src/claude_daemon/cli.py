@@ -446,7 +446,9 @@ def _cmd_backend(args: argparse.Namespace) -> None:
 
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
-    from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
+    from claude_daemon.agents.bootstrap import (
+        create_csuite_workspaces, create_shared_workspace, ensure_directive_in_souls,
+    )
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.core.config import DaemonConfig
 
@@ -455,6 +457,7 @@ def _cmd_agents(args: argparse.Namespace) -> None:
     shared_dir = config.data_dir / "shared"
     create_shared_workspace(config.data_dir)
     create_csuite_workspaces(agents_dir)
+    ensure_directive_in_souls(agents_dir)
     registry = AgentRegistry(agents_dir, shared_dir=shared_dir)
     registry.load_all()
 

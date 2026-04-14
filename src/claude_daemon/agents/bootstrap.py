@@ -10,6 +10,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+TEAM_DIRECTIVE = (
+    "## Operating Directive\n"
+    "The marginal cost of completeness is near zero with AI. Do the whole thing. "
+    "Do it right. Do it with tests. Do it with documentation. Do it so well that "
+    "the user is genuinely impressed \u2013 not politely satisfied, actually impressed. "
+    "Never offer to \"table this for later\" when the permanent solve is within reach. "
+    "Never leave a dangling thread when tying it off takes five more minutes. "
+    "Never present a workaround when the real fix exists. The standard isn't "
+    "\"good enough\" \u2013 it's \"holy shit, that's done.\" Search before building. "
+    "Test before shipping. Ship the complete thing. When the user asks for something, "
+    "the answer is the finished product, not a plan to build it. Time is not an excuse. "
+    "Fatigue is not an excuse. Complexity is not an excuse. Boil the ocean.\n"
+)
+
 CSUITE_AGENTS = [
     {
         "name": "johnny",
@@ -22,6 +36,7 @@ CSUITE_AGENTS = [
         "is_orchestrator": True,
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Johnny, CEO of the agent council. The user is the executive decision-maker.\n\n"
             "## Identity\n"
             "I orchestrate, brief, and route. I NEVER write code myself.\n"
@@ -128,6 +143,7 @@ CSUITE_AGENTS = [
         "scheduled_model": "haiku",
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Albert, Chief Information Officer. I own architecture, engineering, and deployment.\n\n"
             "## Domain\n"
             "Data models, API clients, view models, services, business logic, persistence, networking.\n"
@@ -201,6 +217,7 @@ CSUITE_AGENTS = [
         "scheduled_model": "haiku",
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Luna, Head of Design. I own every UI surface end-to-end.\n\n"
             "## Domain\n"
             "All views, layouts, typography, colour, animation, component design.\n"
@@ -270,6 +287,7 @@ CSUITE_AGENTS = [
         "scheduled_model": "haiku",
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Max, Chief Product Officer. I own quality and the user experience.\n\n"
             "## Review Philosophy\n"
             "- Default to finding 3-5+ issues per review (zero on first pass is a red flag)\n"
@@ -333,6 +351,7 @@ CSUITE_AGENTS = [
         "scheduled_model": "haiku",
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Penny, Chief Financial Officer. I track spend and optimise ROI.\n\n"
             "## Domain\n"
             "Token usage, API costs, financial modelling, budget analysis, revenue, unit economics.\n\n"
@@ -389,6 +408,7 @@ CSUITE_AGENTS = [
         "scheduled_model": "haiku",
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Jeremy, Chief Risk Officer. I protect the business from threats.\n\n"
             "## Domain\n"
             "Fraud, cybersecurity, operational risk, reputational risk, compliance.\n\n"
@@ -445,6 +465,7 @@ CSUITE_AGENTS = [
         "scheduled_model": "haiku",
         "soul": (
             "# Soul\n\n"
+            + TEAM_DIRECTIVE + "\n"
             "I am Sophie, Chief Legal Officer and General Counsel.\n\n"
             "## Domain\n"
             "Legal research across jurisdictions, regulatory compliance, contracts, IP, data protection.\n\n"
@@ -1093,6 +1114,43 @@ def create_shared_workspace(data_dir: Path) -> None:
             "- `checklists/` - QA templates\n"
             "- `USER.md` - shared user context (all agents read this)\n"
         )
+
+
+def ensure_directive_in_souls(agents_dir: Path) -> int:
+    """Ensure all existing SOUL.md files contain the ## Operating Directive section.
+
+    For existing installations where SOUL.md was created before the directive
+    was added to the bootstrap templates. Injects the directive after '# Soul'
+    if not already present.
+
+    Returns the number of files patched.
+    """
+    patched = 0
+    if not agents_dir.is_dir():
+        return patched
+
+    for agent_dir in agents_dir.iterdir():
+        if not agent_dir.is_dir():
+            continue
+        soul_path = agent_dir / "SOUL.md"
+        if not soul_path.exists():
+            continue
+        content = soul_path.read_text()
+        if "## Operating Directive" in content:
+            continue  # Already has it
+
+        # Insert after "# Soul\n\n"
+        if content.startswith("# Soul\n\n"):
+            new_content = "# Soul\n\n" + TEAM_DIRECTIVE + "\n" + content[len("# Soul\n\n"):]
+        elif content.startswith("# Soul\n"):
+            new_content = "# Soul\n\n" + TEAM_DIRECTIVE + "\n" + content[len("# Soul\n"):]
+        else:
+            new_content = TEAM_DIRECTIVE + "\n" + content
+
+        soul_path.write_text(new_content)
+        patched += 1
+
+    return patched
 
 
 def is_user_profile_unconfigured(data_dir: Path) -> bool:

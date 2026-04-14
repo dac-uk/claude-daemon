@@ -86,6 +86,7 @@ def test_replace_section_missing_appends(actuator):
 def test_protected_sections_exist():
     assert "## Identity" in PROTECTED_SECTIONS
     assert "## Values" in PROTECTED_SECTIONS
+    assert "## Operating Directive" in PROTECTED_SECTIONS
 
 
 def test_protected_section_normalized():
