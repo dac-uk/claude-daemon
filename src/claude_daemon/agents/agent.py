@@ -238,10 +238,13 @@ class Agent:
         if ident.soul:
             critical.append(ident.soul)
 
-        # Team operating directive — always injected regardless of SOUL.md content
-        from claude_daemon.agents.bootstrap import TEAM_DIRECTIVE
-        if TEAM_DIRECTIVE.strip() not in (ident.soul or ""):
-            critical.append(f"<important>\n{TEAM_DIRECTIVE}</important>")
+        # Team operating directive — read from shared/DIRECTIVE.md (Tier 1, never truncated)
+        if self.shared_dir:
+            directive_path = self.shared_dir / "DIRECTIVE.md"
+            if directive_path.exists():
+                directive = directive_path.read_text().strip()
+                if directive:
+                    critical.append(f"<important>\n{directive}\n</important>")
 
         if ident.role:
             critical.append(f"Your name is {ident.name}. Role: {ident.role}")
