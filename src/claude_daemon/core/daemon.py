@@ -266,6 +266,8 @@ class ClaudeDaemon:
         shared_dir = self.config.data_dir / "shared"
         create_shared_workspace(self.config.data_dir)
         create_csuite_workspaces(agents_dir)
+        # Auto-install evo plugin if enabled
+        await self._ensure_evo_installed()
         # Regenerate tools.json + settings.json for all agents based on current env vars
         mcp_counts = refresh_agent_configs(
             agents_dir,
@@ -354,6 +356,56 @@ class ClaudeDaemon:
 
         await self._shutdown_event.wait()
         await self.stop()
+
+    async def _ensure_evo_installed(self) -> None:
+        """Install the evo Claude Code plugin if evo_enabled and not already installed.
+
+        Runs two idempotent CLI commands:
+        1. claude plugin marketplace add evo-hq/evo
+        2. claude plugin install evo
+
+        Failures are logged as warnings and never block startup.
+        """
+        if not self.config.evo_enabled:
+            return
+
+        # Step 1: Add marketplace (idempotent — safe to run if already added)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "plugin", "marketplace", "add", "evo-hq/evo",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+            if proc.returncode != 0:
+                log.warning(
+                    "Evo marketplace add failed (rc=%d): %s",
+                    proc.returncode, (stderr or stdout or b"").decode()[:200],
+                )
+                return
+        except Exception:
+            log.warning("Evo marketplace add failed", exc_info=True)
+            return
+
+        # Step 2: Install plugin (idempotent — safe to run if already installed)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "plugin", "install", "evo",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+            if proc.returncode != 0:
+                log.warning(
+                    "Evo plugin install failed (rc=%d): %s",
+                    proc.returncode, (stderr or stdout or b"").decode()[:200],
+                )
+                return
+        except Exception:
+            log.warning("Evo plugin install failed", exc_info=True)
+            return
+
+        log.info("Evo plugin ready")
 
     async def stop(self) -> None:
         log.info("Shutting down...")

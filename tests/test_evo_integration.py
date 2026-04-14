@@ -1,9 +1,10 @@
-"""Tests for evo integration — [OPTIMIZE] tag, workflow, and config."""
+"""Tests for evo integration — [OPTIMIZE] tag, workflow, config, and auto-install."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -218,3 +219,99 @@ def test_max_soul_has_evo_guidance(tmp_path):
 
     max_soul = (agents_dir / "max" / "SOUL.md").read_text()
     assert "[OPTIMIZE" in max_soul
+
+
+# ------------------------------------------------------------------ #
+# Evo auto-install tests
+# ------------------------------------------------------------------ #
+
+
+def _make_daemon(evo_enabled: bool = True):
+    """Create a minimal daemon-like object for testing _ensure_evo_installed."""
+    from claude_daemon.core.config import DaemonConfig
+    from claude_daemon.core.daemon import ClaudeDaemon
+
+    config = DaemonConfig(evo_enabled=evo_enabled)
+    daemon = ClaudeDaemon.__new__(ClaudeDaemon)
+    daemon.config = config
+    return daemon
+
+
+def _mock_proc(returncode: int = 0, stdout: bytes = b"ok", stderr: bytes = b""):
+    """Create a mock subprocess result."""
+    proc = AsyncMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    return proc
+
+
+@pytest.mark.asyncio
+async def test_ensure_evo_installed_calls_both_commands():
+    """When evo_enabled=True, both marketplace add and plugin install are called."""
+    daemon = _make_daemon(evo_enabled=True)
+    procs = [_mock_proc(), _mock_proc()]
+    call_args = []
+
+    async def fake_exec(*args, **kwargs):
+        call_args.append(args)
+        return procs.pop(0)
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        await daemon._ensure_evo_installed()
+
+    assert len(call_args) == 2
+    assert call_args[0] == ("claude", "plugin", "marketplace", "add", "evo-hq/evo")
+    assert call_args[1] == ("claude", "plugin", "install", "evo")
+
+
+@pytest.mark.asyncio
+async def test_ensure_evo_skipped_when_disabled():
+    """When evo_enabled=False, no subprocesses are launched."""
+    daemon = _make_daemon(evo_enabled=False)
+
+    with patch("asyncio.create_subprocess_exec") as mock_exec:
+        await daemon._ensure_evo_installed()
+
+    mock_exec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_evo_marketplace_failure_skips_install():
+    """If marketplace add fails, plugin install is not attempted."""
+    daemon = _make_daemon(evo_enabled=True)
+    call_args = []
+
+    async def fake_exec(*args, **kwargs):
+        call_args.append(args)
+        return _mock_proc(returncode=1, stderr=b"network error")
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        await daemon._ensure_evo_installed()
+
+    # Only marketplace add was attempted, plugin install was skipped
+    assert len(call_args) == 1
+    assert "marketplace" in call_args[0]
+
+
+@pytest.mark.asyncio
+async def test_ensure_evo_install_failure_no_exception():
+    """If plugin install fails, no exception is raised (graceful degradation)."""
+    daemon = _make_daemon(evo_enabled=True)
+    procs = [_mock_proc(returncode=0), _mock_proc(returncode=1, stderr=b"install failed")]
+
+    async def fake_exec(*args, **kwargs):
+        return procs.pop(0)
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        # Should not raise
+        await daemon._ensure_evo_installed()
+
+
+@pytest.mark.asyncio
+async def test_ensure_evo_exception_no_crash():
+    """If the subprocess call throws an exception, daemon startup is not blocked."""
+    daemon = _make_daemon(evo_enabled=True)
+
+    with patch("asyncio.create_subprocess_exec", side_effect=OSError("claude not found")):
+        # Should not raise
+        await daemon._ensure_evo_installed()
