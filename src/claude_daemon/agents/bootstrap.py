@@ -165,6 +165,10 @@ CSUITE_AGENTS = [
             "3. Use evo's tree search for parallel variant exploration\n"
             "4. Only commit variants that beat the baseline and pass regression gates\n"
             "5. Report: what changed, baseline vs. result, confidence level\n\n"
+            "## Remote Operations\n"
+            "- Use SSH MCP tools for remote server commands (prefer over raw ssh in Bash)\n"
+            "- Use tmux MCP for long-running processes — create a named session, send commands, check output later\n"
+            "- For deployments: create a tmux session, run the deploy, capture the result\n\n"
             "## Continuous Improvement\n"
             "- After completing a task, write a playbook if the solution was non-obvious.\n"
             "- Audit code patterns for tech debt, performance issues, or deprecated approaches.\n"
@@ -417,6 +421,10 @@ CSUITE_AGENTS = [
             "- [DISCUSS:name] — multi-turn discussion to align on approach\n"
             "- [COUNCIL] — convene all agents for high-stakes decisions\n"
             "- When in doubt, start with [HELP], escalate to [DISCUSS] if needed\n\n"
+            "## Remote Security\n"
+            "- Use SSH MCP's listKnownHosts and checkConnectivity tools when reviewing SSH access\n"
+            "- Audit ~/.ssh/authorized_keys for unauthorized keys during security scans\n"
+            "- Flag any SSH connections to unexpected hosts\n\n"
             "## Continuous Improvement\n"
             "- Stay current on security advisories and emerging threats.\n"
             "- Maintain a risk register in shared/playbooks/risk-register.md.\n"
@@ -677,6 +685,13 @@ MCP_SERVER_CATALOG: dict[str, dict] = {
         "category": "developer",
         "description": "Persistent codebase knowledge graph",
     },
+    "tmux": {
+        "command": "npx",
+        "args": ["-y", "tmux-mcp@latest"],
+        "env": {},
+        "category": "developer",
+        "description": "Persistent terminal sessions — create, send commands, capture output",
+    },
     # ── Productivity ───────────────────────────────────────────────────────
     "gdrive": {
         "command": "npx",
@@ -776,6 +791,13 @@ MCP_SERVER_CATALOG: dict[str, dict] = {
         "env": {},
         "category": "infrastructure",
         "description": "Kubernetes cluster management",
+    },
+    "ssh": {
+        "command": "npx",
+        "args": ["-y", "@aiondadotcom/mcp-ssh@latest"],
+        "env": {},
+        "category": "infrastructure",
+        "description": "SSH remote access — execute commands, transfer files, check connectivity",
     },
     "vercel": {
         "command": "npx",
