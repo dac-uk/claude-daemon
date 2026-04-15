@@ -262,10 +262,15 @@ class ClaudeDaemon:
         from claude_daemon.agents.bootstrap import (
             create_csuite_workspaces, create_shared_workspace, refresh_agent_configs,
         )
+        from claude_daemon.agents.template_merge import merge_agent_templates
         agents_dir = self.config.data_dir / "agents"
         shared_dir = self.config.data_dir / "shared"
         create_shared_workspace(self.config.data_dir)
         create_csuite_workspaces(agents_dir)
+        # Merge new template sections into existing agent files (safe, idempotent)
+        merge_result = merge_agent_templates(agents_dir)
+        if merge_result.sections_added:
+            log.info("Template merge: %s", merge_result.summary())
         # Auto-install evo plugin if enabled
         await self._ensure_evo_installed()
         # Regenerate tools.json + settings.json for all agents based on current env vars
