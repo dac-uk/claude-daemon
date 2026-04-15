@@ -21,7 +21,7 @@ for arg in "$@"; do
     esac
 done
 
-# -- Colours ------------------------------------------------------------------
+# -- Colours & logging --------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -29,11 +29,50 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Colour
 
+# Accumulate warnings and errors for final summary
+WARNINGS=()
+ERRORS=()
+HAS_FATAL=false
+
 info()  { printf "${CYAN}[info]${NC}  %s\n" "$*"; }
 ok()    { printf "${GREEN}[ok]${NC}    %s\n" "$*"; }
-warn()  { printf "${YELLOW}[warn]${NC}  %s\n" "$*"; }
-fail()  { printf "${RED}[error]${NC} %s\n" "$*"; exit 1; }
+warn()  { printf "${YELLOW}[warn]${NC}  %s\n" "$*"; WARNINGS+=("$*"); }
+error() { printf "${RED}[error]${NC} %s\n" "$*"; ERRORS+=("$*"); }
+fail()  { printf "${RED}[FATAL]${NC} %s\n" "$*"; ERRORS+=("$*"); HAS_FATAL=true; _print_summary; exit 1; }
 step()  { printf "\n${BOLD}==> %s${NC}\n" "$*"; }
+
+_print_summary() {
+    printf "\n${BOLD}─── Install Summary ───${NC}\n"
+    if [ ${#ERRORS[@]} -gt 0 ]; then
+        printf "${RED}${BOLD}ERRORS (${#ERRORS[@]}):${NC}\n"
+        for e in "${ERRORS[@]}"; do
+            printf "  ${RED}✗${NC} %s\n" "$e"
+        done
+    fi
+    if [ ${#WARNINGS[@]} -gt 0 ]; then
+        printf "${YELLOW}${BOLD}WARNINGS (${#WARNINGS[@]}):${NC}\n"
+        for w in "${WARNINGS[@]}"; do
+            printf "  ${YELLOW}⚠${NC} %s\n" "$w"
+        done
+    fi
+    if [ ${#ERRORS[@]} -eq 0 ] && [ ${#WARNINGS[@]} -eq 0 ]; then
+        printf "  ${GREEN}✓ No errors or warnings${NC}\n"
+    fi
+    if [ "$HAS_FATAL" = true ]; then
+        printf "\n${RED}${BOLD}RESULT: FAILED${NC}\n"
+        printf "  Copy the output above and share it with Claude for diagnosis.\n"
+    elif [ ${#ERRORS[@]} -gt 0 ]; then
+        printf "\n${YELLOW}${BOLD}RESULT: COMPLETED WITH ERRORS${NC}\n"
+        printf "  The daemon is installed but some features may not work.\n"
+        printf "  Copy the output above and share it with Claude for diagnosis.\n"
+    elif [ ${#WARNINGS[@]} -gt 0 ]; then
+        printf "\n${YELLOW}${BOLD}RESULT: COMPLETED WITH WARNINGS${NC}\n"
+        printf "  The daemon is installed. Warnings are non-critical but worth reviewing.\n"
+    else
+        printf "\n${GREEN}${BOLD}RESULT: SUCCESS${NC}\n"
+    fi
+    printf "\n"
+}
 
 # -- Configuration ------------------------------------------------------------
 REPO_URL="git@github.com:dac-uk/claude-daemon.git"
@@ -118,7 +157,18 @@ fi
 step "Installing claude-daemon"
 
 cd "$REPO_DIR"
-$PIP install -e ".[all]" --quiet 2>&1 | tail -5 || fail "pip install failed"
+PIP_LOG=$(mktemp)
+if $PIP install -e ".[all]" 2>&1 | tee "$PIP_LOG" | grep -E '(ERROR|error:|WARNING|warning:|Successfully installed)'; then
+    true  # grep found matches (or pip succeeded)
+fi
+if ! $PYTHON -c "import claude_daemon" 2>/dev/null; then
+    printf "\n${RED}pip install output:${NC}\n"
+    cat "$PIP_LOG"
+    rm -f "$PIP_LOG"
+    fail "pip install failed — claude_daemon module not importable. Full output above."
+fi
+rm -f "$PIP_LOG"
+ok "Python package installed"
 
 # Verify the command is available
 DAEMON_BIN=$(command -v claude-daemon 2>/dev/null || true)
@@ -294,9 +344,14 @@ if [ "$OS" = "Linux" ]; then
 
     if systemctl --user is-active claude-daemon &>/dev/null; then
         info "Service already running — restarting"
-        systemctl --user restart claude-daemon
+        systemctl --user restart claude-daemon || error "Service restart failed. Check: systemctl --user status claude-daemon"
     else
-        systemctl --user start claude-daemon 2>/dev/null || warn "Service failed to start — check tokens are set, then: systemctl --user start claude-daemon"
+        if ! systemctl --user start claude-daemon 2>/dev/null; then
+            SVC_STATUS=$(systemctl --user status claude-daemon 2>&1 | tail -10 || true)
+            error "Service failed to start. Status output:"
+            printf "%s\n" "$SVC_STATUS"
+            warn "Fix: ensure tokens are set in $ENV_FILE, then: systemctl --user start claude-daemon"
+        fi
     fi
 
     # Enable linger so user services survive logout
@@ -347,7 +402,7 @@ printf "    ${CYAN}claude-daemon status${NC}                    # Quick check\n"
 printf "\n"
 
 printf "  ${BOLD}MCP Servers:${NC}\n"
-printf "    37 MCP servers available. Zero-config servers enabled automatically.\n"
+printf "    41 MCP servers available. Zero-config servers enabled automatically.\n"
 printf "    Set tokens to enable more:  ${CYAN}claude-daemon env set TAVILY_API_KEY=tvly-...${NC}\n"
 printf "    View all servers:           ${CYAN}claude-daemon mcp list${NC}\n"
 printf "\n"
@@ -363,4 +418,6 @@ else
     printf "    2. Edit ${BOLD}%s${NC} to enable integrations\n" "$YAML_FILE"
     printf "    3. Restart: ${CYAN}systemctl --user restart claude-daemon${NC}\n"
 fi
-printf "\n"
+
+# -- Final summary with all warnings/errors --
+_print_summary
