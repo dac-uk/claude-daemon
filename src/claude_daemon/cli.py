@@ -444,6 +444,71 @@ def _cmd_backend(args: argparse.Namespace) -> None:
             print("\n  To enable: set ANTHROPIC_API_KEY then run 'claude-daemon backend on'")
 
 
+def _cmd_chat(args: argparse.Namespace) -> None:
+    """Interactive CLI chat with the daemon's agents."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+
+    if not config.api_enabled:
+        print("Error: HTTP API is not enabled.")
+        print("Fix: set 'api_enabled: true' in config.yaml, then restart the daemon.")
+        sys.exit(1)
+
+    base_url = f"http://127.0.0.1:{config.api_port}"
+    headers = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+
+    agent = getattr(args, "agent", None)
+    agent_label = f" (@{agent})" if agent else ""
+
+    print(f"claude-daemon chat{agent_label}")
+    print(f"Connected to {base_url}")
+    print("Type your message and press Enter. Ctrl+C to quit.\n")
+
+    while True:
+        try:
+            prompt = input("you> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nBye.")
+            break
+
+        if not prompt:
+            continue
+        if prompt.lower() in ("exit", "quit", "/quit", "/exit"):
+            print("Bye.")
+            break
+
+        body = {"message": prompt, "user_id": "cli-user"}
+        if agent:
+            body["agent"] = agent
+
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"{base_url}/api/message", data=data, headers=headers, method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                result = json.loads(resp.read().decode())
+                reply = result.get("result", "(no response)")
+                print(f"\n{reply}\n")
+        except urllib.error.URLError as e:
+            reason = getattr(e, "reason", str(e))
+            print(f"\nError: Could not connect to daemon at {base_url}")
+            print(f"  Reason: {reason}")
+            print("  Is the daemon running? Try: claude-daemon status\n")
+        except urllib.error.HTTPError as e:
+            print(f"\nHTTP {e.code}: {e.read().decode()[:200]}\n")
+        except Exception as e:
+            print(f"\nError: {e}\n")
+
+
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
     from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
@@ -533,6 +598,10 @@ def main() -> None:
     # status
     sub.add_parser("status", help="Show daemon status")
 
+    # chat
+    p_chat = sub.add_parser("chat", help="Interactive chat with daemon agents")
+    p_chat.add_argument("--agent", "-a", help="Target agent (e.g. albert, luna)")
+
     # logs
     p_logs = sub.add_parser("logs", help="View daemon logs")
     p_logs.add_argument("--follow", "-f", action="store_true")
@@ -605,6 +674,7 @@ def main() -> None:
         "stop": _cmd_stop,
         "restart": _cmd_restart,
         "status": _cmd_status,
+        "chat": _cmd_chat,
         "logs": _cmd_logs,
         "config": _cmd_config,
         "memory": _cmd_memory,

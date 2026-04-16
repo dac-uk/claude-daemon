@@ -255,10 +255,14 @@ cp config.example.yaml ~/.config/claude-daemon/config.yaml
 cp .env.example .env
 # Edit .env with your bot tokens and MCP credentials
 
-claude-daemon start --foreground   # Development
-claude-daemon start                # Background daemon
+claude-daemon start --foreground   # Development (logs to terminal, Ctrl+C to stop)
+claude-daemon start                # Background daemon (managed by systemd/launchd)
+claude-daemon stop                 # Stop the daemon
+claude-daemon restart              # Restart after config changes
 claude-daemon status               # Check status
 claude-daemon logs --follow        # View logs
+claude-daemon chat                 # Interactive chat from terminal
+claude-daemon chat --agent albert  # Chat with a specific agent
 ```
 
 ## The Agent Team

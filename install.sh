@@ -233,6 +233,35 @@ else
     ok "claude-daemon installed at $DAEMON_BIN"
 fi
 
+# Ensure claude-daemon is on PATH via symlink in ~/.local/bin
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+SYMLINK="$LOCAL_BIN/claude-daemon"
+if [ -x "$DAEMON_BIN" ]; then
+    ln -sf "$DAEMON_BIN" "$SYMLINK"
+    ok "Symlinked to $SYMLINK"
+fi
+
+# Check if ~/.local/bin is on PATH; if not, add it to shell profile
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "$LOCAL_BIN"; then
+    SHELL_NAME="$(basename "$SHELL")"
+    case "$SHELL_NAME" in
+        zsh)  PROFILE="$HOME/.zshrc" ;;
+        bash) PROFILE="$HOME/.bashrc" ;;
+        *)    PROFILE="$HOME/.profile" ;;
+    esac
+    PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+    if [ -f "$PROFILE" ] && grep -qF '.local/bin' "$PROFILE" 2>/dev/null; then
+        info "PATH entry already in $PROFILE"
+    else
+        printf "\n# Added by claude-daemon installer\n%s\n" "$PATH_LINE" >> "$PROFILE"
+        ok "Added ~/.local/bin to PATH in $PROFILE"
+        warn "Run 'source $PROFILE' or open a new terminal for claude-daemon to work"
+    fi
+    # Also export for the rest of this script
+    export PATH="$LOCAL_BIN:$PATH"
+fi
+
 # -- 4. Create config directory ------------------------------------------------
 step "Setting up configuration"
 
@@ -440,6 +469,8 @@ elif [ "$OS" = "Darwin" ]; then
     printf "    ${CYAN}tail -f /tmp/claude-daemon.stdout.log${NC}   # Stream logs\n"
 fi
 printf "    ${CYAN}claude-daemon status${NC}                    # Quick check\n"
+printf "    ${CYAN}claude-daemon stop${NC}                      # Stop the daemon\n"
+printf "    ${CYAN}claude-daemon chat${NC}                      # Chat from the terminal\n"
 printf "\n"
 
 printf "  ${BOLD}MCP Servers:${NC}\n"
@@ -457,7 +488,12 @@ else
     printf "  ${YELLOW}What's next:${NC}\n"
     printf "    1. Edit ${BOLD}%s${NC} with your bot tokens\n" "$ENV_FILE"
     printf "    2. Edit ${BOLD}%s${NC} to enable integrations\n" "$YAML_FILE"
-    printf "    3. Restart: ${CYAN}systemctl --user restart claude-daemon${NC}\n"
+    if [ "$OS" = "Darwin" ]; then
+        printf "    3. Restart: ${CYAN}launchctl unload ~/Library/LaunchAgents/com.claude-daemon.plist && launchctl load ~/Library/LaunchAgents/com.claude-daemon.plist${NC}\n"
+    else
+        printf "    3. Restart: ${CYAN}systemctl --user restart claude-daemon${NC}\n"
+    fi
+    printf "    4. Chat:    ${CYAN}claude-daemon chat${NC}\n"
 fi
 
 # -- Final summary with all warnings/errors --
