@@ -153,10 +153,26 @@ else
     REPO_DIR="$INSTALL_DIR"
 fi
 
-# -- 3. Install Python package ------------------------------------------------
+# -- 3. Install Python package (in venv) --------------------------------------
 step "Installing claude-daemon"
 
 cd "$REPO_DIR"
+
+# Always use a virtual environment — avoids PEP 668 "externally-managed-environment"
+# errors on macOS Homebrew, modern Debian/Ubuntu, Fedora, etc.
+VENV_DIR="$REPO_DIR/.venv"
+if [ ! -d "$VENV_DIR" ]; then
+    info "Creating virtual environment at $VENV_DIR"
+    if ! $PYTHON -m venv "$VENV_DIR" 2>&1; then
+        fail "Failed to create virtual environment. Ensure python3-venv is installed."
+    fi
+    ok "Virtual environment created"
+else
+    ok "Virtual environment exists at $VENV_DIR"
+fi
+PYTHON="$VENV_DIR/bin/python"
+PIP="$VENV_DIR/bin/pip"
+
 PIP_LOG=$(mktemp)
 if $PIP install -e ".[all]" 2>&1 | tee "$PIP_LOG" | grep -E '(ERROR|error:|WARNING|warning:|Successfully installed)'; then
     true  # grep found matches (or pip succeeded)
@@ -170,11 +186,15 @@ fi
 rm -f "$PIP_LOG"
 ok "Python package installed"
 
-# Verify the command is available
-DAEMON_BIN=$(command -v claude-daemon 2>/dev/null || true)
-if [ -z "$DAEMON_BIN" ]; then
+# Verify the command is available (check venv bin first)
+DAEMON_BIN="$VENV_DIR/bin/claude-daemon"
+if [ ! -x "$DAEMON_BIN" ]; then
+    DAEMON_BIN=$(command -v claude-daemon 2>/dev/null || true)
+fi
+if [ -z "$DAEMON_BIN" ] || [ ! -x "$DAEMON_BIN" ]; then
     # Check common pip install locations
     for candidate in \
+        "$VENV_DIR/bin/claude-daemon" \
         "$HOME/.local/bin/claude-daemon" \
         "$($PYTHON -c 'import sysconfig; print(sysconfig.get_path("scripts"))')/claude-daemon" \
     ; do
@@ -185,9 +205,9 @@ if [ -z "$DAEMON_BIN" ]; then
     done
 fi
 
-if [ -z "$DAEMON_BIN" ]; then
-    warn "claude-daemon installed but not on PATH. Add ~/.local/bin to your PATH."
-    DAEMON_BIN="$HOME/.local/bin/claude-daemon"
+if [ -z "$DAEMON_BIN" ] || [ ! -x "$DAEMON_BIN" ]; then
+    warn "claude-daemon installed but binary not found. Check: $VENV_DIR/bin/"
+    DAEMON_BIN="$VENV_DIR/bin/claude-daemon"
 else
     ok "claude-daemon installed at $DAEMON_BIN"
 fi
