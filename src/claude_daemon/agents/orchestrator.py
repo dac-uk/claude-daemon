@@ -287,12 +287,9 @@ class Orchestrator:
             else agent.mcp_config_path
         )
 
-        # Use pre-warmed session if available (MCP servers already initialized)
-        session = self.pm.get_prewarmed_session(agent.name) or conv["session_id"]
-
         response = await self.pm.send_message(
             prompt=prompt,
-            session_id=session,
+            session_id=conv["session_id"],
             system_context=agent_context,
             platform=platform,
             user_id=user_id,
@@ -358,17 +355,6 @@ class Orchestrator:
         # Process delegation tags in response (skip discussion tags when inside a discussion)
         if not response.is_error:
             response = await self._process_delegations(agent, response, platform=platform)
-
-        # Pre-warm next session in background (MCP servers already initialized when needed)
-        if not response.is_error and task_type in ("chat", "default"):
-            asyncio.create_task(
-                self.pm.prewarm_session(
-                    agent_name=agent.name,
-                    mcp_config_path=mcp_path,
-                    settings_path=agent.settings_path,
-                    model_override=model,
-                )
-            )
 
         return response
 
