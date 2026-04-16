@@ -39,7 +39,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **DB Integrity** - SQLite `PRAGMA integrity_check` runs on startup. Corrupt databases are flagged in logs before any data is written.
 - **Streaming Responses** - Live streaming to Telegram, Discord, and CLI chat with throttled message edits. Tokens appear within seconds instead of waiting for the full response.
 - **Chat-Lite MCP** - Conversational messages load only 5 essential MCP servers (memory, fetch, context7, time, git) instead of all 41. Full MCP activates automatically for workflows, planning, and scheduled tasks. Cuts chat startup time by ~70%.
-- **Session Pre-Warming** - After each chat response, a background process pre-initializes the next session (MCP servers, plugins, auth). The next message resumes into the warm session, skipping cold start.
+- **Persistent Sessions** - Chat messages reuse a long-running Claude process per agent via `--input-format stream-json`. MCP servers initialize once, OAuth validates once — subsequent messages skip all startup overhead. Falls back to one-shot mode on error.
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
 - **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.

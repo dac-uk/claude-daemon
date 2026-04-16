@@ -148,7 +148,7 @@ class PersistentSession:
                 )
 
             # Write user message to stdin as stream-json
-            msg = json.dumps({"type": "user", "content": full_prompt}) + "\n"
+            msg = json.dumps({"message": {"role": "user", "content": full_prompt}}) + "\n"
             try:
                 self.process.stdin.write(msg.encode())
                 await self.process.stdin.drain()
@@ -216,7 +216,7 @@ class PersistentSession:
                     f"[USER MESSAGE]\n{prompt}"
                 )
 
-            msg = json.dumps({"type": "user", "content": full_prompt}) + "\n"
+            msg = json.dumps({"message": {"role": "user", "content": full_prompt}}) + "\n"
             try:
                 self.process.stdin.write(msg.encode())
                 await self.process.stdin.drain()
@@ -418,11 +418,17 @@ class ProcessManager:
             )
 
             # Quick check: if process exits immediately, stream-json input isn't supported
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
             if proc.returncode is not None:
+                stderr_out = ""
+                if proc.stderr:
+                    try:
+                        stderr_out = (await proc.stderr.read()).decode().strip()
+                    except Exception:
+                        pass
                 log.warning(
-                    "Persistent session failed to start (exit %d), disabling persistent mode",
-                    proc.returncode,
+                    "Persistent session failed to start (exit %d), disabling persistent mode. %s",
+                    proc.returncode, stderr_out[:300],
                 )
                 self._persistent_disabled = True
                 return None
@@ -570,24 +576,34 @@ class ProcessManager:
                 mcp_config_path=mcp_config_path, settings_path=settings_path,
             )
             if ps and not ps.is_busy:
+                t0 = time.monotonic()
                 try:
                     response = await asyncio.wait_for(
                         ps.send(prompt, system_context),
                         timeout=self.config.process_timeout,
                     )
+                    elapsed = time.monotonic() - t0
                     if response.session_id:
                         self._confirmed_sessions.add(response.session_id)
                     if not response.is_error:
+                        log.info(
+                            "Persistent session response for %s in %.1fs (msg #%d)",
+                            agent_name, elapsed, ps._message_count,
+                        )
                         return response
                     # Error from persistent session — fall through to one-shot
-                    log.warning("Persistent session error for %s, falling back: %s",
-                                agent_name, response.result[:100])
+                    log.warning(
+                        "Persistent session error for %s (%.1fs), falling back to one-shot: %s",
+                        agent_name, elapsed, response.result[:200],
+                    )
                 except asyncio.TimeoutError:
                     log.warning("Persistent session timed out for %s, falling back", agent_name)
                     await ps.kill()
                     self._persistent.pop(agent_name, None)
                 except Exception as e:
                     log.warning("Persistent session failed for %s: %s", agent_name, e)
+            elif ps and ps.is_busy:
+                log.info("Persistent session for %s is busy, using one-shot", agent_name)
 
         if session_id:
             lock = self._get_session_lock(session_id)
