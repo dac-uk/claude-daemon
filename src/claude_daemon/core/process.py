@@ -184,6 +184,7 @@ class ProcessManager:
         system_prompt: str = "",
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
+        agent_workspace: str | None = None,
     ) -> bool:
         """Ensure an agent has a warm SDK session. Creates if needed. Returns success."""
         bridge = await self.ensure_sdk_bridge()
@@ -197,6 +198,7 @@ class ProcessManager:
             system_prompt=system_prompt,
             mcp_config_path=mcp_config_path,
             settings_path=settings_path,
+            agent_workspace=agent_workspace,
         )
         return session_id is not None
 

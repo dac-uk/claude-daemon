@@ -294,15 +294,22 @@ class Orchestrator:
             system_prompt=agent.build_static_context(),
             mcp_config_path=mcp_path,
             settings_path=agent.settings_path,
+            agent_workspace=str(agent.workspace),
         )
 
-        # Build dynamic per-message context (semantic matches, events, learnings)
-        dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+        # If SDK session is warm, send only dynamic context (static is in the session).
+        # Otherwise fall back to full context for subprocess mode.
+        sdk_active = self.pm._sdk_bridge and self.pm._sdk_bridge.has_session(agent.name)
+        if sdk_active:
+            dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+            effective_context = dynamic_context or None
+        else:
+            effective_context = agent_context
 
         response = await self.pm.send_message(
             prompt=prompt,
             session_id=conv["session_id"],
-            system_context=agent_context if not self.pm._sdk_bridge or not self.pm._sdk_bridge.has_session(agent.name) else dynamic_context or None,
+            system_context=effective_context,
             platform=platform,
             user_id=user_id,
             model_override=model,
@@ -611,14 +618,20 @@ class Orchestrator:
             system_prompt=agent.build_static_context(),
             mcp_config_path=mcp_path,
             settings_path=agent.settings_path,
+            agent_workspace=str(agent.workspace),
         )
 
-        dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+        sdk_active = self.pm._sdk_bridge and self.pm._sdk_bridge.has_session(agent.name)
+        if sdk_active:
+            dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+            effective_context = dynamic_context or None
+        else:
+            effective_context = agent_context
 
         async for chunk in self.pm.stream_message(
             prompt=prompt,
             session_id=conv["session_id"],
-            system_context=agent_context if not self.pm._sdk_bridge or not self.pm._sdk_bridge.has_session(agent.name) else dynamic_context or None,
+            system_context=effective_context,
             platform=platform,
             user_id=user_id,
             model_override=model,

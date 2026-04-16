@@ -286,6 +286,7 @@ class SDKBridgeManager:
             msg = result.get("message", "Unknown error")
             if result.get("recoverable"):
                 self._sessions.pop(agent_name, None)
+                self._first_message.pop(agent_name, None)
             return ClaudeResponse.error(f"SDK bridge error: {msg}")
 
         # Update session_id if we got one
@@ -315,12 +316,20 @@ class SDKBridgeManager:
         queue: asyncio.Queue = asyncio.Queue()
         self._streams[req_id] = queue
 
+        # Inject static system prompt on first message to this agent
+        effective_context = context
+        if agent_name not in self._first_message:
+            self._first_message[agent_name] = True
+            sys_prompt = self._system_prompts.get(agent_name, "")
+            if sys_prompt:
+                effective_context = sys_prompt + ("\n\n" + context if context else "")
+
         await self._send_command({
             "cmd": "send",
             "id": req_id,
             "agent": agent_name,
             "prompt": prompt,
-            "context": context,
+            "context": effective_context,
         })
 
         try:
@@ -364,6 +373,7 @@ class SDKBridgeManager:
                     msg = event.get("message", "Unknown error")
                     if event.get("recoverable"):
                         self._sessions.pop(agent_name, None)
+                        self._first_message.pop(agent_name, None)
                     yield ClaudeResponse.error(f"SDK bridge error: {msg}")
                     return
         finally:
@@ -387,6 +397,7 @@ class SDKBridgeManager:
             pass
 
         self._sessions.pop(agent_name, None)
+        self._first_message.pop(agent_name, None)
 
     async def shutdown(self) -> None:
         """Shutdown all sessions and the bridge process."""
