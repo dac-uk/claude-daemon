@@ -246,6 +246,23 @@ else
     ok "claude-daemon installed at $DAEMON_BIN"
 fi
 
+# Install Agent SDK for persistent sessions (Node.js package alongside bridge.js)
+SDK_DIR="$REPO_DIR/src/claude_daemon/sdk"
+if command -v npm >/dev/null 2>&1; then
+    if [ ! -d "$SDK_DIR/node_modules/@anthropic-ai/claude-agent-sdk" ]; then
+        (cd "$SDK_DIR" && npm init -y --silent >/dev/null 2>&1 && npm install --silent @anthropic-ai/claude-agent-sdk 2>/dev/null)
+        if [ -d "$SDK_DIR/node_modules/@anthropic-ai/claude-agent-sdk" ]; then
+            ok "Agent SDK installed (persistent sessions enabled)"
+        else
+            warn "Agent SDK install failed — daemon will use subprocess fallback (slower)"
+        fi
+    else
+        ok "Agent SDK already installed"
+    fi
+else
+    warn "npm not found — Agent SDK not installed (daemon will use subprocess fallback)"
+fi
+
 # Ensure claude-daemon is on PATH via symlink in ~/.local/bin
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
@@ -538,7 +555,8 @@ if grep -q "^ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null && ! grep -q "^ANTHROPI
 else
     printf "    Using OAuth (Claude Pro/Max subscription).\n"
     printf "    If not logged in yet, run: ${CYAN}claude /login${NC}\n"
-    printf "    Or set an API key:         ${CYAN}%s env set ANTHROPIC_API_KEY=sk-ant-...${NC}\n" "$SYMLINK"
+    printf "    For fast persistent sessions: ${CYAN}claude setup-token${NC} (generates headless OAuth token)\n"
+    printf "    Or set an API key:            ${CYAN}%s env set ANTHROPIC_API_KEY=sk-ant-...${NC}\n" "$SYMLINK"
 fi
 printf "\n"
 

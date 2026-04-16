@@ -10,3 +10,6 @@ build/
 .env
 *.db
 *.tmp
+node_modules/
+src/claude_daemon/sdk/package.json
+src/claude_daemon/sdk/package-lock.json

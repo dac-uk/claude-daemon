@@ -175,12 +175,6 @@ class Agent:
         return str(path) if path.exists() else self.mcp_config_path
 
     @property
-    def mcp_chat_config_path(self) -> str | None:
-        """Resolve path to zero-MCP config for pure chat (no servers = fastest startup)."""
-        path = self.workspace / "tools-chat.json"
-        return str(path) if path.exists() else self.mcp_lite_config_path
-
-    @property
     def settings_path(self) -> str | None:
         """Resolve path to this agent's settings.json, or None."""
         path = self.workspace / "settings.json"
@@ -439,6 +433,44 @@ class Agent:
             parts.append(medium_text)
         if low_text:
             parts.append(low_text)
+
+        return "\n\n".join(parts)
+
+    def build_static_context(self, max_chars: int = 6000) -> str:
+        """Build the static system context — set once at SDK session creation.
+
+        Includes: soul, identity, rules, gotchas, communication tags, capabilities.
+        Excludes: semantic matches, events, learnings (those are dynamic per message).
+        """
+        return self.build_system_context(max_chars=max_chars, semantic_matches=None)
+
+    def build_dynamic_context(self, semantic_matches: list[dict] | None = None) -> str:
+        """Build per-message dynamic context (injected in user message body).
+
+        Includes: semantic matches, recent events, learnings.
+        Returns empty string if nothing dynamic is available.
+        """
+        parts: list[str] = []
+
+        if semantic_matches:
+            relevant = "\n".join(
+                f"- [{m.get('source', '?')}] {m['chunk'][:300]}"
+                for m in semantic_matches[:3]
+            )
+            parts.append(f"## Related Context (semantic search)\n{relevant}")
+
+        if self.shared_dir:
+            events_path = self.shared_dir / "events.md"
+            if events_path.exists():
+                events = events_path.read_text()
+                if events:
+                    parts.append(f"## Recent Agent Activity\n{events[-500:]}")
+
+            learnings_path = self.shared_dir / "learnings.md"
+            if learnings_path.exists():
+                learnings = learnings_path.read_text()
+                if learnings:
+                    parts.append(f"## Team Learnings\n{learnings[-600:]}")
 
         return "\n\n".join(parts)
 

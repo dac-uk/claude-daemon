@@ -53,10 +53,10 @@ class DaemonConfig:
     default_effort: str = ""  # Override effort level for all tasks (empty = use per-task-type mapping)
     agent_deny_rules: list[str] = field(default_factory=list)  # Extra deny rules appended to defaults
 
-    # Persistent sessions (keep claude process alive between messages for speed)
-    persistent_sessions: bool = False  # Disabled by default until protocol is verified on real machines
-    persistent_idle_timeout: int = 300  # Kill idle persistent session after N seconds
-    persistent_max_messages: int = 100  # Restart persistent session after N messages (prevent context bloat)
+    # SDK bridge (persistent sessions via @anthropic-ai/claude-agent-sdk)
+    sdk_bridge_enabled: bool = True  # Use Agent SDK for persistent sessions (sub-second responses)
+    sdk_bridge_node_path: str = "node"  # Path to Node.js executable
+    claude_oauth_token: str = ""  # From CLAUDE_CODE_OAUTH_TOKEN or claude setup-token
 
     # Managed Agents (Anthropic hosted agent execution)
     managed_agents_enabled: bool = False  # Opt-in (requires ANTHROPIC_API_KEY env var)
@@ -225,9 +225,9 @@ class DaemonConfig:
             thinking_enabled=claude_cfg.get("thinking_enabled", True),
             default_effort=claude_cfg.get("default_effort", ""),
             agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
-            persistent_sessions=claude_cfg.get("persistent_sessions", True),
-            persistent_idle_timeout=int(claude_cfg.get("persistent_idle_timeout", 300)),
-            persistent_max_messages=int(claude_cfg.get("persistent_max_messages", 100)),
+            sdk_bridge_enabled=claude_cfg.get("sdk_bridge_enabled", True),
+            sdk_bridge_node_path=claude_cfg.get("sdk_bridge_node_path", "node"),
+            claude_oauth_token=claude_cfg.get("claude_oauth_token", ""),
             managed_agents_enabled=claude_cfg.get("managed_agents_enabled", False),
             managed_agents_task_types=claude_cfg.get("managed_agents_task_types", [
                 "planning", "workflow", "rem_sleep", "improvement",

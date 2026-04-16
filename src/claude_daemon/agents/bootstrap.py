@@ -949,15 +949,6 @@ def generate_lite_mcp_config(
     return {"mcpServers": lite_servers}
 
 
-def generate_chat_mcp_config() -> dict:
-    """Generate an empty MCP config for pure chat (zero startup overhead).
-
-    Conversational messages don't need tools — the agent answers from its own
-    knowledge and system context. No MCP servers = fastest possible startup.
-    """
-    return {"mcpServers": {}}
-
-
 # ---------------------------------------------------------------------------
 # Agent settings.json — autonomy-first permissions with safety deny rules
 # ---------------------------------------------------------------------------
@@ -1031,9 +1022,6 @@ def refresh_agent_configs(
     lite_config = generate_lite_mcp_config(disabled_servers)
     lite_payload = json.dumps(lite_config, indent=2) + "\n"
 
-    chat_config = generate_chat_mcp_config()
-    chat_payload = json.dumps(chat_config, indent=2) + "\n"
-
     settings = generate_agent_settings(
         deny_rules=deny_rules, thinking_enabled=thinking_enabled,
     )
@@ -1047,7 +1035,6 @@ def refresh_agent_configs(
         if child.is_dir() and (child / "IDENTITY.md").exists():
             (child / "tools.json").write_text(mcp_payload)
             (child / "tools-lite.json").write_text(lite_payload)
-            (child / "tools-chat.json").write_text(chat_payload)
             (child / "settings.json").write_text(settings_payload)
             results[child.name] = server_count
 

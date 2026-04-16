@@ -249,6 +249,13 @@ class ClaudeDaemon:
         self.working = WorkingMemory(self.store, self.durable, self.config)
         self.process_manager = ProcessManager(self.config)
 
+        # Start SDK bridge for persistent sessions (non-blocking, lazy session creation)
+        if self.config.sdk_bridge_enabled:
+            try:
+                await self.process_manager.ensure_sdk_bridge()
+            except Exception as e:
+                log.warning("SDK bridge unavailable, using subprocess fallback: %s", e)
+
         # Semantic memory (vector embeddings)
         from claude_daemon.memory.embeddings import EmbeddingStore
         self.embedding_store = EmbeddingStore(self.store._db, self.config)

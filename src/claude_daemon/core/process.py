@@ -92,8 +92,10 @@ class ActiveSession:
 class ProcessManager:
     """Manages concurrent Claude Code CLI invocations with streaming support.
 
-    Supports dual-backend execution: CLI subprocess (default) and Managed Agents API
-    (for long-running/complex tasks when enabled).
+    Supports triple-backend execution:
+    1. SDK bridge (preferred) — persistent sessions via Agent SDK, sub-second response
+    2. Managed Agents API — Anthropic-hosted, for long-running tasks
+    3. CLI subprocess (fallback) — spawns claude --print per message
     """
 
     # Max cached session locks before eviction (prevents unbounded growth)
@@ -107,6 +109,8 @@ class ProcessManager:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._confirmed_sessions: set[str] = set()  # sessions Claude Code has seen
         self._managed: "ManagedAgentBackend | None" = None  # lazy init
+        self._sdk_bridge: "SDKBridgeManager | None" = None  # lazy init
+        self._sdk_bridge_disabled: bool = False  # set True if bridge can't start
 
     def get_agent_semaphore(self, agent_name: str, max_per_agent: int = 3) -> asyncio.Semaphore:
         """Get or create a per-agent semaphore to prevent one agent hogging all slots."""
@@ -146,6 +150,55 @@ class ProcessManager:
             except ImportError:
                 log.debug("anthropic SDK not installed, Managed Agents unavailable")
         return self._managed
+
+    async def ensure_sdk_bridge(self) -> "SDKBridgeManager | None":
+        """Lazy-init the SDK bridge. Returns None if unavailable."""
+        if self._sdk_bridge_disabled:
+            return None
+        if self._sdk_bridge and self._sdk_bridge.is_alive:
+            return self._sdk_bridge
+
+        if not getattr(self.config, "sdk_bridge_enabled", True):
+            self._sdk_bridge_disabled = True
+            return None
+
+        try:
+            from claude_daemon.core.sdk_bridge import SDKBridgeManager
+            bridge = SDKBridgeManager(self.config)
+            await bridge.start()
+            self._sdk_bridge = bridge
+            return bridge
+        except FileNotFoundError as e:
+            log.warning("SDK bridge unavailable: %s", e)
+            self._sdk_bridge_disabled = True
+            return None
+        except Exception as e:
+            log.warning("SDK bridge failed to start: %s", e)
+            self._sdk_bridge_disabled = True
+            return None
+
+    async def ensure_agent_session(
+        self,
+        agent_name: str,
+        model: str,
+        system_prompt: str = "",
+        mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+    ) -> bool:
+        """Ensure an agent has a warm SDK session. Creates if needed. Returns success."""
+        bridge = await self.ensure_sdk_bridge()
+        if not bridge:
+            return False
+        if bridge.has_session(agent_name):
+            return True
+        session_id = await bridge.create_session(
+            agent_name=agent_name,
+            model=model,
+            system_prompt=system_prompt,
+            mcp_config_path=mcp_config_path,
+            settings_path=settings_path,
+        )
+        return session_id is not None
 
     def _should_use_managed(self, task_type: str, agent_name: str | None) -> bool:
         """Route to Managed Agents or CLI based on task characteristics."""
@@ -271,6 +324,29 @@ class ProcessManager:
                 )
                 # Fall through to CLI execution
 
+        # SDK bridge routing — persistent sessions (fast, no subprocess spawn)
+        if agent_name and self._sdk_bridge and self._sdk_bridge.has_session(agent_name):
+            try:
+                import time as _time
+                t0 = _time.monotonic()
+                response = await self._sdk_bridge.send_message(
+                    agent_name=agent_name,
+                    prompt=prompt,
+                    context=system_context,
+                )
+                elapsed = _time.monotonic() - t0
+                if not response.is_error:
+                    if response.session_id:
+                        self._confirmed_sessions.add(response.session_id)
+                    log.info("SDK response for %s in %.1fs", agent_name, elapsed)
+                    return response
+                log.warning("SDK send failed for %s (%.1fs), falling back: %s",
+                            agent_name, elapsed, response.result[:200])
+                # Remove dead session so next call recreates
+                self._sdk_bridge._sessions.pop(agent_name, None)
+            except Exception as e:
+                log.warning("SDK bridge error for %s, falling back to CLI: %s", agent_name, e)
+
         if session_id:
             lock = self._get_session_lock(session_id)
             if lock.locked():
@@ -349,6 +425,22 @@ class ProcessManager:
                     agent_name, e,
                 )
                 # Fall through to CLI execution
+
+        # SDK bridge streaming — persistent sessions
+        if agent_name and self._sdk_bridge and self._sdk_bridge.has_session(agent_name):
+            try:
+                async for chunk in self._sdk_bridge.stream_message(
+                    agent_name=agent_name,
+                    prompt=prompt,
+                    context=system_context,
+                ):
+                    if isinstance(chunk, ClaudeResponse) and chunk.session_id:
+                        self._confirmed_sessions.add(chunk.session_id)
+                    yield chunk
+                return
+            except Exception as e:
+                log.warning("SDK streaming error for %s, falling back: %s", agent_name, e)
+                self._sdk_bridge._sessions.pop(agent_name, None)
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:
@@ -584,7 +676,15 @@ class ProcessManager:
             return ClaudeResponse.error(f"Unexpected error: {e}"), ""
 
     async def drain_all(self, timeout: float = 60) -> None:
-        """Wait for all active Claude processes to finish."""
+        """Wait for all active Claude processes to finish and shutdown SDK bridge."""
+        # Shutdown SDK bridge first
+        if self._sdk_bridge:
+            try:
+                await self._sdk_bridge.shutdown()
+            except Exception:
+                log.debug("SDK bridge shutdown error (non-critical)")
+            self._sdk_bridge = None
+
         if not self._active:
             return
 

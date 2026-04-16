@@ -283,18 +283,26 @@ class Orchestrator:
         if self.hub:
             await self.hub.agent_busy(agent.name, prompt)
 
-        # MCP config tiering: chat=zero servers, default=lite, everything else=full
-        if task_type == "chat":
-            mcp_path = agent.mcp_chat_config_path
-        elif task_type == "default":
-            mcp_path = agent.mcp_lite_config_path
-        else:
-            mcp_path = agent.mcp_config_path
+        # Full MCP for all tasks — SDK sessions stay warm so init cost is one-time.
+        # Falls back to lite MCP for subprocess mode (no warm session).
+        mcp_path = agent.mcp_config_path
+
+        # Ensure SDK session exists for this agent (lazy creation on first message)
+        await self.pm.ensure_agent_session(
+            agent_name=agent.name,
+            model=model,
+            system_prompt=agent.build_static_context(),
+            mcp_config_path=mcp_path,
+            settings_path=agent.settings_path,
+        )
+
+        # Build dynamic per-message context (semantic matches, events, learnings)
+        dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
 
         response = await self.pm.send_message(
             prompt=prompt,
             session_id=conv["session_id"],
-            system_context=agent_context,
+            system_context=agent_context if not self.pm._sdk_bridge or not self.pm._sdk_bridge.has_session(agent.name) else dynamic_context or None,
             platform=platform,
             user_id=user_id,
             model_override=model,
@@ -595,18 +603,22 @@ class Orchestrator:
         if self.hub:
             await self.hub.agent_busy(agent.name, prompt)
 
-        # MCP config tiering: chat=zero servers, default=lite, everything else=full
-        if task_type == "chat":
-            mcp_path = agent.mcp_chat_config_path
-        elif task_type == "default":
-            mcp_path = agent.mcp_lite_config_path
-        else:
-            mcp_path = agent.mcp_config_path
+        mcp_path = agent.mcp_config_path
+
+        await self.pm.ensure_agent_session(
+            agent_name=agent.name,
+            model=model,
+            system_prompt=agent.build_static_context(),
+            mcp_config_path=mcp_path,
+            settings_path=agent.settings_path,
+        )
+
+        dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
 
         async for chunk in self.pm.stream_message(
             prompt=prompt,
             session_id=conv["session_id"],
-            system_context=agent_context,
+            system_context=agent_context if not self.pm._sdk_bridge or not self.pm._sdk_bridge.has_session(agent.name) else dynamic_context or None,
             platform=platform,
             user_id=user_id,
             model_override=model,
