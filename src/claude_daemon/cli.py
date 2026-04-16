@@ -167,21 +167,36 @@ def _cmd_restart(args: argparse.Namespace) -> None:
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
-    """Show daemon status."""
+    """Show daemon status and active warnings."""
     from claude_daemon.utils.paths import pid_path, config_dir
 
     pf = pid_path()
     if not pf.exists():
         print("Claude Daemon: not running")
-        return
+    else:
+        try:
+            pid = int(pf.read_text().strip())
+            os.kill(pid, 0)
+            print(f"Claude Daemon: running (PID {pid})")
+            print(f"Config dir: {config_dir()}")
+        except ProcessLookupError:
+            print("Claude Daemon: not running (stale PID file)")
 
-    try:
-        pid = int(pf.read_text().strip())
-        os.kill(pid, 0)
-        print(f"Claude Daemon: running (PID {pid})")
-        print(f"Config dir: {config_dir()}")
-    except ProcessLookupError:
-        print("Claude Daemon: not running (stale PID file)")
+    # Show active warnings (written by daemon on startup)
+    warnings_path = config_dir() / "shared" / "WARNINGS.md"
+    if warnings_path.exists():
+        content = warnings_path.read_text().strip()
+        if content:
+            print()
+            print("\033[1;33m--- Active Warnings ---\033[0m")
+            # Skip the markdown header, show the content
+            for line in content.split("\n"):
+                if line.startswith("# ") or line.startswith("These warnings"):
+                    continue
+                if line.strip():
+                    print(f"  \033[33m{line}\033[0m")
+            print("\033[33m  Fix the issues above, then restart to clear.\033[0m")
+            print()
 
 
 def _cmd_logs(args: argparse.Namespace) -> None:
@@ -539,6 +554,20 @@ def _cmd_chat(args: argparse.Namespace) -> None:
 
     print(f"claude-daemon chat{agent_label}")
     print(f"Connected to {base_url}")
+
+    # Show active warnings if any
+    warnings_path = config.data_dir / "shared" / "WARNINGS.md"
+    if warnings_path.exists():
+        content = warnings_path.read_text().strip()
+        if content:
+            print("\n\033[1;33m--- Active Warnings ---\033[0m")
+            for line in content.split("\n"):
+                if line.startswith("# ") or line.startswith("These warnings"):
+                    continue
+                if line.strip():
+                    print(f"  \033[33m{line}\033[0m")
+            print()
+
     print("Type your message and press Enter. Ctrl+C to quit.\n")
 
     while True:

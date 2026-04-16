@@ -953,18 +953,37 @@ class ClaudeDaemon:
                 log.exception("Failed to start HTTP API")
 
     async def _check_env_health(self) -> None:
-        """Check for missing env vars and notify users via available channels."""
+        """Check for missing env vars and notify users via available channels.
+
+        Always writes warnings to shared/WARNINGS.md so they're visible via
+        'claude-daemon status' and 'claude-daemon chat' even if no messaging
+        channel is configured yet.
+        """
         if not self.agent_registry:
             return
 
         from claude_daemon.core.env_manager import get_missing_env_report
 
         report = get_missing_env_report(self.agent_registry)
+        warnings_path = self.config.data_dir / "shared" / "WARNINGS.md"
+        warnings_path.parent.mkdir(parents=True, exist_ok=True)
+
         if not report:
             log.info("Env health check: all MCP tool env vars configured")
+            # Clear warnings file if no issues
+            if warnings_path.exists():
+                warnings_path.unlink()
             return
 
         log.warning("Env health check:\n%s", report)
+
+        # Always write to file — visible via 'claude-daemon status' and 'chat'
+        warnings_path.write_text(
+            "# Active Warnings\n\n"
+            "These warnings were generated at daemon startup. "
+            "Fix the issues below, then restart the daemon to clear them.\n\n"
+            f"{report}\n"
+        )
 
         # Proactively notify users via any available integration
         if self.router:
