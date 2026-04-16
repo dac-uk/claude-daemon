@@ -68,18 +68,58 @@ def _daemonize(config) -> None:
 
 
 def _cmd_stop(args: argparse.Namespace) -> None:
-    """Stop a running daemon."""
+    """Stop a running daemon gracefully.
+
+    Uses the OS service manager (launchd/systemd) so the daemon is not
+    automatically respawned. Falls back to SIGTERM if no service manager.
+    """
+    import platform
+    import subprocess
+
+    system = platform.system()
+
+    # macOS — launchctl unload (prevents KeepAlive respawn)
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.claude-daemon.plist"
+        if plist.exists():
+            result = subprocess.run(
+                ["launchctl", "unload", str(plist)],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print("Claude Daemon stopped (launchd service unloaded)")
+                print(f"  To start again: launchctl load {plist}")
+                return
+            else:
+                print(f"launchctl unload failed: {result.stderr.strip()}")
+                print("Falling back to SIGTERM...")
+
+    # Linux — systemctl --user stop (prevents Restart= respawn)
+    elif system == "Linux":
+        result = subprocess.run(
+            ["systemctl", "--user", "stop", "claude-daemon"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("Claude Daemon stopped (systemd service stopped)")
+            print("  To start again: systemctl --user start claude-daemon")
+            return
+        # systemctl may not be available — fall through to SIGTERM
+
+    # Fallback — SIGTERM via PID file (for --foreground or non-service setups)
     from claude_daemon.utils.paths import pid_path
 
     pf = pid_path()
     if not pf.exists():
-        print("Claude Daemon is not running (no PID file)")
+        print("Claude Daemon is not running (no PID file, no active service)")
         sys.exit(1)
 
     try:
         pid = int(pf.read_text().strip())
         os.kill(pid, signal.SIGTERM)
         print(f"Sent SIGTERM to Claude Daemon (PID {pid})")
+        print("  Note: if managed by launchd/systemd, it may respawn.")
+        print("  Use 'launchctl unload' or 'systemctl --user stop' instead.")
     except ProcessLookupError:
         print("Claude Daemon is not running (stale PID file)")
         pf.unlink(missing_ok=True)
@@ -89,7 +129,37 @@ def _cmd_stop(args: argparse.Namespace) -> None:
 
 
 def _cmd_restart(args: argparse.Namespace) -> None:
-    """Restart the daemon."""
+    """Restart the daemon via the OS service manager."""
+    import platform
+    import subprocess
+
+    system = platform.system()
+
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.claude-daemon.plist"
+        if plist.exists():
+            subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+            result = subprocess.run(
+                ["launchctl", "load", str(plist)],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print("Claude Daemon restarted (launchd)")
+                return
+            else:
+                print(f"launchctl load failed: {result.stderr.strip()}")
+
+    elif system == "Linux":
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", "claude-daemon"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("Claude Daemon restarted (systemd)")
+            return
+        print(f"systemctl restart failed: {result.stderr.strip()}")
+
+    # Fallback
     _cmd_stop(args)
     import time
     time.sleep(1)
