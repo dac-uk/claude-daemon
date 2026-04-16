@@ -268,8 +268,7 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$LOCAL_BIN"; then
         info "PATH entry already in $PROFILE"
     else
         printf "\n# Added by claude-daemon installer\n%s\n" "$PATH_LINE" >> "$PROFILE"
-        ok "Added ~/.local/bin to PATH in $PROFILE"
-        warn "Run 'source $PROFILE' or open a new terminal for claude-daemon to work"
+        ok "Added ~/.local/bin to PATH in $PROFILE (active in new terminals)"
     fi
     # Also export for the rest of this script
     export PATH="$LOCAL_BIN:$PATH"
@@ -521,16 +520,16 @@ elif [ "$OS" = "Darwin" ]; then
     printf "    ${CYAN}launchctl list | grep claude-daemon${NC}     # Check status\n"
     printf "    ${CYAN}tail -f /tmp/claude-daemon.stdout.log${NC}   # Stream logs\n"
 fi
-printf "    ${CYAN}claude-daemon status${NC}                    # Quick check\n"
-printf "    ${CYAN}claude-daemon stop${NC}                      # Stop the daemon\n"
-printf "    ${CYAN}claude-daemon restart${NC}                   # Restart after config changes\n"
-printf "    ${CYAN}claude-daemon chat${NC}                      # Chat from the terminal\n"
+printf "    ${CYAN}%s status${NC}                    # Quick check\n" "$SYMLINK"
+printf "    ${CYAN}%s stop${NC}                      # Stop the daemon\n" "$SYMLINK"
+printf "    ${CYAN}%s restart${NC}                   # Restart after config changes\n" "$SYMLINK"
+printf "    ${CYAN}%s chat${NC}                      # Chat from the terminal\n" "$SYMLINK"
 printf "\n"
 
 printf "  ${BOLD}MCP Servers:${NC}\n"
 printf "    41 MCP servers available. Zero-config servers enabled automatically.\n"
-printf "    Set tokens to enable more:  ${CYAN}claude-daemon env set TAVILY_API_KEY=tvly-...${NC}\n"
-printf "    View all servers:           ${CYAN}claude-daemon mcp list${NC}\n"
+printf "    Set tokens to enable more:  ${CYAN}%s env set TAVILY_API_KEY=tvly-...${NC}\n" "$SYMLINK"
+printf "    View all servers:           ${CYAN}%s mcp list${NC}\n" "$SYMLINK"
 printf "\n"
 
 printf "  ${BOLD}Claude Auth:${NC}\n"
@@ -539,7 +538,7 @@ if grep -q "^ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null && ! grep -q "^ANTHROPI
 else
     printf "    Using OAuth (Claude Pro/Max subscription).\n"
     printf "    If not logged in yet, run: ${CYAN}claude /login${NC}\n"
-    printf "    Or set an API key:         ${CYAN}claude-daemon env set ANTHROPIC_API_KEY=sk-ant-...${NC}\n"
+    printf "    Or set an API key:         ${CYAN}%s env set ANTHROPIC_API_KEY=sk-ant-...${NC}\n" "$SYMLINK"
 fi
 printf "\n"
 
@@ -557,9 +556,11 @@ else
     else
         printf "    3. Restart: ${CYAN}systemctl --user restart claude-daemon${NC}\n"
     fi
-    printf "    4. Chat:    ${CYAN}claude-daemon chat${NC}\n"
-    printf "\n  ${YELLOW}NOTE:${NC} If 'claude-daemon' is not found, run: ${CYAN}source ~/.zshrc${NC} (or open a new terminal)\n"
+    printf "    4. Chat:    ${CYAN}%s chat${NC}\n" "$SYMLINK"
 fi
+
+# Final convenience: tell users the exact command that works RIGHT NOW
+printf "\n  ${GREEN}${BOLD}Quick start:${NC}  ${CYAN}%s chat${NC}\n" "$SYMLINK"
 
 # -- Final summary with all warnings/errors --
 _print_summary
