@@ -141,8 +141,9 @@ fi
 ok "git available"
 
 # claude CLI (warn only — not strictly required for install)
-if command -v claude &>/dev/null; then
-    ok "claude CLI found"
+CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
+if [ -n "$CLAUDE_BIN" ]; then
+    ok "claude CLI found at $CLAUDE_BIN"
 else
     warn "claude CLI not found — install it later (npm install -g @anthropic-ai/claude-code)"
 fi
@@ -322,6 +323,16 @@ if ! grep -q "^CLAUDE_DAEMON_API_KEY=" "$ENV_FILE" 2>/dev/null || \
     ok "Auto-generated API key (secures HTTP API + chat)"
 fi
 
+# Store full path to claude CLI in config so daemon doesn't rely on PATH
+if [ -n "$CLAUDE_BIN" ]; then
+    if grep -q '^\s*#\?\s*binary:' "$YAML_FILE" 2>/dev/null; then
+        sed -i.bak "s|^\(\s*\)#\?\s*binary:.*|\1binary: $CLAUDE_BIN|" "$YAML_FILE" && rm -f "${YAML_FILE}.bak"
+    elif grep -q '^claude:' "$YAML_FILE" 2>/dev/null; then
+        sed -i.bak "s|^claude:|claude:\n  binary: $CLAUDE_BIN|" "$YAML_FILE" && rm -f "${YAML_FILE}.bak"
+    fi
+    ok "Claude CLI path stored: $CLAUDE_BIN"
+fi
+
 # Copy .env template (never overwrite)
 if [ -f "$ENV_FILE" ]; then
     ok ".env already exists — skipping"
@@ -470,6 +481,15 @@ elif [ "$OS" = "Darwin" ]; then
     # Copy and patch ProgramArguments with full binary path
     sed "s|<string>claude-daemon</string>|<string>$DAEMON_BIN</string>|g" \
         "$REPO_DIR/service/com.claude-daemon.plist" > "$PLIST_FILE"
+
+    # Inject PATH into plist so the daemon can find claude, node, npm, etc.
+    # launchd runs with a minimal PATH — without this, 'claude' is not found.
+    FULL_PATH="$PATH"
+    if ! grep -q "EnvironmentVariables" "$PLIST_FILE" 2>/dev/null; then
+        sed -i.bak "s|</dict>|    <key>EnvironmentVariables</key>\n    <dict>\n        <key>PATH</key>\n        <string>$FULL_PATH</string>\n    </dict>\n</dict>|" "$PLIST_FILE" && rm -f "${PLIST_FILE}.bak"
+        ok "Injected PATH into launchd plist"
+    fi
+
     ok "Installed launchd plist at $PLIST_FILE"
 
     # Unload if already loaded, then load
