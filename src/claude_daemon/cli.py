@@ -615,15 +615,33 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             body["agent"] = agent
 
         data = json.dumps(body).encode()
+
+        # Use streaming endpoint for real-time token display
         req = urllib.request.Request(
-            f"{base_url}/api/message", data=data, headers=headers, method="POST",
+            f"{base_url}/api/message/stream", data=data, headers=headers, method="POST",
         )
 
         try:
+            print()  # Blank line before response
             with urllib.request.urlopen(req, timeout=300) as resp:
-                result = json.loads(resp.read().decode())
-                reply = result.get("result", "(no response)")
-                print(f"\n{reply}\n")
+                buffer = ""
+                for raw_line in resp:
+                    line = raw_line.decode().strip()
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        event = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+
+                    if "text" in event:
+                        sys.stdout.write(event["text"])
+                        sys.stdout.flush()
+                    elif event.get("done"):
+                        break
+                    elif "error" in event:
+                        print(f"\nError: {event['error']}")
+            print("\n")  # End response with newlines
         except urllib.error.URLError as e:
             reason = getattr(e, "reason", str(e))
             print(f"\nError: Could not connect to daemon at {base_url}")

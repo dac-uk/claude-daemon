@@ -46,6 +46,7 @@ class HttpApi:
         self._app.router.add_get("/api/sessions", self._handle_sessions)
         self._app.router.add_get("/api/tasks", self._handle_tasks)
         self._app.router.add_post("/api/message", self._handle_message)
+        self._app.router.add_post("/api/message/stream", self._handle_message_stream)
         self._app.router.add_post("/api/workflow", self._handle_workflow)
         self._app.router.add_get("/api/metrics", self._handle_metrics)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
@@ -213,6 +214,45 @@ class HttpApi:
             return web.json_response(
                 {"error": "Internal server error"}, status=500,
             )
+
+    async def _handle_message_stream(self, request: web.Request) -> web.StreamResponse:
+        """POST /api/message/stream — Stream a response token by token (SSE)."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        message = body.get("message", "").strip()
+        if not message:
+            return web.json_response({"error": "Missing 'message' field"}, status=400)
+
+        agent_name = body.get("agent")
+        user_id = body.get("user_id", "api-user")
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
+        )
+        await resp.prepare(request)
+
+        try:
+            async for chunk in self.daemon.handle_message_streaming(
+                prompt=message,
+                platform="api",
+                user_id=user_id,
+                agent_name=agent_name,
+            ):
+                if isinstance(chunk, str):
+                    await resp.write(f"data: {json.dumps({'text': chunk})}\n\n".encode())
+                else:
+                    # ClaudeResponse final result
+                    await resp.write(f"data: {json.dumps({'done': True})}\n\n".encode())
+        except Exception:
+            log.exception("API streaming handler error")
+            await resp.write(f"data: {json.dumps({'error': 'Internal error'})}\n\n".encode())
+
+        await resp.write_eof()
+        return resp
 
     async def _handle_workflow(self, request: web.Request) -> web.Response:
         """POST /api/workflow — Run the build quality gate workflow."""
