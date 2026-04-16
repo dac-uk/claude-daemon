@@ -616,22 +616,28 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             body["agent"] = agent
 
         data = json.dumps(body).encode()
+
+        # Use streaming endpoint — tokens appear as they arrive (~2-3s to first token)
         req = urllib.request.Request(
-            f"{base_url}/api/message", data=data, headers=headers, method="POST",
+            f"{base_url}/api/message/stream", data=data, headers=headers, method="POST",
         )
 
-        # Show thinking indicator while waiting
+        # Show spinner until first token arrives
         stop_spinner = threading.Event()
+        first_token = threading.Event()
 
         def _spinner():
             chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
             i = 0
             while not stop_spinner.is_set():
+                if first_token.is_set():
+                    break
                 sys.stdout.write(f"\r\033[36m{chars[i % len(chars)]} thinking...\033[0m")
                 sys.stdout.flush()
                 stop_spinner.wait(0.1)
                 i += 1
-            sys.stdout.write("\r" + " " * 20 + "\r")  # clear spinner
+            if not first_token.is_set():
+                sys.stdout.write("\r" + " " * 20 + "\r")
             sys.stdout.flush()
 
         spinner_thread = threading.Thread(target=_spinner, daemon=True)
@@ -639,16 +645,52 @@ def _cmd_chat(args: argparse.Namespace) -> None:
 
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
-                result = json.loads(resp.read().decode())
-                stop_spinner.set()
-                spinner_thread.join()
-                reply = result.get("result", "(no response)")
-                print(f"\n{reply}\n")
+                got_text = False
+                for raw_line in resp:
+                    line = raw_line.decode().strip()
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        event = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+
+                    if "text" in event:
+                        if not got_text:
+                            # Clear spinner on first token
+                            first_token.set()
+                            stop_spinner.set()
+                            spinner_thread.join()
+                            sys.stdout.write("\r" + " " * 20 + "\r\n")
+                            got_text = True
+                        sys.stdout.write(event["text"])
+                        sys.stdout.flush()
+                    elif event.get("done"):
+                        if event.get("error"):
+                            if not got_text:
+                                first_token.set()
+                                stop_spinner.set()
+                                spinner_thread.join()
+                                sys.stdout.write("\r" + " " * 20 + "\r")
+                            print(f"\nError: {event['error']}")
+                        break
+                    elif "error" in event:
+                        first_token.set()
+                        stop_spinner.set()
+                        spinner_thread.join()
+                        sys.stdout.write("\r" + " " * 20 + "\r")
+                        print(f"\nError: {event['error']}")
+                        break
+
+                if not got_text:
+                    stop_spinner.set()
+                    spinner_thread.join()
+                print("\n")  # End response with newlines
         except KeyboardInterrupt:
             stop_spinner.set()
+            first_token.set()
             spinner_thread.join()
             print("\n\nInterrupted. Type another message or Ctrl+C again to quit.\n")
-            # Catch immediate second Ctrl+C to exit
             try:
                 continue
             except KeyboardInterrupt:

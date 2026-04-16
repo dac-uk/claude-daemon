@@ -273,7 +273,7 @@ class SDKBridgeManager:
             "id": req_id,
             "agent": agent_name,
             "prompt": prompt,
-            "context": effective_context,
+            "context": effective_context or None,
         })
 
         try:
@@ -329,7 +329,7 @@ class SDKBridgeManager:
             "id": req_id,
             "agent": agent_name,
             "prompt": prompt,
-            "context": effective_context,
+            "context": effective_context or None,
         })
 
         try:

@@ -231,7 +231,12 @@ class HttpApi:
 
         resp = web.StreamResponse(
             status=200,
-            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
         await resp.prepare(request)
 

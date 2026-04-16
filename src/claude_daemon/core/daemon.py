@@ -148,6 +148,29 @@ class ClaudeDaemon:
             "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
         }
 
+    async def _precreate_agent_sessions(self) -> None:
+        """Pre-create SDK sessions for all agents so first messages are fast."""
+        if not self.agent_registry or not self.process_manager._sdk_bridge:
+            return
+        created = 0
+        for agent in self.agent_registry:
+            try:
+                model = agent.get_model("default")
+                ok = await self.process_manager.ensure_agent_session(
+                    agent_name=agent.name,
+                    model=model,
+                    system_prompt=agent.build_static_context(),
+                    mcp_config_path=agent.mcp_config_path,
+                    settings_path=agent.settings_path,
+                    agent_workspace=str(agent.workspace),
+                )
+                if ok:
+                    created += 1
+            except Exception:
+                log.debug("Pre-create session failed for %s (non-critical)", agent.name)
+        if created:
+            log.info("Pre-created %d SDK sessions at startup", created)
+
     async def _register_managed_agents(self) -> None:
         """Register all daemon agents with the Managed Agents API."""
         if not self.process_manager or not self.process_manager.managed:
@@ -324,6 +347,10 @@ class ClaudeDaemon:
         )
         log.info("Loaded %d agents: %s",
                  len(self.agent_registry), self.agent_registry.agent_names())
+
+        # Pre-create SDK sessions for all agents in background (warm sessions on startup)
+        if self.config.sdk_bridge_enabled and self.process_manager._sdk_bridge:
+            asyncio.create_task(self._precreate_agent_sessions())
 
         # Register agents with Managed Agents API (if enabled + API key available)
         if self.config.managed_agents_enabled and self.process_manager.managed:
