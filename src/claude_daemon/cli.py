@@ -531,10 +531,10 @@ def _cmd_backend(args: argparse.Namespace) -> None:
 
 def _cmd_chat(args: argparse.Namespace) -> None:
     """Interactive CLI chat with the daemon's agents."""
+    import http.client
     import json
     import threading
-    import urllib.request
-    import urllib.error
+    import urllib.parse
 
     from claude_daemon.core.config import DaemonConfig
 
@@ -617,10 +617,10 @@ def _cmd_chat(args: argparse.Namespace) -> None:
 
         data = json.dumps(body).encode()
 
-        # Use streaming endpoint — tokens appear as they arrive (~2-3s to first token)
-        req = urllib.request.Request(
-            f"{base_url}/api/message/stream", data=data, headers=headers, method="POST",
-        )
+        # Parse the base URL for http.client (unbuffered line-by-line SSE reads)
+        parsed = urllib.parse.urlparse(base_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 8080
 
         # Show spinner until first token arrives
         stop_spinner = threading.Event()
@@ -644,48 +644,62 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         spinner_thread.start()
 
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                got_text = False
-                for raw_line in resp:
-                    line = raw_line.decode().strip()
-                    if not line.startswith("data: "):
-                        continue
-                    try:
-                        event = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
+            # Use http.client directly for unbuffered SSE streaming
+            conn = http.client.HTTPConnection(host, port, timeout=300)
+            conn.request("POST", "/api/message/stream", body=data, headers=headers)
+            resp = conn.getresponse()
 
-                    if "text" in event:
-                        if not got_text:
-                            # Clear spinner on first token
-                            first_token.set()
-                            stop_spinner.set()
-                            spinner_thread.join()
-                            sys.stdout.write("\r" + " " * 20 + "\r\n")
-                            got_text = True
-                        sys.stdout.write(event["text"])
-                        sys.stdout.flush()
-                    elif event.get("done"):
-                        if event.get("error"):
-                            if not got_text:
-                                first_token.set()
-                                stop_spinner.set()
-                                spinner_thread.join()
-                                sys.stdout.write("\r" + " " * 20 + "\r")
-                            print(f"\nError: {event['error']}")
-                        break
-                    elif "error" in event:
+            if resp.status != 200:
+                stop_spinner.set()
+                spinner_thread.join()
+                print(f"\nHTTP {resp.status}: {resp.read().decode()[:200]}\n")
+                conn.close()
+                continue
+
+            got_text = False
+            while True:
+                raw_line = resp.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode().strip()
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+
+                if "text" in event:
+                    if not got_text:
                         first_token.set()
                         stop_spinner.set()
                         spinner_thread.join()
-                        sys.stdout.write("\r" + " " * 20 + "\r")
+                        sys.stdout.write("\r" + " " * 20 + "\r\n")
+                        got_text = True
+                    sys.stdout.write(event["text"])
+                    sys.stdout.flush()
+                elif event.get("done"):
+                    if event.get("error"):
+                        if not got_text:
+                            first_token.set()
+                            stop_spinner.set()
+                            spinner_thread.join()
+                            sys.stdout.write("\r" + " " * 20 + "\r")
                         print(f"\nError: {event['error']}")
-                        break
-
-                if not got_text:
+                    break
+                elif "error" in event:
+                    first_token.set()
                     stop_spinner.set()
                     spinner_thread.join()
-                print("\n")  # End response with newlines
+                    sys.stdout.write("\r" + " " * 20 + "\r")
+                    print(f"\nError: {event['error']}")
+                    break
+
+            conn.close()
+            if not got_text:
+                stop_spinner.set()
+                spinner_thread.join()
+            print("\n")
         except KeyboardInterrupt:
             stop_spinner.set()
             first_token.set()
@@ -696,17 +710,11 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             except KeyboardInterrupt:
                 print("Bye.")
                 break
-        except urllib.error.URLError as e:
+        except ConnectionRefusedError:
             stop_spinner.set()
             spinner_thread.join()
-            reason = getattr(e, "reason", str(e))
             print(f"\nError: Could not connect to daemon at {base_url}")
-            print(f"  Reason: {reason}")
             print("  Is the daemon running? Try: claude-daemon status\n")
-        except urllib.error.HTTPError as e:
-            stop_spinner.set()
-            spinner_thread.join()
-            print(f"\nHTTP {e.code}: {e.read().decode()[:200]}\n")
         except Exception as e:
             stop_spinner.set()
             spinner_thread.join()
