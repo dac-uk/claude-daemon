@@ -170,9 +170,15 @@ class Agent:
 
     @property
     def mcp_lite_config_path(self) -> str | None:
-        """Resolve path to this agent's lite MCP config (chat-optimized), or None."""
+        """Resolve path to this agent's lite MCP config (5 essential servers), or None."""
         path = self.workspace / "tools-lite.json"
         return str(path) if path.exists() else self.mcp_config_path
+
+    @property
+    def mcp_chat_config_path(self) -> str | None:
+        """Resolve path to zero-MCP config for pure chat (no servers = fastest startup)."""
+        path = self.workspace / "tools-chat.json"
+        return str(path) if path.exists() else self.mcp_lite_config_path
 
     @property
     def settings_path(self) -> str | None:

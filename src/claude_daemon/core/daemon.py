@@ -514,6 +514,7 @@ class ClaudeDaemon:
         self, prompt: str, session_id: str | None = None,
         platform: str = "cli", user_id: str = "local",
         agent_name: str | None = None,
+        task_type: str = "chat",
     ) -> str:
         """Buffered message handler with multi-agent routing.
 
@@ -546,6 +547,7 @@ class ClaudeDaemon:
             response = await self.orchestrator.send_to_agent(
                 agent=agent, prompt=cleaned_prompt,
                 session_id=session_id, platform=platform, user_id=user_id,
+                task_type=task_type,
             )
 
             if self.config.daily_log_enabled:

@@ -283,12 +283,13 @@ class Orchestrator:
         if self.hub:
             await self.hub.agent_busy(agent.name, prompt)
 
-        # Use lite MCP config for chat (fewer servers = faster startup)
-        mcp_path = (
-            agent.mcp_lite_config_path
-            if task_type in ("chat", "default")
-            else agent.mcp_config_path
-        )
+        # MCP config tiering: chat=zero servers, default=lite, everything else=full
+        if task_type == "chat":
+            mcp_path = agent.mcp_chat_config_path
+        elif task_type == "default":
+            mcp_path = agent.mcp_lite_config_path
+        else:
+            mcp_path = agent.mcp_config_path
 
         response = await self.pm.send_message(
             prompt=prompt,
@@ -594,12 +595,13 @@ class Orchestrator:
         if self.hub:
             await self.hub.agent_busy(agent.name, prompt)
 
-        # Use lite MCP config for chat (fewer servers = faster startup)
-        mcp_path = (
-            agent.mcp_lite_config_path
-            if task_type in ("chat", "default")
-            else agent.mcp_config_path
-        )
+        # MCP config tiering: chat=zero servers, default=lite, everything else=full
+        if task_type == "chat":
+            mcp_path = agent.mcp_chat_config_path
+        elif task_type == "default":
+            mcp_path = agent.mcp_lite_config_path
+        else:
+            mcp_path = agent.mcp_config_path
 
         async for chunk in self.pm.stream_message(
             prompt=prompt,
