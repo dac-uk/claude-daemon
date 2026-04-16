@@ -482,6 +482,7 @@ elif [ "$OS" = "Darwin" ]; then
 fi
 printf "    ${CYAN}claude-daemon status${NC}                    # Quick check\n"
 printf "    ${CYAN}claude-daemon stop${NC}                      # Stop the daemon\n"
+printf "    ${CYAN}claude-daemon restart${NC}                   # Restart after config changes\n"
 printf "    ${CYAN}claude-daemon chat${NC}                      # Chat from the terminal\n"
 printf "\n"
 

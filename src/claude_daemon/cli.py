@@ -540,9 +540,36 @@ def _cmd_chat(args: argparse.Namespace) -> None:
     config = DaemonConfig.load()
 
     if not config.api_enabled:
-        print("Error: HTTP API is not enabled.")
-        print("Fix: set 'api_enabled: true' in config.yaml, then restart the daemon.")
-        sys.exit(1)
+        # Auto-enable the API in config.yaml so chat works
+        from claude_daemon.utils.paths import config_dir
+        yaml_path = config_dir() / "config.yaml"
+        if yaml_path.exists():
+            content = yaml_path.read_text()
+            # Enable api_enabled (uncomment or set)
+            import re
+            if "api_enabled:" in content:
+                content = re.sub(
+                    r"^(\s*#?\s*api_enabled:\s*).*$",
+                    r"  api_enabled: true",
+                    content,
+                    flags=re.MULTILINE,
+                )
+            else:
+                # Add under daemon section
+                content = content.replace(
+                    "daemon:",
+                    "daemon:\n  api_enabled: true",
+                    1,
+                )
+            yaml_path.write_text(content)
+            print("Enabled HTTP API in config.yaml.")
+            print("Restart the daemon for this to take effect:")
+            print("  claude-daemon restart")
+            sys.exit(0)
+        else:
+            print("Error: HTTP API is not enabled and config.yaml not found.")
+            print("Fix: set 'api_enabled: true' in config.yaml, then restart.")
+            sys.exit(1)
 
     base_url = f"http://127.0.0.1:{config.api_port}"
     headers = {"Content-Type": "application/json"}
