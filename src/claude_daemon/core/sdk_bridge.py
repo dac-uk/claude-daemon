@@ -37,6 +37,8 @@ class SDKBridgeManager:
         self._sessions: dict[str, str] = {}  # agent_name -> session_id
         self._pending: dict[str, asyncio.Future] = {}  # request_id -> Future[dict]
         self._streams: dict[str, asyncio.Queue] = {}  # request_id -> Queue for streaming
+        self._system_prompts: dict[str, str] = {}  # agent_name -> static system prompt
+        self._first_message: dict[str, bool] = {}  # agent_name -> True if first message sent
         self._reader_task: asyncio.Task | None = None
         self._started = False
 
@@ -210,21 +212,24 @@ class SDKBridgeManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         resume_session_id: str | None = None,
+        agent_workspace: str | None = None,
     ) -> str | None:
         """Create a persistent session for an agent. Returns session_id or None."""
         req_id = self._new_id()
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = future
 
+        # Store system prompt to inject in first message
+        if system_prompt:
+            self._system_prompts[agent_name] = system_prompt
+
         await self._send_command({
             "cmd": "create",
             "id": req_id,
             "agent": agent_name,
             "model": model,
-            "systemPrompt": system_prompt,
-            "mcpConfig": mcp_config_path,
-            "settingsPath": settings_path,
             "permissionMode": self.config.permission_mode,
+            "cwd": agent_workspace,
             "resumeSessionId": resume_session_id,
         })
 
@@ -255,12 +260,20 @@ class SDKBridgeManager:
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = future
 
+        # Inject static system prompt on first message to this agent
+        effective_context = context
+        if agent_name not in self._first_message:
+            self._first_message[agent_name] = True
+            sys_prompt = self._system_prompts.get(agent_name, "")
+            if sys_prompt:
+                effective_context = sys_prompt + ("\n\n" + context if context else "")
+
         await self._send_command({
             "cmd": "send",
             "id": req_id,
             "agent": agent_name,
             "prompt": prompt,
-            "context": context,
+            "context": effective_context,
         })
 
         try:

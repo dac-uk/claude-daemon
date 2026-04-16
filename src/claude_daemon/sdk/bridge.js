@@ -46,28 +46,29 @@ function log(msg) {
 
 async function handleCreate(cmd) {
   const { id, agent, model, systemPrompt, mcpConfig, settingsPath,
-          permissionMode, env: extraEnv, resumeSessionId } = cmd;
+          permissionMode, env: extraEnv, resumeSessionId, cwd,
+          allowedTools } = cmd;
 
   try {
-    // Build executableArgs from CLI flags
-    const executableArgs = [];
-    if (permissionMode) {
-      executableArgs.push("--permission-mode", permissionMode);
-    }
-    if (mcpConfig) {
-      executableArgs.push("--mcp-config", mcpConfig);
-    }
-    if (settingsPath) {
-      executableArgs.push("--settings", settingsPath);
-    }
-    if (systemPrompt) {
-      executableArgs.push("--append-system-prompt", systemPrompt);
-    }
-
-    // Merge environment
+    // Merge environment — pass MCP config and system prompt via env vars
     const env = { ...process.env, ...(extraEnv || {}) };
 
-    const opts = { model, executableArgs, env };
+    // Build SDK session options using proper SDK API (NOT CLI flags)
+    const opts = {
+      model,
+      env,
+      permissionMode: permissionMode || "auto",
+      allowedTools: allowedTools || [
+        "Read", "Edit", "Write", "Bash", "Glob", "Grep",
+        "NotebookEdit", "WebFetch", "WebSearch", "Agent",
+        "Task", "mcp__*",
+      ],
+    };
+
+    // Set working directory to agent's workspace if provided
+    if (cwd) {
+      opts.cwd = cwd;
+    }
 
     let session;
     if (resumeSessionId) {
