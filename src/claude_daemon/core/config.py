@@ -137,6 +137,8 @@ class DaemonConfig:
     paperclip_url: str | None = None
     paperclip_api_key: str | None = None
     paperclip_poll_interval: int = 5
+    paperclip_task_limit: int = 5          # Tasks per poll cycle
+    paperclip_startup_timeout: int = 30    # Seconds to wait for registration
 
     # Derived paths
     @property
@@ -291,4 +293,6 @@ class DaemonConfig:
             paperclip_url=os.environ.get("PAPERCLIP_URL") or pc_cfg.get("url"),
             paperclip_api_key=os.environ.get("PAPERCLIP_API_KEY") or pc_cfg.get("api_key"),
             paperclip_poll_interval=int(pc_cfg.get("poll_interval", 5)),
+            paperclip_task_limit=int(pc_cfg.get("task_limit", 5)),
+            paperclip_startup_timeout=int(pc_cfg.get("startup_timeout", 30)),
         )

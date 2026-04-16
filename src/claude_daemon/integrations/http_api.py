@@ -58,6 +58,7 @@ class HttpApi:
         self._app.router.add_post("/api/mcp/refresh", self._handle_mcp_refresh)
         self._app.router.add_post("/api/settings/thinking", self._handle_settings_thinking)
         self._app.router.add_post("/api/settings/effort", self._handle_settings_effort)
+        self._app.router.add_post("/api/paperclip/heartbeat", self._handle_paperclip_heartbeat)
         self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
         self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
         self._app.router.add_get("/api/discussions", self._handle_discussions)
@@ -405,6 +406,51 @@ class HttpApi:
         return web.json_response(
             {"status": "accepted", "agent": agent_name}, status=202,
         )
+
+    async def _handle_paperclip_heartbeat(self, request: web.Request) -> web.Response:
+        """POST /api/paperclip/heartbeat — Receive a Paperclip heartbeat.
+
+        Paperclip pushes tasks to agents via webhooks. This endpoint accepts
+        the heartbeat payload, routes the task to the appropriate daemon agent,
+        and returns the result synchronously.
+        """
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        # Find the Paperclip integration
+        pc = self.daemon.router.integrations.get("paperclip") if self.daemon.router else None
+        if not pc:
+            # No Paperclip integration running — handle directly via daemon
+            prompt = body.get("prompt") or body.get("description", "")
+            if not prompt:
+                task = body.get("task", {})
+                prompt = task.get("prompt") or task.get("description", "")
+            if not prompt:
+                return web.json_response({"error": "No prompt in payload"}, status=400)
+
+            agent_name = body.get("agent") or body.get("assigned_to")
+            try:
+                result = await self.daemon.handle_message(
+                    prompt=prompt,
+                    platform="paperclip",
+                    user_id=body.get("created_by", "paperclip"),
+                    agent_name=agent_name,
+                )
+                return web.json_response({"status": "ok", "result": result})
+            except Exception:
+                log.exception("Paperclip heartbeat handler error")
+                return web.json_response({"error": "Processing failed"}, status=500)
+
+        # Route through Paperclip integration (has handler + cost reporting)
+        try:
+            result = await pc.handle_heartbeat(body)
+            status = 200 if result.get("status") == "ok" else 500
+            return web.json_response(result, status=status)
+        except Exception:
+            log.exception("Paperclip heartbeat handler error")
+            return web.json_response({"error": "Processing failed"}, status=500)
 
     async def _handle_audit(self, request: web.Request) -> web.Response:
         """GET /api/audit?action=agent_message&agent=albert&limit=50&offset=0"""

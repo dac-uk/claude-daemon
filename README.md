@@ -332,6 +332,71 @@ All commands are available on **both** Telegram and Discord with full feature pa
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
+## Paperclip Integration
+
+[Paperclip](https://paperclip.ing/) is an open-source orchestration platform that organises AI agents into an autonomous company with goals, budgets, org charts, and governance. The daemon integrates with Paperclip in two complementary modes:
+
+### How it works
+
+**Mode 1 — Polling (daemon pulls tasks):** The daemon polls Paperclip's API for pending tasks every N seconds, processes them through the agent team, and returns results with cost data.
+
+**Mode 2 — Heartbeat webhook (Paperclip pushes tasks):** Paperclip POSTs tasks directly to your daemon's webhook endpoint. This is Paperclip's canonical "heartbeat" pattern — the daemon responds synchronously with the result.
+
+Both modes run simultaneously. Heartbeat is lower latency; polling is the fallback.
+
+### Setup
+
+1. Set env vars:
+```bash
+claude-daemon env set PAPERCLIP_URL=https://your-paperclip-instance.com
+claude-daemon env set PAPERCLIP_API_KEY=pk_live_...
+```
+
+2. In Paperclip, register an HTTP agent pointing to your daemon:
+```
+Webhook URL:  http://your-daemon-ip:8080/api/paperclip/heartbeat
+Auth Header:  Authorization: Bearer <your-daemon-api-key>
+```
+
+3. Restart the daemon. It registers as `claude-daemon` with capabilities `[code, analysis, general]`.
+
+### Agent mapping
+
+Paperclip tasks can target specific daemon agents. If a task includes an `agent` or `assigned_to` field, the daemon routes it to that agent:
+
+```json
+{"prompt": "Review the auth module", "agent": "max"}
+```
+
+This routes to Max (CPO/QA). If no agent is specified, Johnny (orchestrator) handles routing automatically.
+
+### Cost tracking
+
+Every task completion reports cost data back to Paperclip:
+```json
+{
+  "result": "Review complete. Found 3 issues...",
+  "agent": "max",
+  "cost_usd": 0.12,
+  "input_tokens": 2400,
+  "output_tokens": 800
+}
+```
+
+Paperclip uses this for budget enforcement and spend analytics.
+
+### Configuration
+
+```yaml
+integrations:
+  paperclip:
+    enabled: false
+    poll_interval: 5        # Seconds between task polls
+    task_limit: 5           # Max tasks per poll cycle
+    startup_timeout: 30     # Seconds to wait for registration
+    # URL and API key loaded from env vars: PAPERCLIP_URL, PAPERCLIP_API_KEY
+```
+
 ## Channel Setup Guide
 
 This section walks you through connecting the daemon to Telegram and/or Discord from scratch. You don't need both — pick whichever you use.

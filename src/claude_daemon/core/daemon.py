@@ -923,6 +923,8 @@ class ClaudeDaemon:
                     url=self.config.paperclip_url,
                     api_key=self.config.paperclip_api_key or "",
                     poll_interval=self.config.paperclip_poll_interval,
+                    task_limit=self.config.paperclip_task_limit,
+                    startup_timeout=self.config.paperclip_startup_timeout,
                 )
                 pc.set_message_handler(self.router.handle_incoming)
                 self.router.register("paperclip", pc)
