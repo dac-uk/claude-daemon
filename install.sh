@@ -102,13 +102,12 @@ fi
 
 # Python 3.14+ is too new — many packages lack wheels. Try to find 3.12 or 3.13.
 if [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -ge 14 ]; then
-    warn "Python $PY_VERSION is very new — some dependencies may lack binary wheels"
-    # Try to find a stable Python (3.13, 3.12, 3.11)
+    # Try to find a stable Python (3.13, 3.12, 3.11) before warning
     FOUND_STABLE=false
     for candidate in python3.13 python3.12 python3.11; do
         if command -v "$candidate" &>/dev/null; then
             STABLE_VER=$($candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-            info "Found $candidate ($STABLE_VER) — using it instead"
+            info "System Python is $PY_VERSION — switching to $candidate ($STABLE_VER)"
             PYTHON="$candidate"
             PY_VERSION="$STABLE_VER"
             FOUND_STABLE=true
@@ -116,7 +115,8 @@ if [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -ge 14 ]; then
         fi
     done
     if [ "$FOUND_STABLE" = false ]; then
-        warn "No stable Python 3.11-3.13 found. Install may fail if packages lack 3.14 support."
+        warn "Python $PY_VERSION is very new — some dependencies may lack binary wheels."
+        warn "No stable Python 3.11-3.13 found. Install may fail."
         info "Fix: brew install python@3.13 (macOS) or apt install python3.13 (Linux)"
     fi
 fi
@@ -182,14 +182,26 @@ cd "$REPO_DIR"
 # Always use a virtual environment — avoids PEP 668 "externally-managed-environment"
 # errors on macOS Homebrew, modern Debian/Ubuntu, Fedora, etc.
 VENV_DIR="$REPO_DIR/.venv"
+NEED_VENV=false
 if [ ! -d "$VENV_DIR" ]; then
-    info "Creating virtual environment at $VENV_DIR"
+    NEED_VENV=true
+elif [ -x "$VENV_DIR/bin/python" ]; then
+    # Recreate if venv Python version doesn't match the selected Python
+    VENV_PY=$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "unknown")
+    if [ "$VENV_PY" != "$PY_VERSION" ]; then
+        info "Venv Python ($VENV_PY) differs from selected Python ($PY_VERSION) — recreating"
+        rm -rf "$VENV_DIR"
+        NEED_VENV=true
+    fi
+fi
+if [ "$NEED_VENV" = true ]; then
+    info "Creating virtual environment at $VENV_DIR (Python $PY_VERSION)"
     if ! $PYTHON -m venv "$VENV_DIR" 2>&1; then
         fail "Failed to create virtual environment. Ensure python3-venv is installed."
     fi
     ok "Virtual environment created"
 else
-    ok "Virtual environment exists at $VENV_DIR"
+    ok "Virtual environment at $VENV_DIR (Python $PY_VERSION)"
 fi
 PYTHON="$VENV_DIR/bin/python"
 PIP="$VENV_DIR/bin/pip"

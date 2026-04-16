@@ -91,9 +91,15 @@ class MessageRouter:
             integration = self.integrations.get(message.platform)
             if integration:
                 channel = message.channel_id or message.user_id
+                # Pass message metadata through for integrations that use it
+                # (e.g. Paperclip uses task_id for completion reporting)
+                send_kwargs: dict = {}
+                if message.metadata:
+                    send_kwargs["task_id"] = message.message_id
+                    send_kwargs["metadata"] = message.metadata
                 chunks = self._split_message(response, message.platform)
                 for chunk in chunks:
-                    await integration.send_response(channel, chunk)
+                    await integration.send_response(channel, chunk, **send_kwargs)
 
             return response
 
