@@ -627,17 +627,27 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         first_token = threading.Event()
 
         def _spinner():
-            chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            frames = [
+                "⠋ thinking   ",
+                "⠙ thinking.  ",
+                "⠹ thinking.. ",
+                "⠸ thinking...",
+                "⠼ thinking   ",
+                "⠴ thinking.  ",
+                "⠦ thinking.. ",
+                "⠧ thinking...",
+                "⠇ thinking   ",
+                "⠏ thinking.  ",
+            ]
             i = 0
             while not stop_spinner.is_set():
                 if first_token.is_set():
                     break
-                sys.stdout.write(f"\r\033[36m{chars[i % len(chars)]} thinking...\033[0m")
+                sys.stdout.write(f"\r\033[36m{frames[i % len(frames)]}\033[0m")
                 sys.stdout.flush()
-                stop_spinner.wait(0.1)
+                stop_spinner.wait(0.12)
                 i += 1
-            if not first_token.is_set():
-                sys.stdout.write("\r" + " " * 20 + "\r")
+            sys.stdout.write("\r" + " " * 20 + "\r")
             sys.stdout.flush()
 
         spinner_thread = threading.Thread(target=_spinner, daemon=True)

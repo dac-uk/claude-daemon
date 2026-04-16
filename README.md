@@ -1019,57 +1019,182 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
 
 ## Architecture
 
-```
-Telegram / Discord / CLI / HTTP API / Webhooks
-              |
-     (cross-platform session lookup by user_id)
-              |
-              v
-     MessageRouter (normalize, rate-limit, route)
-              |
-    _resolve_agent()
-    - Per-channel binding (agent_channels config)
-    - Explicit: @albert or /luna prefix
-    - Default: johnny (orchestrator)
-              |
-     WorkflowEngine (for multi-step tasks)
-     - Pipeline / Parallel / Review Loop
-              |
-     spawn_task() for background parallel work
-              |
-              v
-  Orchestrator.send_to_agent(agent, model, mcp_config)
-     → [DELEGATE:name] tag processing for inter-agent calls
-              |
-    agent.build_system_context()
-    SOUL + IDENTITY + AGENTS + Planning Protocol +
-    USER + TOOLS + MEMORY + REFLECTIONS +
-    Steering + Events + Playbooks + Learnings
-              |
-              v
-  ProcessManager (model, mcp_config, --resume)
-    _should_use_managed(task_type)?
-    ├── chat/heartbeat/routing → CLI subprocess (fast, local)
-    └── planning/workflow/rem_sleep/improvement → Managed Agents API
-                                                  └── fallback → CLI on failure
-              |
-              v
-  ClaudeResponse → SQLite + FTS5 → agent_metrics → daily log → user
+### System Overview
 
-  Scheduler (APScheduler)
-    - Dreaming: deep sleep (4 AM), REM sleep (Sunday 5 AM)
-    - Improvement: self-assessments → learning synthesis → improvement plan
-                   → EvolutionActuator (SOUL.md/AGENTS.md mutations)
-    - FailureAnalyzer: auto-classify errors → extract lessons → shared/failure-lessons.md
-    - Agent heartbeats: from HEARTBEAT.md (research, audits, reports)
-    - Per-agent memory compaction (nightly) → EmbeddingStore reindex
-    - Watchdog ping (60s) → sd_notify("WATCHDOG=1")
-
-  EmbeddingStore (sqlite-vec)
-    - Semantic search over memory, playbooks, reflections, failure lessons
-    - Queried before build_system_context() → injects Tier 2 relevant matches
-    - Reindexed nightly during deep sleep
 ```
+┌──────────────────────────────────────────────────────────────────┐
+│  Frontends                                                        │
+│  Telegram · Discord · CLI chat · HTTP API · Webhooks · Dashboard │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │
+                    ┌───────▼───────┐
+                    │    Daemon     │   Python async (aiohttp)
+                    │  daemon.py    │   launchd/systemd service
+                    └───────┬───────┘
+                            │
+              ┌─────────────▼─────────────┐
+              │       Orchestrator        │   Routes messages to agents
+              │     orchestrator.py       │   Processes delegation tags
+              │                           │   [DELEGATE] [HELP] [DISCUSS]
+              │  _resolve_agent()         │   [COUNCIL] [OPTIMIZE]
+              │  send_to_agent()          │
+              │  stream_to_agent()        │
+              └─────────────┬─────────────┘
+                            │
+         ┌──────────────────▼──────────────────┐
+         │          ProcessManager             │   Triple-backend execution
+         │           process.py                │
+         │                                     │
+         │  1. SDK Bridge (preferred)          │   Persistent sessions
+         │     └─ ~2-5s per message            │   via Agent SDK
+         │  2. Managed Agents API              │   Anthropic-hosted
+         │     └─ for long-running tasks       │   (optional, API key)
+         │  3. CLI subprocess (fallback)       │   claude --print
+         │     └─ ~15-25s per message          │   always available
+         └──────────┬──────────────────────────┘
+                    │
+    ┌───────────────▼───────────────┐
+    │       SDK Bridge Manager      │   Python ↔ Node.js NDJSON protocol
+    │        sdk_bridge.py          │
+    └───────────────┬───────────────┘
+                    │ stdin/stdout
+    ┌───────────────▼───────────────┐
+    │     Node.js Bridge Process    │   @anthropic-ai/claude-agent-sdk
+    │         sdk/bridge.js         │   v2 API (persistent sessions)
+    │                               │
+    │  Sessions: Map<agent, SDK>    │   One SDKSession per agent
+    │  johnny  → SDKSession (warm)  │   MCP servers stay initialized
+    │  albert  → SDKSession (warm)  │   OAuth token stays validated
+    │  luna    → SDKSession (warm)  │   No per-message startup cost
+    │  ...                          │
+    └───────────────┬───────────────┘
+                    │
+    ┌───────────────▼───────────────┐
+    │     Claude Code Processes     │   One per agent (persistent)
+    │  MCP servers · OAuth · Model  │   Initialized once at startup
+    │  41 servers available         │   Reused across all messages
+    └───────────────┬───────────────┘
+                    │
+              ┌─────▼─────┐
+              │ Anthropic  │   claude-sonnet-4-6 / opus / haiku
+              │    API     │   ~3-4s round-trip per message
+              └────────────┘
+```
+
+### Message Flow (CLI Chat Example)
+
+```
+User types "hey, how are you?" in terminal
+  │
+  ├─ CLI sends POST /api/message/stream (SSE)
+  │    via http.client (unbuffered line-by-line reads)
+  │
+  ├─ Daemon resolves agent → johnny (orchestrator)
+  │
+  ├─ Orchestrator checks: SDK session warm for johnny?
+  │    ├─ YES → send via SDK bridge (fast path, ~2-5s)
+  │    └─ NO  → create session, or fall back to subprocess
+  │
+  ├─ SDK bridge writes to johnny's SDKSession stdin
+  │    session.send(prompt) → session.stream()
+  │
+  ├─ Tokens stream back:
+  │    bridge.js → NDJSON stdout → sdk_bridge.py → SSE events → CLI
+  │    {"event":"text","text":"Hey"} → data: {"text":"Hey"}\n\n
+  │
+  ├─ CLI: spinner clears on first token (~2-3s)
+  │         text streams live word-by-word
+  │
+  └─ Final result stored in SQLite + agent metrics updated
+```
+
+### Agent System
+
+Each agent has an identity workspace at `~/.config/claude-daemon/agents/{name}/`:
+
+```
+agents/
+├── johnny/          CEO · Orchestrator · Routes and delegates
+│   ├── SOUL.md          Core identity, values, leadership style
+│   ├── IDENTITY.md      Name, role, emoji, model routing
+│   ├── AGENTS.md        Operating rules, communication tags
+│   ├── MEMORY.md        Persistent memory (decisions, preferences)
+│   ├── GOTCHAS.md       Failure-point documentation (high priority)
+│   ├── REFLECTIONS.md   Self-assessment insights
+│   ├── HEARTBEAT.md     Autonomous recurring tasks
+│   ├── tools.json       MCP server configuration (41 servers)
+│   └── settings.json    Permissions, thinking, deny rules
+├── albert/          CIO · Backend, APIs, architecture
+├── luna/            Head of Design · UI, frontend, animation
+├── max/             CPO · QA, testing, product review
+├── penny/           CFO · Cost tracking, financial analysis
+├── jeremy/          CRO · Security, risk, compliance
+└── sophie/          CLO · Legal research, regulatory
+```
+
+**Context injection** is split between static and dynamic:
+- **Static** (set once at session creation): SOUL.md, IDENTITY.md, AGENTS.md, GOTCHAS.md, planning protocol, communication tags, memory
+- **Dynamic** (injected per message): semantic memory matches, recent agent events, team learnings
+
+### Scheduled Systems
+
+```
+Scheduler (APScheduler)
+  ├── Dreaming
+  │   ├── Light sleep: signal detection (continuous)
+  │   ├── Deep sleep: nightly consolidation + memory compaction (4 AM)
+  │   └── REM sleep: weekly rewrite + self-reflection (Sunday 5 AM)
+  │
+  ├── Self-Improvement
+  │   ├── Agent self-assessments → cross-agent learning synthesis
+  │   ├── Improvement plan generation → EvolutionActuator
+  │   └── SOUL.md / AGENTS.md mutations (dry-run by default)
+  │
+  ├── Failure Analysis
+  │   └── Auto-classify errors via Haiku → extract lessons → shared/
+  │
+  ├── Agent Heartbeats (from HEARTBEAT.md per agent)
+  │   ├── Penny: cost audit (8 AM)
+  │   ├── Jeremy: security scan (2 AM)
+  │   ├── Johnny: morning briefing
+  │   └── Albert: tech debt audit
+  │
+  ├── Memory Compaction (nightly per agent)
+  │   └── EmbeddingStore reindex (sqlite-vec, Voyage AI)
+  │
+  └── Watchdog ping (60s) → sd_notify("WATCHDOG=1")
+```
+
+### Data Storage
+
+```
+~/.config/claude-daemon/
+├── daemon.db          SQLite: conversations, messages, metrics, audit log, tasks
+│   ├── FTS5 index     Full-text search over conversation history
+│   └── agent_metrics  Per-agent cost, tokens, duration, success rate
+├── agents/            Agent identity workspaces (see above)
+├── shared/            Cross-agent shared state
+│   ├── DIRECTIVE.md   Team operating directive (never truncated)
+│   ├── events.md      Recent agent activity feed
+│   ├── learnings.md   Cross-agent synthesized learnings
+│   ├── playbooks/     Lessons learned (compounding knowledge)
+│   ├── discussions/   Council/discussion transcripts (markdown)
+│   └── failure-lessons.md   Extracted failure patterns
+├── memory/            Durable memory (soul, daily logs)
+├── config.yaml        Daemon configuration
+└── .env               Secrets and tokens
+```
+
+### Authentication
+
+Two modes, both handled transparently by ProcessManager:
+
+| Mode | Env Var | Persistent Sessions | Billing |
+|------|---------|-------------------|---------|
+| **OAuth** (recommended) | `CLAUDE_CODE_OAUTH_TOKEN` | Yes (SDK bridge) | Claude Max/Pro subscription |
+| **API Key** | `ANTHROPIC_API_KEY` | No (subprocess only) | Per-token API billing |
+
+OAuth tokens are generated via `claude setup-token` and last ~1 year. The SDK bridge uses the token to maintain persistent Claude Code processes that stay warm between messages.
 
 ## Configuration
 
