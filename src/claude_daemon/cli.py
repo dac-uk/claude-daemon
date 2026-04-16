@@ -532,6 +532,7 @@ def _cmd_backend(args: argparse.Namespace) -> None:
 def _cmd_chat(args: argparse.Namespace) -> None:
     """Interactive CLI chat with the daemon's agents."""
     import json
+    import threading
     import urllib.request
     import urllib.error
 
@@ -620,7 +621,6 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         )
 
         # Show thinking indicator while waiting
-        import threading
         stop_spinner = threading.Event()
 
         def _spinner():
@@ -644,6 +644,16 @@ def _cmd_chat(args: argparse.Namespace) -> None:
                 spinner_thread.join()
                 reply = result.get("result", "(no response)")
                 print(f"\n{reply}\n")
+        except KeyboardInterrupt:
+            stop_spinner.set()
+            spinner_thread.join()
+            print("\n\nInterrupted. Type another message or Ctrl+C again to quit.\n")
+            # Catch immediate second Ctrl+C to exit
+            try:
+                continue
+            except KeyboardInterrupt:
+                print("Bye.")
+                break
         except urllib.error.URLError as e:
             stop_spinner.set()
             spinner_thread.join()

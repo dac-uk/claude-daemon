@@ -54,7 +54,7 @@ class DaemonConfig:
     agent_deny_rules: list[str] = field(default_factory=list)  # Extra deny rules appended to defaults
 
     # Persistent sessions (keep claude process alive between messages for speed)
-    persistent_sessions: bool = True  # Use persistent sessions for chat (eliminates startup overhead)
+    persistent_sessions: bool = False  # Disabled by default until protocol is verified on real machines
     persistent_idle_timeout: int = 300  # Kill idle persistent session after N seconds
     persistent_max_messages: int = 100  # Restart persistent session after N messages (prevent context bloat)
 
