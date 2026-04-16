@@ -289,15 +289,6 @@ else
     ok "Created $YAML_FILE"
 fi
 
-# Copy .env template (never overwrite)
-if [ -f "$ENV_FILE" ]; then
-    ok ".env already exists — skipping"
-else
-    cp "$REPO_DIR/.env.example" "$ENV_FILE"
-    ok "Created $ENV_FILE"
-fi
-
-# -- 5. Interactive token setup ------------------------------------------------
 # Helper: set a value in the .env file (append or update)
 _set_env() {
     local key="$1" value="$2"
@@ -310,6 +301,36 @@ _set_env() {
     fi
 }
 
+# Always ensure API is enabled (required for claude-daemon chat)
+if grep -q '^\s*#\s*api_enabled:\s*true' "$YAML_FILE" 2>/dev/null; then
+    sed -i.bak 's|^\(\s*\)#\s*api_enabled:\s*true|\1api_enabled: true|' "$YAML_FILE" && rm -f "${YAML_FILE}.bak"
+    ok "HTTP API enabled in config.yaml"
+elif grep -q '^\s*api_enabled:\s*false' "$YAML_FILE" 2>/dev/null; then
+    sed -i.bak 's|^\(\s*\)api_enabled:\s*false|\1api_enabled: true|' "$YAML_FILE" && rm -f "${YAML_FILE}.bak"
+    ok "HTTP API enabled in config.yaml"
+elif ! grep -q 'api_enabled:\s*true' "$YAML_FILE" 2>/dev/null; then
+    # Not present at all — add it
+    sed -i.bak 's|^daemon:|daemon:\n  api_enabled: true|' "$YAML_FILE" && rm -f "${YAML_FILE}.bak"
+    ok "HTTP API enabled in config.yaml"
+fi
+
+# Auto-generate API key if not set (secures the HTTP API)
+if ! grep -q "^CLAUDE_DAEMON_API_KEY=" "$ENV_FILE" 2>/dev/null || \
+   grep -q "^CLAUDE_DAEMON_API_KEY=$" "$ENV_FILE" 2>/dev/null; then
+    AUTO_KEY=$($PYTHON -c 'import secrets; print(secrets.token_urlsafe(32))')
+    _set_env "CLAUDE_DAEMON_API_KEY" "$AUTO_KEY"
+    ok "Auto-generated API key (secures HTTP API + chat)"
+fi
+
+# Copy .env template (never overwrite)
+if [ -f "$ENV_FILE" ]; then
+    ok ".env already exists — skipping"
+else
+    cp "$REPO_DIR/.env.example" "$ENV_FILE"
+    ok "Created $ENV_FILE"
+fi
+
+# -- 5. Interactive token setup ------------------------------------------------
 # Only run interactive setup if stdin is a terminal (not piped) and not --update
 INTERACTIVE=false
 if [ -t 0 ] && [ "$UPDATE_ONLY" = false ]; then
