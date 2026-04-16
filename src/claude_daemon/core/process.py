@@ -105,6 +105,7 @@ class ProcessManager:
         self._active: dict[str, ActiveSession] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._confirmed_sessions: set[str] = set()  # sessions Claude Code has seen
+        self._prewarmed: dict[str, str] = {}  # agent_name -> prewarmed session_id
         self._managed: "ManagedAgentBackend | None" = None  # lazy init
 
     def get_agent_semaphore(self, agent_name: str, max_per_agent: int = 3) -> asyncio.Semaphore:
@@ -134,6 +135,63 @@ class ProcessManager:
                     del self._session_locks[k]
             self._session_locks[session_id] = asyncio.Lock()
         return self._session_locks[session_id]
+
+    async def prewarm_session(
+        self,
+        agent_name: str,
+        mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+        model_override: str | None = None,
+    ) -> None:
+        """Pre-warm a Claude Code session in the background.
+
+        Sends a minimal prompt to initialize the runtime (MCP servers, plugins,
+        auth). The resulting session_id is cached so the next real message can
+        --resume into a warm session.
+        """
+        if agent_name in self._prewarmed:
+            return  # Already pre-warmed
+
+        try:
+            args = [
+                self.config.claude_binary,
+                "--print",
+                "--output-format", "json",
+                "--permission-mode", self.config.permission_mode,
+            ]
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                args.append("--bare")
+            model = model_override or self.config.default_model
+            if model:
+                args.extend(["--model", model])
+            if mcp_config_path:
+                args.extend(["--mcp-config", mcp_config_path])
+            if settings_path:
+                args.extend(["--settings", settings_path])
+            args.append("Respond with exactly: READY")
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._subprocess_env(),
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+
+            if proc.returncode == 0 and stdout:
+                raw = stdout.decode().strip()
+                data = json.loads(raw)
+                session_id = data.get("session_id", "")
+                if session_id:
+                    self._confirmed_sessions.add(session_id)
+                    self._prewarmed[agent_name] = session_id
+                    log.info("Pre-warmed session for %s: %s", agent_name, session_id[:12])
+        except Exception:
+            log.debug("Pre-warm failed for %s (non-critical)", agent_name)
+
+    def get_prewarmed_session(self, agent_name: str) -> str | None:
+        """Consume a pre-warmed session ID for an agent (one-time use)."""
+        return self._prewarmed.pop(agent_name, None)
 
     @property
     def managed(self) -> "ManagedAgentBackend | None":

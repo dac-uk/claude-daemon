@@ -29,9 +29,9 @@ CSUITE_AGENTS = [
         "name": "johnny",
         "role": "CEO",
         "emoji": "\U0001f3af",
-        "default_model": "opus",
+        "default_model": "sonnet",
         "planning_model": "opus",
-        "chat_model": "opus",
+        "chat_model": "sonnet",
         "scheduled_model": "haiku",
         "is_orchestrator": True,
         "soul": (
@@ -915,6 +915,27 @@ def generate_mcp_config(disabled_servers: list[str] | None = None) -> dict:
     return {"mcpServers": servers}
 
 
+# Lite MCP servers — minimal set for conversational chat (fast startup)
+LITE_MCP_SERVERS = {"memory", "fetch", "context7", "time", "git"}
+
+
+def generate_lite_mcp_config(
+    disabled_servers: list[str] | None = None,
+) -> dict:
+    """Generate a minimal MCP config for chat tasks (fast startup).
+
+    Only includes essential servers for conversation — no heavy infrastructure
+    tools. Falls back to full config if a lite server is disabled.
+    """
+    full_config = generate_mcp_config(disabled_servers)
+    lite_servers = {
+        name: entry
+        for name, entry in full_config.get("mcpServers", {}).items()
+        if name in LITE_MCP_SERVERS
+    }
+    return {"mcpServers": lite_servers}
+
+
 # ---------------------------------------------------------------------------
 # Agent settings.json — autonomy-first permissions with safety deny rules
 # ---------------------------------------------------------------------------
@@ -985,6 +1006,9 @@ def refresh_agent_configs(
     server_count = len(mcp_config.get("mcpServers", {}))
     mcp_payload = json.dumps(mcp_config, indent=2) + "\n"
 
+    lite_config = generate_lite_mcp_config(disabled_servers)
+    lite_payload = json.dumps(lite_config, indent=2) + "\n"
+
     settings = generate_agent_settings(
         deny_rules=deny_rules, thinking_enabled=thinking_enabled,
     )
@@ -997,6 +1021,7 @@ def refresh_agent_configs(
     for child in sorted(agents_dir.iterdir()):
         if child.is_dir() and (child / "IDENTITY.md").exists():
             (child / "tools.json").write_text(mcp_payload)
+            (child / "tools-lite.json").write_text(lite_payload)
             (child / "settings.json").write_text(settings_payload)
             results[child.name] = server_count
 
