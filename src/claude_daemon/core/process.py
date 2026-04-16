@@ -180,9 +180,13 @@ class ProcessManager:
             self.config.claude_binary,
             "--print",
             "--output-format", output_format,
-            "--bare",
             "--permission-mode", self.config.permission_mode,
         ]
+
+        # Use --bare when API key auth is available (faster, no hooks/LSP overhead).
+        # Skip --bare for OAuth/subscription users — bare blocks keychain/OAuth reads.
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            args.append("--bare")
 
         tracking_id = session_id or str(uuid.uuid4())
         if session_id and session_id in self._confirmed_sessions:

@@ -533,6 +533,16 @@ printf "    Set tokens to enable more:  ${CYAN}claude-daemon env set TAVILY_API_
 printf "    View all servers:           ${CYAN}claude-daemon mcp list${NC}\n"
 printf "\n"
 
+printf "  ${BOLD}Claude Auth:${NC}\n"
+if grep -q "^ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null && ! grep -q "^ANTHROPIC_API_KEY=$" "$ENV_FILE" 2>/dev/null; then
+    printf "    ${GREEN}API key configured${NC} — daemon uses API key auth\n"
+else
+    printf "    Using OAuth (Claude Pro/Max subscription).\n"
+    printf "    If not logged in yet, run: ${CYAN}claude /login${NC}\n"
+    printf "    Or set an API key:         ${CYAN}claude-daemon env set ANTHROPIC_API_KEY=sk-ant-...${NC}\n"
+fi
+printf "\n"
+
 if [ "$INTERACTIVE" = true ]; then
     printf "  ${YELLOW}What's next:${NC}\n"
     printf "    1. Set up channels — see the Channel Setup Guide in README.md\n"
