@@ -327,8 +327,8 @@ class ProcessManager:
                 # Fall through to CLI execution
 
         # SDK bridge routing — persistent sessions (fast, no subprocess spawn)
-        # Only for chat/default tasks where the pre-created session model matches.
-        # Planning/workflow/scheduled tasks may need different models → subprocess.
+        # Chat/default tasks use the pre-created session. Planning/workflow/scheduled
+        # tasks use subprocess with the correct model (opus, haiku, etc.).
         if (agent_name and task_type in ("chat", "default")
                 and self._sdk_bridge and self._sdk_bridge.has_session(agent_name)):
             try:
