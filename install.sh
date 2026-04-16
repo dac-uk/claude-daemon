@@ -99,6 +99,27 @@ PY_MINOR=$($PYTHON -c 'import sys; print(sys.version_info.minor)')
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
     fail "Python >= 3.10 required (found $PY_VERSION)"
 fi
+
+# Python 3.14+ is too new — many packages lack wheels. Try to find 3.12 or 3.13.
+if [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -ge 14 ]; then
+    warn "Python $PY_VERSION is very new — some dependencies may lack binary wheels"
+    # Try to find a stable Python (3.13, 3.12, 3.11)
+    FOUND_STABLE=false
+    for candidate in python3.13 python3.12 python3.11; do
+        if command -v "$candidate" &>/dev/null; then
+            STABLE_VER=$($candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+            info "Found $candidate ($STABLE_VER) — using it instead"
+            PYTHON="$candidate"
+            PY_VERSION="$STABLE_VER"
+            FOUND_STABLE=true
+            break
+        fi
+    done
+    if [ "$FOUND_STABLE" = false ]; then
+        warn "No stable Python 3.11-3.13 found. Install may fail if packages lack 3.14 support."
+        info "Fix: brew install python@3.13 (macOS) or apt install python3.13 (Linux)"
+    fi
+fi
 ok "Python $PY_VERSION"
 
 # pip
