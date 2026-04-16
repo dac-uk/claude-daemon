@@ -38,7 +38,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **MCP Health Checks** - `/api/agents` reports per-server MCP status, detecting unresolved `${ENV_VAR}` placeholders in `tools.json` so misconfigured tools surface immediately.
 - **DB Integrity** - SQLite `PRAGMA integrity_check` runs on startup. Corrupt databases are flagged in logs before any data is written.
 - **Streaming Responses** - Live streaming to Telegram, Discord, and CLI chat with throttled message edits. Tokens appear within seconds instead of waiting for the full response.
-- **SDK Persistent Sessions** - Uses the Claude Agent SDK to keep one persistent Claude process per agent. MCP servers and OAuth initialize once at daemon startup (~12s). Subsequent messages skip all startup overhead (~2-5s). Gracefully falls back to one-shot subprocess mode if the SDK is unavailable.
+- **SDK Persistent Sessions** - Uses the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) to keep one persistent Claude process per agent. MCP servers and OAuth initialize once on first message (~12s). All subsequent messages reuse the warm session (~2-5s). Authenticated via `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` — uses your Claude Max/Pro subscription with no separate API billing. Falls back to one-shot subprocess mode if SDK is unavailable.
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
 - **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.
@@ -52,26 +52,51 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 
 ## Quick Install
 
+### Prerequisites
+
+- **Python 3.10+** and **Node.js 18+** (for Claude CLI and Agent SDK)
+- **Claude CLI** installed and authenticated: `npm install -g @anthropic-ai/claude-code && claude /login`
+- **Claude Max or Pro subscription** (uses OAuth — no separate API billing)
+
+### Step 1: Install
+
 ```bash
-# One-line install (clones repo, installs deps, configures service)
 curl -sSL https://raw.githubusercontent.com/dac-uk/claude-daemon/main/install.sh | bash
 ```
 
-Or if you've already cloned the repo:
+The script installs the Python package, Agent SDK, config templates, and system service. Idempotent — safe to run again.
+
+### Step 2: Set up persistent sessions (recommended)
+
+Persistent sessions keep one Claude process alive per agent. First message takes ~12s (one-time MCP/auth init), subsequent messages respond in ~2-5s instead of ~20s.
 
 ```bash
-./install.sh
+# Generate a headless OAuth token (uses your Max/Pro subscription, no extra cost)
+claude setup-token
+
+# Save it to the daemon's environment
+~/.local/bin/claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=<paste-token-here>
+
+# Restart the daemon to pick up the token
+~/.local/bin/claude-daemon restart
 ```
 
-The script handles everything: Python package, config templates, systemd/launchd service, and interactive token setup. Idempotent — safe to run again. You never need to manually edit `.env` files — use the interactive installer, chat commands, CLI, or API instead.
+**Without this step**, the daemon still works but spawns a fresh Claude process per message (~15-25s each). The interactive installer prompts for this token automatically.
 
-To update an existing install (pull latest code, reinstall deps, re-patch service):
+### Step 3: Chat
 
 ```bash
+~/.local/bin/claude-daemon chat
+```
+
+### Updating
+
+```bash
+# Manual update
 ./install.sh --update
-```
 
-The daemon also self-updates automatically via its nightly scheduler — new code and dependencies are installed alongside Claude CLI updates.
+# Or the daemon self-updates nightly via its scheduler
+```
 
 ## Managing Environment Variables
 
@@ -107,6 +132,45 @@ curl -X POST -H "Authorization: Bearer $KEY" \
 ```bash
 ./install.sh    # Prompts for Telegram, Discord, GitHub, API key, dashboard
 ```
+
+## Authentication & Persistent Sessions
+
+The daemon supports two authentication modes:
+
+### OAuth (Claude Max/Pro — recommended)
+
+Uses your existing Claude subscription. No per-token API billing.
+
+```bash
+# 1. Log in to Claude (if not already)
+claude /login
+
+# 2. Generate a headless OAuth token for the daemon
+claude setup-token
+
+# 3. Save the token
+claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=<paste-token-here>
+
+# 4. Restart
+claude-daemon restart
+```
+
+With the OAuth token set, the daemon uses the **Agent SDK** to keep persistent sessions per agent. First message to each agent takes ~12s (MCP initialization). Every message after that responds in ~2-5s.
+
+**Without the token**, the daemon falls back to spawning a fresh `claude --print` subprocess per message (~15-25s each). Everything still works, just slower.
+
+The token is valid for ~1 year. Regenerate with `claude setup-token` when it expires.
+
+### API Key (pay-per-token)
+
+If you prefer API billing over a subscription:
+
+```bash
+claude-daemon env set ANTHROPIC_API_KEY=sk-ant-...
+claude-daemon restart
+```
+
+API key mode uses `--bare` for slightly faster subprocess startup but does not support SDK persistent sessions. Each message is billed per-token via the Anthropic API.
 
 ### Startup health check
 

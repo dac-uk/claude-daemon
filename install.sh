@@ -263,6 +263,35 @@ else
     warn "npm not found — Agent SDK not installed (daemon will use subprocess fallback)"
 fi
 
+# Set up OAuth token for persistent sessions (Claude Max/Pro subscription)
+if ! grep -q "^CLAUDE_CODE_OAUTH_TOKEN=sk-" "$ENV_FILE" 2>/dev/null; then
+    # Check if already set in environment
+    if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+        _set_env "CLAUDE_CODE_OAUTH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"
+        ok "OAuth token set from environment"
+    elif [ "$INTERACTIVE" = true ] && command -v claude >/dev/null 2>&1; then
+        printf "\n  ${YELLOW}Persistent Sessions (recommended):${NC}\n"
+        printf "  Generate a headless OAuth token for fast responses (~2-5s instead of ~20s).\n"
+        printf "  This uses your Claude Max/Pro subscription — no extra API costs.\n\n"
+        printf "  Run this command, then paste the token:\n"
+        printf "    ${CYAN}claude setup-token${NC}\n\n"
+        printf "  Paste your token (or press Enter to skip): "
+        read -r OAUTH_TOKEN
+        if [ -n "$OAUTH_TOKEN" ]; then
+            _set_env "CLAUDE_CODE_OAUTH_TOKEN" "$OAUTH_TOKEN"
+            ok "OAuth token saved"
+        else
+            info "Skipped — you can set it later: claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=\$(claude setup-token)"
+        fi
+    else
+        info "No OAuth token set. For fast persistent sessions, run:"
+        info "  claude setup-token"
+        info "  claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=<token>"
+    fi
+else
+    ok "OAuth token already configured"
+fi
+
 # Ensure claude-daemon is on PATH via symlink in ~/.local/bin
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
