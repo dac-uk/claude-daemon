@@ -104,6 +104,7 @@ class ProcessManager:
         self._agent_semaphores: dict[str, asyncio.Semaphore] = {}
         self._active: dict[str, ActiveSession] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._confirmed_sessions: set[str] = set()  # sessions Claude Code has seen
         self._managed: "ManagedAgentBackend | None" = None  # lazy init
 
     def get_agent_semaphore(self, agent_name: str, max_per_agent: int = 3) -> asyncio.Semaphore:
@@ -184,9 +185,11 @@ class ProcessManager:
         ]
 
         tracking_id = session_id or str(uuid.uuid4())
-        if session_id:
+        if session_id and session_id in self._confirmed_sessions:
+            # Only --resume sessions that Claude Code has actually seen
             args.extend(["--resume", session_id])
         else:
+            # New session or unconfirmed — let Claude Code create it
             args.extend(["--session-id", tracking_id])
 
         # Model: override > config default
@@ -406,6 +409,9 @@ class ProcessManager:
                 self._active.pop(tracking_id, None)
 
             if final_response:
+                # Mark session as confirmed — safe to --resume on next message
+                if final_response.session_id:
+                    self._confirmed_sessions.add(final_response.session_id)
                 log.info(
                     "Stream complete: session=%s, cost=$%.4f, turns=%d",
                     final_response.session_id, final_response.cost, final_response.num_turns,
@@ -532,6 +538,10 @@ class ProcessManager:
 
             data = json.loads(raw)
             response = ClaudeResponse.from_json(data)
+
+            # Mark this session as confirmed — safe to --resume on next message
+            if response.session_id:
+                self._confirmed_sessions.add(response.session_id)
 
             log.info(
                 "Claude response: session=%s, tokens=%d/%d, cost=$%.4f, turns=%d",
