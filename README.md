@@ -160,7 +160,7 @@ The daemon ships with **41 MCP servers** available as a shared pool to all agent
 | `git` | @modelcontextprotocol/server-git | *(none)* | T1 |
 | `context7` | @upstash/context7-mcp | *(none)* | T1 |
 | `playwright` | @anthropic-ai/mcp-playwright | *(none)* | T1 |
-| `computer-use` | @anthropic-ai/computer-use-mcp-server | *(none)* | T1 |
+| `computer-control` | @anthropic-ai/computer-use-mcp-server | *(none)* | T1 |
 | `docker` | @modelcontextprotocol/server-docker | *(none)* | T1 |
 | `codebase-memory` | codebase-memory-mcp | *(none)* | T1 |
 | `tmux` | tmux-mcp | *(none)* | T1 |

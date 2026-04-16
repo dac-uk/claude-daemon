@@ -685,7 +685,7 @@ MCP_SERVER_CATALOG: dict[str, dict] = {
         "category": "developer",
         "description": "Browser automation and testing",
     },
-    "computer-use": {
+    "computer-control": {
         "command": "npx",
         "args": ["-y", "@anthropic-ai/computer-use-mcp-server@latest"],
         "env": {},
