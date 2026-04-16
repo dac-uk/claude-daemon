@@ -6,7 +6,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 
 - **Multi-Agent C-Suite** - 7 named agents (Johnny, Albert, Luna, Max, Penny, Jeremy, Sophie) with individual souls, roles, and domain ownership
 - **MCP Server Pool (41 servers)** - Tiered shared pool of MCP servers available to all agents. Zero-config servers (fetch, git, time, memory, context7, playwright, ssh, tmux, etc.) are always on. Token-required servers auto-enable when you set the env var. Manage via `/mcp list`, `/mcp enable`, `/mcp disable`.
-- **Per-Agent Model Routing** - Core team runs Opus, support team runs Sonnet, scheduled tasks run Haiku. Configurable per agent.
+- **Per-Agent Model Routing** - Task-aware model selection: Albert/Luna/Max run Opus for coding and review. Johnny runs Sonnet for chat, Opus for planning. Penny/Jeremy/Sophie run Sonnet. Scheduled jobs run Haiku. Configurable per agent and per task type.
 - **Graceful Model Degradation** - If Opus is rate-limited or unavailable, automatically falls back to Sonnet, then Haiku. Configurable fallback chain — no failed requests from transient capacity issues.
 - **Auto-Parallel Execution** - Send multiple messages to the same agent — if busy, the daemon automatically spawns a parallel session. No `/spawn` needed. Also available as `/spawn` for explicit control.
 - **Fuzzy Agent Matching** - Type `@jony` and it routes to `johnny`. Close-enough name typos resolved automatically with no error or fallback to the wrong agent.
@@ -37,7 +37,9 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Context Priority** - SOUL and steering instructions are never truncated. Low-priority blocks (vision, playbooks) are trimmed first when context budget is tight.
 - **MCP Health Checks** - `/api/agents` reports per-server MCP status, detecting unresolved `${ENV_VAR}` placeholders in `tools.json` so misconfigured tools surface immediately.
 - **DB Integrity** - SQLite `PRAGMA integrity_check` runs on startup. Corrupt databases are flagged in logs before any data is written.
-- **Streaming Responses** - Live streaming to Telegram and Discord with throttled message edits
+- **Streaming Responses** - Live streaming to Telegram, Discord, and CLI chat with throttled message edits. Tokens appear within seconds instead of waiting for the full response.
+- **Chat-Lite MCP** - Conversational messages load only 5 essential MCP servers (memory, fetch, context7, time, git) instead of all 41. Full MCP activates automatically for workflows, planning, and scheduled tasks. Cuts chat startup time by ~70%.
+- **Session Pre-Warming** - After each chat response, a background process pre-initializes the next session (MCP servers, plugins, auth). The next message resumes into the warm session, skipping cold start.
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
 - **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.
@@ -271,15 +273,15 @@ claude-daemon chat --agent albert  # Chat with a specific agent
 
 On first run, the daemon bootstraps a 7-agent C-suite team. Each agent has its own workspace, tools, memory, and heartbeat tasks.
 
-| Agent | Title | Emoji | Default Model | Domain |
-|-------|-------|-------|---------------|--------|
-| **johnny** | CEO | 🎯 | Opus | Orchestration, briefing, routing. Never codes. Council convener. |
-| **albert** | CIO | 🧠 | Opus | Architecture, backend, data models, APIs, services, business logic |
-| **luna** | Head of Design | 🎨 | Opus | All UI/views, layout, typography, colour, animation, design systems |
-| **max** | CPO | 🔬 | Opus | QA, product review, functional + visual testing, holistic quality |
-| **penny** | CFO | 💰 | Sonnet | Token spend, API costs, ROI analysis, financial modelling |
-| **jeremy** | CRO | 🛡️ | Sonnet | Fraud, cybersecurity, operational risk, compliance |
-| **sophie** | CLO | ⚖️ | Sonnet | Legal research, regulatory analysis, commercial counsel |
+| Agent | Title | Emoji | Chat | Planning | Scheduled | Domain |
+|-------|-------|-------|------|----------|-----------|--------|
+| **johnny** | CEO | 🎯 | Sonnet | Opus | Haiku | Orchestration, briefing, routing. Never codes. Council convener. |
+| **albert** | CIO | 🧠 | Opus | Opus | Haiku | Architecture, backend, data models, APIs, services, business logic |
+| **luna** | Head of Design | 🎨 | Opus | Opus | Haiku | All UI/views, layout, typography, colour, animation, design systems |
+| **max** | CPO | 🔬 | Opus | Opus | Haiku | QA, product review, functional + visual testing, holistic quality |
+| **penny** | CFO | 💰 | Sonnet | Opus | Haiku | Token spend, API costs, ROI analysis, financial modelling |
+| **jeremy** | CRO | 🛡️ | Sonnet | Opus | Haiku | Fraud, cybersecurity, operational risk, compliance |
+| **sophie** | CLO | ⚖️ | Sonnet | Opus | Haiku | Legal research, regulatory analysis, commercial counsel |
 
 ## Cross-Platform Session Sharing
 
