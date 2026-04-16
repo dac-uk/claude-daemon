@@ -36,15 +36,18 @@ AGENT_ADDRESS_PATTERN = re.compile(
     r'^(?:@|/)(\w+)\b\s*(.*)', re.DOTALL
 )
 
+# Placeholder names used in documentation — never match these as real agent names
+_PLACEHOLDER = r'(?!(?:name|agent_name|agent|target|example)\b)'
+
 # Pattern to detect delegation requests in agent responses: [DELEGATE:agent_name] message
 DELEGATION_PATTERN = re.compile(
-    r'\[DELEGATE:(\w+)\]\s*(.*?)(?=\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|\Z)',
+    rf'\[DELEGATE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|\Z)',
     re.DOTALL,
 )
 
 # [DISCUSS:agent_name] topic — request a bilateral discussion
 DISCUSS_PATTERN = re.compile(
-    r'\[DISCUSS:(\w+)\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\[OPTIMIZE:|\Z)',
+    rf'\[DISCUSS:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\[OPTIMIZE:|\Z)',
     re.DOTALL,
 )
 
@@ -56,13 +59,13 @@ COUNCIL_PATTERN = re.compile(
 
 # [HELP:agent_name] question — quick single-turn consultation
 HELP_PATTERN = re.compile(
-    r'\[HELP:(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[OPTIMIZE:|\Z)',
+    rf'\[HELP:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[OPTIMIZE:|\Z)',
     re.DOTALL,
 )
 
 # [OPTIMIZE:agent_name] target — trigger evo code optimization workflow
 OPTIMIZE_PATTERN = re.compile(
-    r'\[OPTIMIZE:(\w+)\]\s*(.*?)(?=\[OPTIMIZE:|\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\Z)',
+    rf'\[OPTIMIZE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[OPTIMIZE:|\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\Z)',
     re.DOTALL,
 )
 

@@ -257,7 +257,7 @@ class DiscussionEngine:
             for turn_number in range(1, config.max_turns + 1):
                 # Determine whose turn it is
                 agent_name = self._next_speaker(config, turn_number)
-                agent = self.registry.get(agent_name)
+                agent = self.registry.get(agent_name.lower())
                 if not agent:
                     log.warning("Discussion: agent '%s' not found, skipping", agent_name)
                     continue
@@ -353,7 +353,7 @@ class DiscussionEngine:
         is_final: bool = False,
     ) -> str:
         """Build the prompt for an agent's turn."""
-        agent = self.registry.get(agent_name)
+        agent = self.registry.get(agent_name.lower())
         role = agent.identity.role if agent else "agent"
 
         # Format transcript

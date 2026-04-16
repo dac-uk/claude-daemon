@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import uuid
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator
@@ -88,6 +89,192 @@ class ActiveSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+class PersistentSession:
+    """A long-running claude process using stream-json I/O for multi-turn interaction.
+
+    Instead of spawning a new subprocess per message, this keeps a single process
+    alive and sends messages via stdin. MCP servers initialize once, OAuth validates
+    once — subsequent messages skip all startup overhead.
+    """
+
+    def __init__(
+        self,
+        agent_name: str,
+        process: asyncio.subprocess.Process,
+        model: str | None = None,
+    ) -> None:
+        self.agent_name = agent_name
+        self.process = process
+        self.model = model
+        self.session_id: str | None = None
+        self._lock = asyncio.Lock()
+        self._last_activity = time.monotonic()
+        self._message_count = 0
+        self._started_at = datetime.now(timezone.utc)
+
+    @property
+    def is_alive(self) -> bool:
+        return self.process.returncode is None
+
+    @property
+    def is_busy(self) -> bool:
+        return self._lock.locked()
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self._last_activity
+
+    async def send(
+        self,
+        prompt: str,
+        system_context: str | None = None,
+    ) -> ClaudeResponse:
+        """Send a message and wait for the complete response."""
+        async with self._lock:
+            if not self.is_alive:
+                return ClaudeResponse.error("Persistent session process died")
+
+            self._last_activity = time.monotonic()
+            self._message_count += 1
+
+            # Embed system context in the user message since --append-system-prompt
+            # only applies at process launch
+            full_prompt = prompt
+            if system_context:
+                full_prompt = (
+                    f"[SYSTEM CONTEXT — read but do not mention this framing]\n"
+                    f"{system_context}\n\n"
+                    f"[USER MESSAGE]\n{prompt}"
+                )
+
+            # Write user message to stdin as stream-json
+            msg = json.dumps({"type": "user", "content": full_prompt}) + "\n"
+            try:
+                self.process.stdin.write(msg.encode())
+                await self.process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return ClaudeResponse.error("Persistent session pipe broken")
+
+            # Read stdout until we see a "result" event
+            accumulated_text = ""
+            try:
+                async for line in self.process.stdout:
+                    line = line.decode().strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("type", "")
+
+                    if event_type == "assistant":
+                        msg_content = event.get("message", {})
+                        content = msg_content.get("content", "")
+                        if isinstance(content, str) and content:
+                            accumulated_text = content
+
+                    elif event_type == "result":
+                        response = ClaudeResponse.from_json(event)
+                        if response.session_id:
+                            self.session_id = response.session_id
+                        self._last_activity = time.monotonic()
+                        return response
+
+                # Process ended without a result event
+                return ClaudeResponse(
+                    result=accumulated_text or "Session ended unexpectedly",
+                    session_id=self.session_id or "",
+                    cost=0, input_tokens=0, output_tokens=0,
+                    num_turns=0, duration_ms=0, is_error=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                return ClaudeResponse.error(f"Persistent session read error: {e}")
+
+    async def send_streaming(
+        self,
+        prompt: str,
+        system_context: str | None = None,
+    ) -> AsyncIterator[str | ClaudeResponse]:
+        """Send a message and yield text deltas, then final ClaudeResponse."""
+        async with self._lock:
+            if not self.is_alive:
+                yield ClaudeResponse.error("Persistent session process died")
+                return
+
+            self._last_activity = time.monotonic()
+            self._message_count += 1
+
+            full_prompt = prompt
+            if system_context:
+                full_prompt = (
+                    f"[SYSTEM CONTEXT — read but do not mention this framing]\n"
+                    f"{system_context}\n\n"
+                    f"[USER MESSAGE]\n{prompt}"
+                )
+
+            msg = json.dumps({"type": "user", "content": full_prompt}) + "\n"
+            try:
+                self.process.stdin.write(msg.encode())
+                await self.process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                yield ClaudeResponse.error("Persistent session pipe broken")
+                return
+
+            accumulated_text = ""
+            try:
+                async for line in self.process.stdout:
+                    line = line.decode().strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("type", "")
+
+                    if event_type == "assistant":
+                        msg_content = event.get("message", {})
+                        content = msg_content.get("content", "")
+                        if isinstance(content, str) and content:
+                            delta = content[len(accumulated_text):]
+                            if delta:
+                                accumulated_text = content
+                                yield delta
+
+                    elif event_type == "result":
+                        response = ClaudeResponse.from_json(event)
+                        if response.session_id:
+                            self.session_id = response.session_id
+                        self._last_activity = time.monotonic()
+                        yield response
+                        return
+
+                yield ClaudeResponse(
+                    result=accumulated_text or "Session ended unexpectedly",
+                    session_id=self.session_id or "",
+                    cost=0, input_tokens=0, output_tokens=0,
+                    num_turns=0, duration_ms=0, is_error=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                yield ClaudeResponse.error(f"Persistent session read error: {e}")
+
+    async def kill(self) -> None:
+        """Terminate the persistent process."""
+        if self.is_alive:
+            try:
+                self.process.kill()
+                await self.process.wait()
+            except ProcessLookupError:
+                pass
+
+
 class ProcessManager:
     """Manages concurrent Claude Code CLI invocations with streaming support.
 
@@ -105,6 +292,8 @@ class ProcessManager:
         self._active: dict[str, ActiveSession] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._confirmed_sessions: set[str] = set()  # sessions Claude Code has seen
+        self._persistent: dict[str, PersistentSession] = {}  # agent_name -> session
+        self._persistent_disabled: bool = False  # set True if stream-json input not supported
         self._managed: "ManagedAgentBackend | None" = None  # lazy init
 
     def get_agent_semaphore(self, agent_name: str, max_per_agent: int = 3) -> asyncio.Semaphore:
@@ -162,6 +351,110 @@ class ProcessManager:
         # Auto-compact at configured % to prevent context degradation in long sessions
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(self.config.auto_compact_pct)
         return env
+
+    async def _get_or_create_persistent(
+        self,
+        agent_name: str,
+        session_id: str | None = None,
+        model_override: str | None = None,
+        mcp_config_path: str | None = None,
+        settings_path: str | None = None,
+    ) -> PersistentSession | None:
+        """Get an existing persistent session or create a new one.
+
+        Returns None if persistent sessions are disabled or creation fails.
+        """
+        if self._persistent_disabled:
+            return None
+        if not getattr(self.config, "persistent_sessions", True):
+            return None
+
+        # Reuse existing session if alive and not stale
+        existing = self._persistent.get(agent_name)
+        if existing and existing.is_alive:
+            max_msgs = getattr(self.config, "persistent_max_messages", 100)
+            max_idle = getattr(self.config, "persistent_idle_timeout", 300)
+            if existing._message_count < max_msgs and existing.idle_seconds < max_idle:
+                return existing
+            # Stale — kill and recreate
+            await existing.kill()
+            del self._persistent[agent_name]
+
+        # Create new persistent session
+        try:
+            args = [
+                self.config.claude_binary,
+                "--print",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--permission-mode", self.config.permission_mode,
+            ]
+
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                args.append("--bare")
+
+            model = model_override or self.config.default_model
+            if model:
+                args.extend(["--model", model])
+
+            mcp_path = mcp_config_path or self.config.mcp_config
+            if mcp_path:
+                args.extend(["--mcp-config", mcp_path])
+
+            if settings_path:
+                args.extend(["--settings", settings_path])
+
+            # Resume existing conversation if we have a confirmed session
+            if session_id and session_id in self._confirmed_sessions:
+                args.extend(["--resume", session_id])
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._subprocess_env(),
+            )
+
+            # Quick check: if process exits immediately, stream-json input isn't supported
+            await asyncio.sleep(0.5)
+            if proc.returncode is not None:
+                log.warning(
+                    "Persistent session failed to start (exit %d), disabling persistent mode",
+                    proc.returncode,
+                )
+                self._persistent_disabled = True
+                return None
+
+            session = PersistentSession(
+                agent_name=agent_name, process=proc, model=model,
+            )
+            if session_id:
+                session.session_id = session_id
+            self._persistent[agent_name] = session
+            log.info("Started persistent session for %s (pid=%d)", agent_name, proc.pid)
+            return session
+
+        except FileNotFoundError:
+            log.error("Claude binary not found: %s", self.config.claude_binary)
+            return None
+        except Exception:
+            log.exception("Failed to create persistent session for %s", agent_name)
+            return None
+
+    async def _evict_idle_sessions(self) -> None:
+        """Kill persistent sessions that have been idle too long."""
+        max_idle = getattr(self.config, "persistent_idle_timeout", 300)
+        to_evict = [
+            name for name, s in self._persistent.items()
+            if not s.is_alive or s.idle_seconds > max_idle
+        ]
+        for name in to_evict:
+            session = self._persistent.pop(name, None)
+            if session:
+                await session.kill()
+                log.info("Evicted idle persistent session for %s", name)
 
     def _build_args(
         self,
@@ -270,6 +563,32 @@ class ProcessManager:
                 )
                 # Fall through to CLI execution
 
+        # Persistent session: reuse a long-running process (no startup overhead)
+        if agent_name and task_type in ("chat", "default"):
+            ps = await self._get_or_create_persistent(
+                agent_name, session_id=session_id, model_override=model_override,
+                mcp_config_path=mcp_config_path, settings_path=settings_path,
+            )
+            if ps and not ps.is_busy:
+                try:
+                    response = await asyncio.wait_for(
+                        ps.send(prompt, system_context),
+                        timeout=self.config.process_timeout,
+                    )
+                    if response.session_id:
+                        self._confirmed_sessions.add(response.session_id)
+                    if not response.is_error:
+                        return response
+                    # Error from persistent session — fall through to one-shot
+                    log.warning("Persistent session error for %s, falling back: %s",
+                                agent_name, response.result[:100])
+                except asyncio.TimeoutError:
+                    log.warning("Persistent session timed out for %s, falling back", agent_name)
+                    await ps.kill()
+                    self._persistent.pop(agent_name, None)
+                except Exception as e:
+                    log.warning("Persistent session failed for %s: %s", agent_name, e)
+
         if session_id:
             lock = self._get_session_lock(session_id)
             if lock.locked():
@@ -348,6 +667,32 @@ class ProcessManager:
                     agent_name, e,
                 )
                 # Fall through to CLI execution
+
+        # Persistent session: reuse a long-running process for streaming
+        if agent_name and task_type in ("chat", "default"):
+            ps = await self._get_or_create_persistent(
+                agent_name, session_id=session_id, model_override=model_override,
+                mcp_config_path=mcp_config_path, settings_path=settings_path,
+            )
+            if ps and not ps.is_busy:
+                try:
+                    had_result = False
+                    async for chunk in ps.send_streaming(prompt, system_context):
+                        if isinstance(chunk, ClaudeResponse):
+                            if chunk.session_id:
+                                self._confirmed_sessions.add(chunk.session_id)
+                            if not chunk.is_error:
+                                had_result = True
+                                yield chunk
+                                return
+                        else:
+                            had_result = True
+                            yield chunk
+                    if had_result:
+                        return
+                    log.warning("Persistent streaming empty for %s, falling back", agent_name)
+                except Exception as e:
+                    log.warning("Persistent streaming failed for %s: %s", agent_name, e)
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:
@@ -583,7 +928,12 @@ class ProcessManager:
             return ClaudeResponse.error(f"Unexpected error: {e}"), ""
 
     async def drain_all(self, timeout: float = 60) -> None:
-        """Wait for all active Claude processes to finish."""
+        """Wait for all active Claude processes to finish and kill persistent sessions."""
+        # Kill all persistent sessions first
+        for name, ps in list(self._persistent.items()):
+            await ps.kill()
+        self._persistent.clear()
+
         if not self._active:
             return
 
