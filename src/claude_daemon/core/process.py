@@ -327,7 +327,10 @@ class ProcessManager:
                 # Fall through to CLI execution
 
         # SDK bridge routing — persistent sessions (fast, no subprocess spawn)
-        if agent_name and self._sdk_bridge and self._sdk_bridge.has_session(agent_name):
+        # Only for chat/default tasks where the pre-created session model matches.
+        # Planning/workflow/scheduled tasks may need different models → subprocess.
+        if (agent_name and task_type in ("chat", "default")
+                and self._sdk_bridge and self._sdk_bridge.has_session(agent_name)):
             try:
                 import time as _time
                 t0 = _time.monotonic()
@@ -428,8 +431,9 @@ class ProcessManager:
                 )
                 # Fall through to CLI execution
 
-        # SDK bridge streaming — persistent sessions
-        if agent_name and self._sdk_bridge and self._sdk_bridge.has_session(agent_name):
+        # SDK bridge streaming — persistent sessions (chat/default only)
+        if (agent_name and task_type in ("chat", "default")
+                and self._sdk_bridge and self._sdk_bridge.has_session(agent_name)):
             try:
                 async for chunk in self._sdk_bridge.stream_message(
                     agent_name=agent_name,

@@ -1081,31 +1081,37 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
               └────────────┘
 ```
 
-### Message Flow (CLI Chat Example)
+### Message Flow
+
+Every agent gets its own persistent SDK session — not just Johnny. When you `chat --agent albert` or send a message in Albert's Telegram channel, the same fast path applies.
 
 ```
-User types "hey, how are you?" in terminal
+User types message (CLI / Telegram / Discord / API)
   │
-  ├─ CLI sends POST /api/message/stream (SSE)
-  │    via http.client (unbuffered line-by-line reads)
+  ├─ Platform handler sends to daemon
+  │    CLI: POST /api/message/stream (SSE, http.client unbuffered)
+  │    Telegram/Discord: bot handler → daemon.handle_message()
   │
-  ├─ Daemon resolves agent → johnny (orchestrator)
+  ├─ Daemon resolves target agent:
+  │    CLI --agent albert → albert
+  │    Telegram agent channel → bound agent
+  │    @luna prefix → luna
+  │    Default → johnny (orchestrator)
   │
-  ├─ Orchestrator checks: SDK session warm for johnny?
-  │    ├─ YES → send via SDK bridge (fast path, ~2-5s)
-  │    └─ NO  → create session, or fall back to subprocess
+  ├─ Orchestrator checks: SDK session warm for this agent?
+  │    ├─ YES (chat/default) → send via SDK bridge (fast, ~2-5s)
+  │    └─ NO or planning/workflow → subprocess fallback (correct model)
   │
-  ├─ SDK bridge writes to johnny's SDKSession stdin
+  ├─ SDK bridge writes to the agent's SDKSession
   │    session.send(prompt) → session.stream()
   │
-  ├─ Tokens stream back:
-  │    bridge.js → NDJSON stdout → sdk_bridge.py → SSE events → CLI
-  │    {"event":"text","text":"Hey"} → data: {"text":"Hey"}\n\n
+  ├─ Tokens stream back through the platform:
+  │    CLI: SSE events → live word-by-word in terminal
+  │    Telegram: throttled message edits (~1s intervals)
+  │    Discord: throttled message edits
+  │    API: SSE or buffered JSON response
   │
-  ├─ CLI: spinner clears on first token (~2-3s)
-  │         text streams live word-by-word
-  │
-  └─ Final result stored in SQLite + agent metrics updated
+  └─ Result stored in SQLite + agent metrics updated
 ```
 
 ### Agent System
