@@ -30,6 +30,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Inter-Agent Communication** - Five communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, and `[OPTIMIZE:name]` to trigger evo code optimization. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
 - **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel. All real-time via WebSocket — no polling.
+- **CLI Chat** - `claude-daemon chat` opens an interactive terminal session with the daemon's agents. Route to a specific agent with `--agent albert`. Connects to the running daemon via the HTTP API — no separate process needed.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
 - **Hardened Webhooks** - GitHub and Stripe webhooks verify HMAC-SHA256 signatures. Invalid requests get 403. Handlers run async (202 Accepted) so webhooks never block the HTTP server.
 - **Resilient Heartbeats** - Circuit breaker pauses autonomous jobs after 3 consecutive failures. Auto-resumes on success. All delivery failures are logged — no silent drops.
@@ -41,6 +42,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
 - **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.
 - **Agent Hot-Reload** - Edit SOUL.md, IDENTITY.md, or AGENTS.md and changes take effect automatically within seconds. No restart needed. File watcher polls every 10s (configurable).
+- **Safe Template Merge** - When the daemon code is updated, new `## sections` in SOUL.md/AGENTS.md templates are automatically appended to existing agent files without overwriting user customisations. Archive-before-write. Idempotent — no-op when already up to date.
 - **Alert Webhooks** - Send heartbeat results, circuit breaker alerts, and update notifications to arbitrary HTTP endpoints (Slack incoming webhooks, PagerDuty, custom URLs). Not just Telegram/Discord.
 - **Audit Log** - Every agent action recorded in a structured SQLite table: who did what, when, what it cost. Queryable via `/api/audit`. Covers messages, delegations, workflows, heartbeats, config reloads, and webhooks.
 - **Agent Metrics** - Per-agent cost tracking, token usage, and performance metrics
@@ -561,6 +563,7 @@ Shared workspace at `~/.config/claude-daemon/shared/`:
 
 | Path | Purpose |
 |------|---------|
+| `DIRECTIVE.md` | Team operating directive — injected as Tier 1 (never truncated) into all agents |
 | `USER.md` | Your profile — fill in your name/role/style on first run; all agents read this |
 | `playbooks/` | Cross-agent lessons learned (compounding knowledge) |
 | `learnings.md` | Weekly synthesis of cross-agent insights |
@@ -568,8 +571,9 @@ Shared workspace at `~/.config/claude-daemon/shared/`:
 | `steer/` | Mid-task steering files (e.g. `steer/albert.md`) |
 | `checklists/` | QA templates and quality gate checklists |
 | `discussions/` | Inter-agent discussion transcripts (bilateral + council) |
+| `template-archive/` | Timestamped backups of SOUL.md before template merges |
 
-Edit any `.md` file directly to change an agent's behaviour. No restart needed.
+Edit any `.md` file directly to change an agent's behaviour. No restart needed. On daemon updates, new `## sections` from updated templates are merged into existing agent SOUL.md files without overwriting your customisations (archive-before-write, append-only).
 
 ## Self-Improvement Loop
 
@@ -991,7 +995,8 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 │   │   ├── quality-retro.md      # Max's findings
 │   │   └── ...
 │   ├── steer/                    # Mid-task redirection
-│   └── checklists/               # QA templates
+│   ├── checklists/               # QA templates
+│   └── template-archive/         # Backups before template merges
 ├── memory/                       # Global daemon memory
 └── logs/
 ```
