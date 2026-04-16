@@ -263,35 +263,6 @@ else
     warn "npm not found — Agent SDK not installed (daemon will use subprocess fallback)"
 fi
 
-# Set up OAuth token for persistent sessions (Claude Max/Pro subscription)
-if ! grep -q "^CLAUDE_CODE_OAUTH_TOKEN=sk-" "$ENV_FILE" 2>/dev/null; then
-    # Check if already set in environment
-    if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-        _set_env "CLAUDE_CODE_OAUTH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"
-        ok "OAuth token set from environment"
-    elif [ "$INTERACTIVE" = true ] && command -v claude >/dev/null 2>&1; then
-        printf "\n  ${YELLOW}Persistent Sessions (recommended):${NC}\n"
-        printf "  Generate a headless OAuth token for fast responses (~2-5s instead of ~20s).\n"
-        printf "  This uses your Claude Max/Pro subscription — no extra API costs.\n\n"
-        printf "  Run this command, then paste the token:\n"
-        printf "    ${CYAN}claude setup-token${NC}\n\n"
-        printf "  Paste your token (or press Enter to skip): "
-        read -r OAUTH_TOKEN
-        if [ -n "$OAUTH_TOKEN" ]; then
-            _set_env "CLAUDE_CODE_OAUTH_TOKEN" "$OAUTH_TOKEN"
-            ok "OAuth token saved"
-        else
-            info "Skipped — you can set it later: claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=\$(claude setup-token)"
-        fi
-    else
-        info "No OAuth token set. For fast persistent sessions, run:"
-        info "  claude setup-token"
-        info "  claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=<token>"
-    fi
-else
-    ok "OAuth token already configured"
-fi
-
 # Ensure claude-daemon is on PATH via symlink in ~/.local/bin
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
@@ -386,11 +357,42 @@ else
     ok "Created $ENV_FILE"
 fi
 
-# -- 5. Interactive token setup ------------------------------------------------
+# -- 5. OAuth token for persistent sessions ------------------------------------
+# Set up CLAUDE_CODE_OAUTH_TOKEN for fast SDK-based sessions
+if ! grep -q "^CLAUDE_CODE_OAUTH_TOKEN=sk-" "$ENV_FILE" 2>/dev/null; then
+    # Check if already set in environment
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        _set_env "CLAUDE_CODE_OAUTH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"
+        ok "OAuth token set from environment"
+    fi
+else
+    ok "OAuth token already configured"
+fi
+
+# -- 6. Interactive token setup ------------------------------------------------
 # Only run interactive setup if stdin is a terminal (not piped) and not --update
 INTERACTIVE=false
 if [ -t 0 ] && [ "$UPDATE_ONLY" = false ]; then
     INTERACTIVE=true
+fi
+
+# Prompt for OAuth token interactively if not already set
+if [ "$INTERACTIVE" = true ] && ! grep -q "^CLAUDE_CODE_OAUTH_TOKEN=sk-" "$ENV_FILE" 2>/dev/null; then
+    if command -v claude >/dev/null 2>&1; then
+        printf "\n  ${YELLOW}Persistent Sessions (recommended):${NC}\n"
+        printf "  Generate a headless OAuth token for fast responses (~2-5s instead of ~20s).\n"
+        printf "  This uses your Claude Max/Pro subscription — no extra API costs.\n\n"
+        printf "  Run this command in another terminal, then paste the token:\n"
+        printf "    ${CYAN}claude setup-token${NC}\n\n"
+        printf "  Paste your token (or press Enter to skip): "
+        read -r OAUTH_TOKEN
+        if [ -n "$OAUTH_TOKEN" ]; then
+            _set_env "CLAUDE_CODE_OAUTH_TOKEN" "$OAUTH_TOKEN"
+            ok "OAuth token saved — persistent sessions enabled"
+        else
+            info "Skipped — set later: claude-daemon env set CLAUDE_CODE_OAUTH_TOKEN=\$(claude setup-token)"
+        fi
+    fi
 fi
 
 if [ "$INTERACTIVE" = true ]; then
@@ -596,7 +598,9 @@ if [ "$INTERACTIVE" = true ]; then
     printf "    3. Just start talking — type naturally, no special commands needed\n"
 else
     printf "  ${YELLOW}What's next:${NC}\n"
-    printf "    1. Edit ${BOLD}%s${NC} with your bot tokens\n" "$ENV_FILE"
+    if ! grep -q "^CLAUDE_CODE_OAUTH_TOKEN=sk-" "$ENV_FILE" 2>/dev/null; then
+        printf "    1. ${BOLD}Set up fast sessions:${NC} ${CYAN}claude setup-token${NC} then ${CYAN}%s env set CLAUDE_CODE_OAUTH_TOKEN=<token>${NC}\n" "$SYMLINK"
+    fi
     printf "    2. Edit ${BOLD}%s${NC} to enable integrations\n" "$YAML_FILE"
     if [ "$OS" = "Darwin" ]; then
         printf "    3. Restart: ${CYAN}launchctl unload ~/Library/LaunchAgents/com.claude-daemon.plist && launchctl load ~/Library/LaunchAgents/com.claude-daemon.plist${NC}\n"
