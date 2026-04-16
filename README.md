@@ -336,43 +336,80 @@ Send any message to chat with the active agent (Johnny by default). Use `@agent_
 
 [Paperclip](https://paperclip.ing/) is an open-source orchestration platform that organises AI agents into an autonomous company with goals, budgets, org charts, and governance. The daemon integrates with Paperclip in two complementary modes:
 
-### How it works
-
 **Mode 1 — Polling (daemon pulls tasks):** The daemon polls Paperclip's API for pending tasks every N seconds, processes them through the agent team, and returns results with cost data.
 
 **Mode 2 — Heartbeat webhook (Paperclip pushes tasks):** Paperclip POSTs tasks directly to your daemon's webhook endpoint. This is Paperclip's canonical "heartbeat" pattern — the daemon responds synchronously with the result.
 
 Both modes run simultaneously. Heartbeat is lower latency; polling is the fallback.
 
-### Setup
+### Install order
 
-1. Set env vars:
+Install the daemon first (you only need Paperclip if you want the orchestration/budgeting layer). Then install Paperclip:
+
 ```bash
-claude-daemon env set PAPERCLIP_URL=https://your-paperclip-instance.com
+npx paperclipai onboard --yes    # Installs and starts Paperclip on http://localhost:3100
+```
+
+### Step-by-step setup
+
+**Step 1 — Tell the daemon where Paperclip is:**
+
+If Paperclip is running locally (the common case):
+```bash
+claude-daemon env set PAPERCLIP_URL=http://localhost:3100
+```
+
+If Paperclip is on a remote server, use that server's URL instead.
+
+**Step 2 — Generate a Paperclip API key:**
+
+In Paperclip's dashboard or via its API, create an API key for the daemon agent. The key is shown once at creation time — copy it immediately:
+```bash
 claude-daemon env set PAPERCLIP_API_KEY=pk_live_...
 ```
 
-2. In Paperclip, register an HTTP agent pointing to your daemon:
+**Step 3 — (Optional) Set up the heartbeat webhook:**
+
+For Paperclip to push tasks to the daemon (instead of the daemon polling), configure an HTTP agent in Paperclip:
+
+| Field | Value |
+|-------|-------|
+| Webhook URL | `http://your-daemon-ip:8080/api/paperclip/heartbeat` |
+| Auth Header | `Authorization: Bearer YOUR_DAEMON_API_KEY` |
+
+Your daemon API key is in `~/.config/claude-daemon/.env` (`CLAUDE_DAEMON_API_KEY`). Check it with `claude-daemon env list`.
+
+If both services run on the same machine, use `http://localhost:8080/api/paperclip/heartbeat`.
+
+**Step 4 — Restart the daemon:**
+
+```bash
+claude-daemon restart
 ```
-Webhook URL:  http://your-daemon-ip:8080/api/paperclip/heartbeat
-Auth Header:  Authorization: Bearer <your-daemon-api-key>
-```
 
-3. Restart the daemon. It registers as `claude-daemon` with capabilities `[code, analysis, general]`.
+The daemon auto-registers as `claude-daemon` with Paperclip on startup.
 
-### Agent mapping
+### How agents map between systems
 
-Paperclip tasks can target specific daemon agents. If a task includes an `agent` or `assigned_to` field, the daemon routes it to that agent:
+Paperclip sees the daemon as **one agent** ("claude-daemon") with capabilities `[code, analysis, general]`. Internally, the daemon's 7 agents handle different specialisations:
 
+| Paperclip task field | Daemon routing |
+|---------------------|----------------|
+| `"agent": "albert"` | Routes directly to Albert (CIO — backend/architecture) |
+| `"agent": "luna"` | Routes directly to Luna (design/UI) |
+| `"agent": "max"` | Routes directly to Max (QA/product review) |
+| No agent specified | Johnny (orchestrator) auto-routes based on content |
+
+Example Paperclip task targeting a specific agent:
 ```json
-{"prompt": "Review the auth module", "agent": "max"}
+{"prompt": "Review the auth module for security issues", "agent": "max"}
 ```
 
-This routes to Max (CPO/QA). If no agent is specified, Johnny (orchestrator) handles routing automatically.
+This is intentional — Paperclip manages goals, budgets, and governance at the company level; the daemon manages internal agent specialisation. You don't need to register 7 separate agents in Paperclip.
 
 ### Cost tracking
 
-Every task completion reports cost data back to Paperclip:
+Every task completion reports cost data back to Paperclip so it can enforce budgets:
 ```json
 {
   "result": "Review complete. Found 3 issues...",
@@ -383,18 +420,18 @@ Every task completion reports cost data back to Paperclip:
 }
 ```
 
-Paperclip uses this for budget enforcement and spend analytics.
-
-### Configuration
+### Configuration reference
 
 ```yaml
 integrations:
   paperclip:
-    enabled: false
-    poll_interval: 5        # Seconds between task polls
-    task_limit: 5           # Max tasks per poll cycle
-    startup_timeout: 30     # Seconds to wait for registration
-    # URL and API key loaded from env vars: PAPERCLIP_URL, PAPERCLIP_API_KEY
+    enabled: false              # Auto-enables when PAPERCLIP_URL is set
+    poll_interval: 5            # Seconds between task polls
+    task_limit: 5               # Max tasks per poll cycle
+    startup_timeout: 30         # Seconds to wait for registration
+    # URL and API key loaded from env vars:
+    #   PAPERCLIP_URL — e.g. http://localhost:3100
+    #   PAPERCLIP_API_KEY — generated in Paperclip's dashboard
 ```
 
 ## Channel Setup Guide
