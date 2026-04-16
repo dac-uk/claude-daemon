@@ -558,6 +558,7 @@ else
         printf "    3. Restart: ${CYAN}systemctl --user restart claude-daemon${NC}\n"
     fi
     printf "    4. Chat:    ${CYAN}claude-daemon chat${NC}\n"
+    printf "\n  ${YELLOW}NOTE:${NC} If 'claude-daemon' is not found, run: ${CYAN}source ~/.zshrc${NC} (or open a new terminal)\n"
 fi
 
 # -- Final summary with all warnings/errors --
