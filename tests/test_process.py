@@ -144,7 +144,7 @@ async def test_auto_parallel_stream_replaces_active_session():
         max_budget=0.5,
     )
     assert "--resume" not in args
-    assert "--session-id" in args
+    # New sessions don't pass --session-id either — Claude Code generates its own
 
 
 # -- Model fallback / rate limit detection --

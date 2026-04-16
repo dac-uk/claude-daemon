@@ -192,9 +192,9 @@ class ProcessManager:
         if session_id and session_id in self._confirmed_sessions:
             # Only --resume sessions that Claude Code has actually seen
             args.extend(["--resume", session_id])
-        else:
-            # New session or unconfirmed — let Claude Code create it
-            args.extend(["--session-id", tracking_id])
+        # else: don't pass --session-id or --resume — let Claude Code
+        # generate its own session ID. We capture it from the response
+        # and mark it as confirmed for future --resume.
 
         # Model: override > config default
         model = model_override or self.config.default_model
