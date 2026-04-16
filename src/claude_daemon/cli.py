@@ -615,41 +615,49 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             body["agent"] = agent
 
         data = json.dumps(body).encode()
-
-        # Use streaming endpoint for real-time token display
         req = urllib.request.Request(
-            f"{base_url}/api/message/stream", data=data, headers=headers, method="POST",
+            f"{base_url}/api/message", data=data, headers=headers, method="POST",
         )
 
-        try:
-            print()  # Blank line before response
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                buffer = ""
-                for raw_line in resp:
-                    line = raw_line.decode().strip()
-                    if not line.startswith("data: "):
-                        continue
-                    try:
-                        event = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
+        # Show thinking indicator while waiting
+        import threading
+        stop_spinner = threading.Event()
 
-                    if "text" in event:
-                        sys.stdout.write(event["text"])
-                        sys.stdout.flush()
-                    elif event.get("done"):
-                        break
-                    elif "error" in event:
-                        print(f"\nError: {event['error']}")
-            print("\n")  # End response with newlines
+        def _spinner():
+            chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            i = 0
+            while not stop_spinner.is_set():
+                sys.stdout.write(f"\r\033[36m{chars[i % len(chars)]} thinking...\033[0m")
+                sys.stdout.flush()
+                stop_spinner.wait(0.1)
+                i += 1
+            sys.stdout.write("\r" + " " * 20 + "\r")  # clear spinner
+            sys.stdout.flush()
+
+        spinner_thread = threading.Thread(target=_spinner, daemon=True)
+        spinner_thread.start()
+
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                result = json.loads(resp.read().decode())
+                stop_spinner.set()
+                spinner_thread.join()
+                reply = result.get("result", "(no response)")
+                print(f"\n{reply}\n")
         except urllib.error.URLError as e:
+            stop_spinner.set()
+            spinner_thread.join()
             reason = getattr(e, "reason", str(e))
             print(f"\nError: Could not connect to daemon at {base_url}")
             print(f"  Reason: {reason}")
             print("  Is the daemon running? Try: claude-daemon status\n")
         except urllib.error.HTTPError as e:
+            stop_spinner.set()
+            spinner_thread.join()
             print(f"\nHTTP {e.code}: {e.read().decode()[:200]}\n")
         except Exception as e:
+            stop_spinner.set()
+            spinner_thread.join()
             print(f"\nError: {e}\n")
 
 

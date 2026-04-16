@@ -244,9 +244,14 @@ class HttpApi:
             ):
                 if isinstance(chunk, str):
                     await resp.write(f"data: {json.dumps({'text': chunk})}\n\n".encode())
+                    await resp.drain()
                 else:
-                    # ClaudeResponse final result
-                    await resp.write(f"data: {json.dumps({'done': True})}\n\n".encode())
+                    # ClaudeResponse final result — include error text if failed
+                    from claude_daemon.core.process import ClaudeResponse
+                    done_event: dict = {"done": True}
+                    if isinstance(chunk, ClaudeResponse) and chunk.is_error:
+                        done_event["error"] = chunk.result
+                    await resp.write(f"data: {json.dumps(done_event)}\n\n".encode())
         except Exception:
             log.exception("API streaming handler error")
             await resp.write(f"data: {json.dumps({'error': 'Internal error'})}\n\n".encode())
