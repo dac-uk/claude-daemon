@@ -434,6 +434,40 @@ integrations:
     #   PAPERCLIP_API_KEY — generated in Paperclip's dashboard
 ```
 
+## Remote Access
+
+If the daemon and/or Paperclip run on a home server (e.g. Mac Studio), you can manage them from a laptop, phone, or any other device.
+
+### Same network (LAN/Wi-Fi)
+
+Access the dashboards directly by IP:
+
+| Service | URL | What it shows |
+|---------|-----|---------------|
+| Daemon dashboard | `http://mac-studio-ip:8080/` | Agents, activity feed, chat, analytics |
+| Paperclip dashboard | `http://mac-studio-ip:3100/` | Goals, budgets, org chart, governance |
+
+Find your server's IP with `ifconfig | grep inet` (macOS) or `hostname -I` (Linux).
+
+### Outside your network (mobile data, remote laptop)
+
+**Option 1 — Tailscale (recommended):** Install [Tailscale](https://tailscale.com/) on your server and your devices. Access via the Tailscale IP (e.g. `http://100.x.x.x:8080/`). Encrypted, zero port forwarding, works from anywhere. Free for personal use.
+
+**Option 2 — Cloudflare Tunnel:** `cloudflared tunnel` gives you a public HTTPS URL (e.g. `https://daemon.your-domain.com`) without opening router ports. Requires a Cloudflare account and domain.
+
+**Option 3 — Port forwarding:** Open ports 8080 and 3100 on your router. Not recommended — no encryption, exposes services to the internet.
+
+### Access from any device (with Tailscale)
+
+| From | How |
+|------|-----|
+| Laptop browser | `http://100.x.x.x:8080/` (daemon) or `:3100` (Paperclip) |
+| iPhone/Android browser | Same URLs — dashboards are responsive |
+| Laptop terminal | `ssh user@100.x.x.x` then `claude-daemon chat` |
+| Telegram/Discord | Works from anywhere (bots connect outbound, no port needed) |
+
+Telegram and Discord don't require any port forwarding or VPN — they connect outbound from your server to the messaging platform's API.
+
 ## Channel Setup Guide
 
 This section walks you through connecting the daemon to Telegram and/or Discord from scratch. You don't need both — pick whichever you use.
