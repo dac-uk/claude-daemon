@@ -590,6 +590,35 @@ html, body {
 .goal-card-owner { font-weight: 500; }
 .goal-card-target { font-family: var(--mono); font-size: 10px; }
 
+/* ── Approval inbox ─────────────────────────────────────────── */
+.approval-inbox { padding: 14px 16px; margin-bottom: 18px; border-radius: var(--radius);
+  border: 1px solid rgba(255,68,170,0.3); }
+.approval-inbox-title { font-family: 'Orbitron', monospace; font-size: 12px;
+  font-weight: 700; color: var(--pink); text-transform: uppercase;
+  letter-spacing: 1px; margin-bottom: 10px; }
+.approval-item { display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-card);
+  border: 1px solid var(--border); margin-bottom: 8px; gap: 12px; }
+.approval-item:last-child { margin-bottom: 0; }
+.approval-item-info { display: flex; flex-direction: column; gap: 3px; flex: 1;
+  min-width: 0; }
+.approval-item-task { font-family: var(--mono); font-size: 12px; font-weight: 600;
+  color: var(--text); }
+.approval-item-reason { font-size: 11px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approval-item-threshold { font-family: var(--mono); font-size: 10px;
+  color: var(--orange); }
+.approval-item-time { font-size: 10px; color: var(--text-dim); }
+.approval-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.approval-btn { padding: 5px 14px; border: none; border-radius: var(--radius-xs);
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.approval-btn.approve { background: rgba(0,255,136,0.15); color: var(--green); }
+.approval-btn.approve:hover { background: rgba(0,255,136,0.25);
+  box-shadow: 0 0 10px rgba(0,255,136,0.2); }
+.approval-btn.reject { background: rgba(255,34,102,0.15); color: var(--red); }
+.approval-btn.reject:hover { background: rgba(255,34,102,0.25);
+  box-shadow: 0 0 10px rgba(255,34,102,0.2); }
+
 /* ── Scrollbar ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

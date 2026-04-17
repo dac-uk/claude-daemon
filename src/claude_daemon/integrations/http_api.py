@@ -20,6 +20,7 @@ from aiohttp import web
 from claude_daemon.integrations.dashboard import DashboardHub
 from claude_daemon.orchestration import TaskAPI, TaskSubmission
 from claude_daemon.orchestration.budgets import BudgetStore
+from claude_daemon.orchestration.approvals import ApprovalsStore
 from claude_daemon.orchestration.goals import GoalsStore
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ class HttpApi:
         self._task_api: TaskAPI | None = None
         self._budget_store: BudgetStore | None = None
         self._goals_store: GoalsStore | None = None
+        self._approvals_store: ApprovalsStore | None = None
         self._setup_routes()
 
     def _get_budget_store(self) -> BudgetStore | None:
@@ -55,6 +57,15 @@ class HttpApi:
         if self.daemon.orchestrator:
             self.daemon.orchestrator.set_budget_store(self._budget_store)
         return self._budget_store
+
+    def _get_approvals_store(self) -> ApprovalsStore | None:
+        """Lazily construct ApprovalsStore once store is ready."""
+        if self._approvals_store is not None:
+            return self._approvals_store
+        if not self.daemon.store:
+            return None
+        self._approvals_store = ApprovalsStore(self.daemon.store)
+        return self._approvals_store
 
     def _get_goals_store(self) -> GoalsStore | None:
         """Lazily construct GoalsStore once store is ready."""
@@ -119,6 +130,10 @@ class HttpApi:
         self._app.router.add_put("/api/v1/goals/{goal_id}", self._handle_v1_goals_update)
         self._app.router.add_delete("/api/v1/goals/{goal_id}", self._handle_v1_goals_delete)
         self._app.router.add_get("/api/v1/goals/{goal_id}/progress", self._handle_v1_goals_progress)
+        # Approvals (Phase 4)
+        self._app.router.add_get("/api/v1/approvals", self._handle_v1_approvals_list)
+        self._app.router.add_post("/api/v1/approvals/{approval_id}/approve", self._handle_v1_approvals_approve)
+        self._app.router.add_post("/api/v1/approvals/{approval_id}/reject", self._handle_v1_approvals_reject)
         self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
         self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
         self._app.router.add_get("/api/discussions", self._handle_discussions)
@@ -657,6 +672,82 @@ class HttpApi:
             return web.json_response({"error": "Goal not found"}, status=404)
         progress = gs.compute_progress(gid)
         return web.json_response({"goal_id": gid, **progress})
+
+    # -- /api/v1/approvals — approval queue --
+
+    async def _handle_v1_approvals_list(self, request: web.Request) -> web.Response:
+        appr = self._get_approvals_store()
+        if appr is None:
+            return web.json_response({"approvals": []})
+        pending_only = request.query.get("pending") == "1"
+        if pending_only:
+            return web.json_response({"approvals": appr.list_pending()})
+        limit = min(int(request.query.get("limit", "50")), 200)
+        return web.json_response({"approvals": appr.list_all(limit=limit)})
+
+    async def _handle_v1_approvals_approve(self, request: web.Request) -> web.Response:
+        appr = self._get_approvals_store()
+        if appr is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            aid = int(request.match_info["approval_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid approval_id"}, status=400)
+        approver = "api"
+        try:
+            body = await request.json()
+            approver = body.get("approver", "api")
+        except Exception:
+            pass
+        ok = appr.approve(aid, approver=approver)
+        if not ok:
+            return web.json_response({"error": "Approval not found or already resolved"}, status=404)
+        row = appr.get(aid)
+        try:
+            await self.hub.approval_resolved(aid, row["task_id"], "approved", approver)
+        except Exception:
+            pass
+        # Dispatch the approved task via orchestrator
+        api = self._get_task_api()
+        if api and row:
+            task = api.get_task(row["task_id"])
+            if task and task.get("status") == "pending":
+                agent_name = task.get("agent_name")
+                agent = self.daemon.agent_registry.get(agent_name) if agent_name else None
+                if agent and self.daemon.orchestrator:
+                    try:
+                        self.daemon.orchestrator.spawn_task(
+                            agent=agent,
+                            prompt=task.get("prompt", ""),
+                            task_id=row["task_id"],
+                        )
+                    except Exception:
+                        log.exception("Failed to dispatch approved task %s", row["task_id"])
+        return web.json_response({"status": "approved"})
+
+    async def _handle_v1_approvals_reject(self, request: web.Request) -> web.Response:
+        appr = self._get_approvals_store()
+        if appr is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            aid = int(request.match_info["approval_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid approval_id"}, status=400)
+        approver = "api"
+        try:
+            body = await request.json()
+            approver = body.get("approver", "api")
+        except Exception:
+            pass
+        ok = appr.reject(aid, approver=approver)
+        if not ok:
+            return web.json_response({"error": "Approval not found or already resolved"}, status=404)
+        row = appr.get(aid)
+        try:
+            await self.hub.approval_resolved(aid, row["task_id"], "rejected", approver)
+        except Exception:
+            pass
+        return web.json_response({"status": "rejected"})
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket endpoint for live dashboard events."""

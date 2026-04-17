@@ -7,7 +7,9 @@ external Paperclip service for simple deployments).
 Phase 1: task_api — submit/cancel/get/list_pending
 Phase 2: budgets — caps, enforcement, atomic reservation, spend recording
 Phase 3: goals — tracking, progress aggregation, task linking
+Phase 4: approvals — gate high-cost tasks behind human review
 """
+from claude_daemon.orchestration.approvals import ApprovalsStore
 from claude_daemon.orchestration.budgets import BudgetStore
 from claude_daemon.orchestration.enforcement import EnforcementDecision, enforce_budget
 from claude_daemon.orchestration.goals import GoalsStore
@@ -25,4 +27,5 @@ __all__ = [
     "EnforcementDecision",
     "enforce_budget",
     "GoalsStore",
+    "ApprovalsStore",
 ]

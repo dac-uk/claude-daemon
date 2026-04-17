@@ -106,6 +106,17 @@ CC.handleEvent = function(evt) {
       if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
       break;
 
+    case 'approval_requested':
+      CC.addFeed('system', 'task', 'Approval needed: ' + (evt.reason || '').substring(0, 60));
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
+    case 'approval_resolved':
+      CC.addFeed(evt.approver || 'system', 'task',
+        'Approval ' + evt.outcome + ' for task ' + (evt.task_id || '').substring(0, 12));
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
     case 'budget_update':
       if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
       break;

@@ -187,3 +187,24 @@ CREATE TABLE IF NOT EXISTS goals (
     completed_at TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_agent, status);
+
+-- Approval queue (native orchestration Phase 4)
+CREATE TABLE IF NOT EXISTS approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    approver_user TEXT,
+    reason TEXT,
+    threshold_usd REAL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+
+-- Team definitions
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    lead_agent TEXT,
+    members TEXT NOT NULL
+);

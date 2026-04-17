@@ -140,6 +140,41 @@ class ConversationStore:
             """)
             self._db.commit()
 
+        # approvals table (Phase 4 native orchestration)
+        try:
+            self._db.execute("SELECT 1 FROM approvals LIMIT 0")
+        except sqlite3.OperationalError:
+            log.info("Migrating schema: creating approvals table")
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    approver_user TEXT,
+                    reason TEXT,
+                    threshold_usd REAL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+            """)
+            self._db.commit()
+
+        # teams table (Phase 4 native orchestration)
+        try:
+            self._db.execute("SELECT 1 FROM teams LIMIT 0")
+        except sqlite3.OperationalError:
+            log.info("Migrating schema: creating teams table")
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS teams (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    lead_agent TEXT,
+                    members TEXT NOT NULL
+                );
+            """)
+            self._db.commit()
+
         # task_queue: add metadata (JSON) and goal_id columns for native orchestration
         try:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(task_queue)").fetchall()}

@@ -6,6 +6,7 @@ CC.opsState = {
   expandedId: null,
   budgets: [],         // budget gauge data
   goals: [],           // active goals
+  approvals: [],       // pending approvals
 };
 
 CC.renderOperationsView = async function() {
@@ -20,10 +21,12 @@ CC._opsLoad = async function() {
     CC.api('/api/v1/tasks/recent?limit=100'),
     CC.api('/api/v1/budgets'),
     CC.api('/api/v1/goals?status=active'),
+    CC.api('/api/v1/approvals?pending=1'),
   ]);
   CC.opsState.tasks = (results[0] && results[0].tasks) || [];
   CC.opsState.budgets = (results[1] && results[1].budgets) || [];
   CC.opsState.goals = (results[2] && results[2].goals) || [];
+  CC.opsState.approvals = (results[3] && results[3].approvals) || [];
 };
 
 CC._opsFilterChip = function(key, label) {
@@ -102,6 +105,31 @@ CC._opsLoadGoalProgress = function() {
   });
 };
 
+CC._opsApprovalInbox = function() {
+  var items = CC.opsState.approvals;
+  if (items.length === 0) return '';
+  var html = '<div class="approval-inbox glass-sm">' +
+    '<div class="approval-inbox-title">Pending Approvals (' + items.length + ')</div>';
+  items.forEach(function(a) {
+    var created = a.created_at ? new Date(a.created_at).toLocaleString() : '';
+    html += '<div class="approval-item" data-approval-id="' + a.id + '">' +
+      '<div class="approval-item-info">' +
+        '<span class="approval-item-task">Task ' + (a.task_id || '').substring(0, 12) + '</span>' +
+        (a.reason ? '<span class="approval-item-reason">' + CC.escHtml(a.reason).substring(0, 100) + '</span>' : '') +
+        (a.threshold_usd ? '<span class="approval-item-threshold">Threshold $' +
+          a.threshold_usd.toFixed(2) + '</span>' : '') +
+        (created ? '<span class="approval-item-time">' + created + '</span>' : '') +
+      '</div>' +
+      '<div class="approval-item-actions">' +
+        '<button class="approval-btn approve" data-approve="' + a.id + '">Approve</button>' +
+        '<button class="approval-btn reject" data-reject="' + a.id + '">Reject</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  return html;
+};
+
 CC._opsStatusColor = function(status) {
   switch (status) {
     case 'running': return 'var(--accent)';
@@ -139,7 +167,8 @@ CC._opsRender = function() {
       CC._opsFilterChip('cancelled', 'Cancelled (' + (counts.cancelled || 0) + ')') +
     '</div>' +
     CC._opsBudgetGauges() +
-    CC._opsGoalCards();
+    CC._opsGoalCards() +
+    CC._opsApprovalInbox();
 
   if (tasks.length === 0) {
     html += '<div class="empty glass"><div class="icon">\u26A1</div>' +
@@ -243,6 +272,21 @@ CC._opsBindEvents = function() {
     });
   });
 
+  el.querySelectorAll('.approval-btn.approve').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      btn.disabled = true; btn.textContent = '...';
+      await fetch('/api/v1/approvals/' + btn.dataset.approve + '/approve', { method: 'POST' });
+      await CC.renderOperationsView();
+    });
+  });
+  el.querySelectorAll('.approval-btn.reject').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      btn.disabled = true; btn.textContent = '...';
+      await fetch('/api/v1/approvals/' + btn.dataset.reject + '/reject', { method: 'POST' });
+      await CC.renderOperationsView();
+    });
+  });
+
   var submitBtn = document.getElementById('opsSubmitBtn');
   var modal = document.getElementById('opsModal');
   var overlay = document.getElementById('opsModalOverlay');
@@ -286,7 +330,8 @@ CC.opsHandleEvent = function(evt) {
   if (CC.currentView !== 'operations') return;
   var live = ['task_created', 'task_update', 'task_cancelled',
               'budget_update', 'budget_exceeded',
-              'goal_update', 'goal_progress'];
+              'goal_update', 'goal_progress',
+              'approval_requested', 'approval_resolved'];
   if (live.indexOf(evt.type) >= 0) {
     CC.renderOperationsView();
   }

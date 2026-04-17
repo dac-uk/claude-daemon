@@ -160,6 +160,32 @@ class DashboardHub:
             "ts": time.time(),
         })
 
+    async def approval_requested(
+        self, approval_id: int, task_id: str, reason: str = "",
+    ) -> None:
+        """Broadcast when a task requires approval."""
+        await self.broadcast({
+            "type": "approval_requested",
+            "approval_id": approval_id,
+            "task_id": task_id,
+            "reason": reason,
+            "ts": time.time(),
+        })
+
+    async def approval_resolved(
+        self, approval_id: int, task_id: str, outcome: str,
+        approver: str = "",
+    ) -> None:
+        """Broadcast when an approval is approved or rejected."""
+        await self.broadcast({
+            "type": "approval_resolved",
+            "approval_id": approval_id,
+            "task_id": task_id,
+            "outcome": outcome,
+            "approver": approver,
+            "ts": time.time(),
+        })
+
     async def budget_update(
         self,
         budget_id: int,
