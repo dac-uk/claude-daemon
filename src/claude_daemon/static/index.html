@@ -20,6 +20,9 @@
       <button class="nav-btn" data-view="agents" title="Agents">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       </button>
+      <button class="nav-btn" data-view="chat" title="Chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </button>
       <button class="nav-btn" data-view="tasks" title="Tasks & Discussions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       </button>
@@ -71,6 +74,23 @@
         <div class="agents-grid" id="agentsGrid"></div>
       </div>
 
+      <!-- ═══ CHAT ═══ -->
+      <div class="view" id="view-chat">
+        <div class="chat-layout">
+          <div class="chat-channels glass" id="chatChannels"></div>
+          <div class="chat-main">
+            <div class="chat-header glass-sm" id="chatHeader"></div>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-area glass-sm">
+              <textarea id="chatInput" rows="1" placeholder="Type a message... (Enter to send)"></textarea>
+              <button id="chatSend" class="chat-send-btn" title="Send">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ═══ TASKS ═══ -->
       <div class="view" id="view-tasks">
         <div class="tabs">
@@ -116,7 +136,7 @@
         <div class="settings-section">
           <h3>MCP Server Pool</h3>
           <table class="mcp-table">
-            <thead><tr><th>Server</th><th>Category</th><th>Tier</th><th>Status</th><th>Description</th></tr></thead>
+            <thead><tr><th>Server</th><th>Category</th><th>Tier</th><th>Status</th><th>Description</th><th>Action</th></tr></thead>
             <tbody id="mcpBody"></tbody>
           </table>
         </div>
@@ -146,6 +166,7 @@
 <script src="/static/js/views-overview.js"></script>
 <script src="/static/js/views-agents.js"></script>
 <script src="/static/js/views-tasks.js"></script>
+<script src="/static/js/views-chat.js"></script>
 <script src="/static/js/views-rest.js"></script>
 <script src="/static/app.js"></script>
 </body>

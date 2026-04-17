@@ -24,6 +24,9 @@ CC.navigate = function(viewName) {
     case 'agents':
       CC.renderAgentsView();
       break;
+    case 'chat':
+      CC.renderChatView();
+      break;
     case 'tasks':
       CC.renderTasksView();
       break;

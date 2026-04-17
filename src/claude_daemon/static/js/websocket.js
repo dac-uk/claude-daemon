@@ -52,6 +52,7 @@ CC.handleEvent = function(evt) {
         var dur = evt.duration_ms ? (evt.duration_ms / 1000).toFixed(1) + 's' : '';
         var cost = evt.cost ? ' $' + evt.cost.toFixed(4) : '';
         CC.addFeed(evt.agent, 'idle', 'Done ' + dur + cost);
+        if (CC.chatHandleAgentIdle) CC.chatHandleAgentIdle(evt.agent);
       }
       CC.updateActiveCount();
       if (CC.updateGraph) CC.updateGraph();
@@ -63,6 +64,7 @@ CC.handleEvent = function(evt) {
       var ag2 = CC.agents[evt.agent];
       if (ag2) ag2.streams.push(evt.text);
       if (CC.selectedAgent === evt.agent) CC.renderStream();
+      if (CC.chatHandleStreamDelta) CC.chatHandleStreamDelta(evt.agent, evt.text);
       break;
 
     case 'task_update':

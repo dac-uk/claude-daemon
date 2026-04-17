@@ -1,5 +1,43 @@
 /* ── Tasks & Discussions view ─────────────────────────────── */
 
+CC.formatTranscript = function(transcript) {
+  if (!transcript) return '';
+  // Parse turn markers like "## albert (CIO):" or "**johnny:**" or "### Turn 1: albert"
+  var lines = transcript.split('\n');
+  var html = '<div class="transcript-turns">';
+  var currentAgent = '';
+  var currentText = '';
+
+  function flush() {
+    if (currentAgent && currentText.trim()) {
+      var color = CC.agentColor(currentAgent.toLowerCase());
+      var emoji = CC.AGENT_EMOJI[currentAgent.toLowerCase()] || '';
+      html += '<div class="transcript-turn" style="border-left:3px solid ' + color + ';padding:8px 12px;margin:8px 0">'
+        + '<div style="font-weight:600;font-size:12px;color:' + color + '">' + emoji + ' ' + currentAgent + '</div>'
+        + '<div style="font-size:13px;margin-top:4px;white-space:pre-wrap">' + CC.escHtml(currentText.trim()) + '</div>'
+        + '</div>';
+    }
+    currentText = '';
+  }
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    // Match patterns like "## albert (CIO):", "**albert:**", "### Turn N: albert"
+    var match = line.match(/^(?:#{1,3}\s+(?:Turn\s+\d+:\s+)?)?(\w+)\s*(?:\([^)]*\))?\s*:/i) ||
+                line.match(/^\*\*(\w+)(?:\s*\([^)]*\))?\s*:\*\*/i);
+    if (match && CC.agents[match[1].toLowerCase()]) {
+      flush();
+      currentAgent = match[1];
+    } else {
+      currentText += line + '\n';
+    }
+  }
+  flush();
+  html += '</div>';
+  return html;
+};
+
+
 CC.renderTasksView = async function() {
   await CC._renderTaskList();
   await CC._renderDiscussionList();
@@ -52,8 +90,8 @@ CC._renderDiscussionList = async function() {
         '<span>$' + (d.total_cost_usd || 0).toFixed(4) + '</span>' +
         (ts ? '<span>' + ts + '</span>' : '') +
       '</div>' +
-      (d.synthesis ? '<div class="disc-transcript"><strong>Synthesis:</strong>\n' + CC.escHtml(d.synthesis) + '</div>' : '') +
-      (d.transcript ? '<div class="disc-transcript"><strong>Full Transcript:</strong>\n' + CC.escHtml(d.transcript) + '</div>' : '') +
+      (d.synthesis ? '<div class="disc-transcript"><strong>Synthesis:</strong><br>' + CC.escHtml(d.synthesis).replace(/\n/g, '<br>') + '</div>' : '') +
+      (d.transcript ? '<div class="disc-transcript"><strong>Transcript:</strong>' + CC.formatTranscript(d.transcript) + '</div>' : '') +
     '</div>';
   }).join('');
 };

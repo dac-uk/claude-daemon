@@ -124,8 +124,19 @@ CC._loadAudit = async function() {
   var data = await CC.api(url);
   if (!data) return;
 
+  // Populate action dropdown from data
+  var actionSel = document.getElementById('filterAction');
+  if (data && data.audit && actionSel.options.length <= 1) {
+    var actions = new Set();
+    data.audit.forEach(function(a) { if (a.action) actions.add(a.action); });
+    Array.from(actions).sort().forEach(function(act) {
+      var opt = document.createElement('option'); opt.value = act; opt.textContent = act;
+      actionSel.appendChild(opt);
+    });
+  }
+
   var body = document.getElementById('auditBody');
-  if (!data.audit || data.audit.length === 0) {
+  if (!data || !data.audit || data.audit.length === 0) {
     body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:20px">No audit entries</td></tr>';
   } else {
     body.innerHTML = data.audit.map(function(a) {
@@ -157,12 +168,34 @@ CC.renderSettingsView = async function() {
     body.innerHTML = mcpData.map(function(s) {
       var tierClass = s.tier === 'T1' ? 'tier-t1' : s.tier === 'T2' ? 'tier-t2' : 'tier-t3';
       var statusColor = s.status === 'active' || s.status === 'configured' ? 'var(--green)' : 'var(--text-dim)';
+      var isActive = s.status === 'active' || s.status === 'configured';
+      var isDisabled = s.status === 'disabled';
+      var btnHtml = '';
+      if (isActive) {
+        btnHtml = '<button class="mcp-toggle-btn disable" data-server="' + s.name + '">Disable</button>';
+      } else if (isDisabled) {
+        btnHtml = '<button class="mcp-toggle-btn enable" data-server="' + s.name + '">Enable</button>';
+      }
       return '<tr><td style="font-weight:500">' + s.name + '</td>' +
         '<td>' + (s.category || '-') + '</td>' +
         '<td><span class="tier-badge ' + tierClass + '">' + (s.tier || '?') + '</span></td>' +
         '<td style="color:' + statusColor + '">' + (s.status || 'unknown') + '</td>' +
-        '<td style="color:var(--text-secondary);font-size:11px">' + (s.description || '') + '</td></tr>';
+        '<td style="color:var(--text-secondary);font-size:11px">' + (s.description || '') + '</td>' +
+        '<td>' + btnHtml + '</td></tr>';
     }).join('');
+    body.querySelectorAll('.mcp-toggle-btn').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var action = btn.classList.contains('disable') ? 'disable' : 'enable';
+        var name = btn.dataset.server;
+        btn.disabled = true; btn.textContent = '...';
+        await fetch('/api/mcp/' + action, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ server_name: name })
+        });
+        CC.cache = {};
+        CC.renderSettingsView();
+      });
+    });
   }
 
   // System info
