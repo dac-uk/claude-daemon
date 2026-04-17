@@ -186,11 +186,11 @@ class ProcessManager:
         settings_path: str | None = None,
         agent_workspace: str | None = None,
     ) -> bool:
-        """Ensure an agent has a warm SDK session. Creates if needed. Returns success."""
+        """Ensure an (agent, model) SDK session exists. Creates if needed."""
         bridge = await self.ensure_sdk_bridge()
         if not bridge:
             return False
-        if bridge.has_session(agent_name):
+        if bridge.has_session(agent_name, model):
             return True
         session_id = await bridge.create_session(
             agent_name=agent_name,
@@ -326,11 +326,13 @@ class ProcessManager:
                 )
                 # Fall through to CLI execution
 
-        # SDK bridge routing — persistent sessions (fast, no subprocess spawn)
-        # Chat/default tasks use the pre-created session. Planning/workflow/scheduled
-        # tasks use subprocess with the correct model (opus, haiku, etc.).
-        if (agent_name and task_type in ("chat", "default")
-                and self._sdk_bridge and self._sdk_bridge.has_session(agent_name)):
+        # SDK bridge routing — persistent sessions (fast, no subprocess spawn).
+        # Matches by (agent, model): each agent can have multiple warm sessions
+        # for different models (e.g. Johnny has sonnet for chat + opus for planning).
+        # If no warm session exists for this (agent, model), falls through to subprocess.
+        sdk_model = model_override or self.config.default_model
+        if (agent_name and self._sdk_bridge
+                and self._sdk_bridge.has_session(agent_name, sdk_model)):
             try:
                 import time as _time
                 t0 = _time.monotonic()
@@ -338,6 +340,7 @@ class ProcessManager:
                     agent_name=agent_name,
                     prompt=prompt,
                     context=system_context,
+                    model=sdk_model,
                 )
                 elapsed = _time.monotonic() - t0
                 if not response.is_error:
@@ -345,12 +348,15 @@ class ProcessManager:
                         self._confirmed_sessions.add(response.session_id)
                     log.info("SDK response for %s in %.1fs", agent_name, elapsed)
                     return response
-                log.warning("SDK send failed for %s (%.1fs), falling back: %s",
-                            agent_name, elapsed, response.result[:200])
+                log.warning("SDK send failed for %s:%s (%.1fs), falling back: %s",
+                            agent_name, sdk_model, elapsed, response.result[:200])
                 # Remove dead session so next call recreates
-                self._sdk_bridge._sessions.pop(agent_name, None)
+                self._sdk_bridge._sessions.pop(
+                    self._sdk_bridge._key(agent_name, sdk_model), None,
+                )
             except Exception as e:
-                log.warning("SDK bridge error for %s, falling back to CLI: %s", agent_name, e)
+                log.warning("SDK bridge error for %s:%s, falling back to CLI: %s",
+                            agent_name, sdk_model, e)
 
         if session_id:
             lock = self._get_session_lock(session_id)
@@ -431,22 +437,27 @@ class ProcessManager:
                 )
                 # Fall through to CLI execution
 
-        # SDK bridge streaming — persistent sessions (chat/default only)
-        if (agent_name and task_type in ("chat", "default")
-                and self._sdk_bridge and self._sdk_bridge.has_session(agent_name)):
+        # SDK bridge streaming — persistent sessions keyed by (agent, model)
+        sdk_model = model_override or self.config.default_model
+        if (agent_name and self._sdk_bridge
+                and self._sdk_bridge.has_session(agent_name, sdk_model)):
             try:
                 async for chunk in self._sdk_bridge.stream_message(
                     agent_name=agent_name,
                     prompt=prompt,
                     context=system_context,
+                    model=sdk_model,
                 ):
                     if isinstance(chunk, ClaudeResponse) and chunk.session_id:
                         self._confirmed_sessions.add(chunk.session_id)
                     yield chunk
                 return
             except Exception as e:
-                log.warning("SDK streaming error for %s, falling back: %s", agent_name, e)
-                self._sdk_bridge._sessions.pop(agent_name, None)
+                log.warning("SDK streaming error for %s:%s, falling back: %s",
+                            agent_name, sdk_model, e)
+                self._sdk_bridge._sessions.pop(
+                    self._sdk_bridge._key(agent_name, sdk_model), None,
+                )
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:

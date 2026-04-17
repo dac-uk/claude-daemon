@@ -297,9 +297,10 @@ class Orchestrator:
             agent_workspace=str(agent.workspace),
         )
 
-        # If SDK session is warm, send only dynamic context (static is in the session).
+        # If SDK session is warm for this (agent, model), send only dynamic context.
         # Otherwise fall back to full context for subprocess mode.
-        sdk_active = self.pm._sdk_bridge and self.pm._sdk_bridge.has_session(agent.name)
+        sdk_active = (self.pm._sdk_bridge and
+                      self.pm._sdk_bridge.has_session(agent.name, model))
         if sdk_active:
             dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
             effective_context = dynamic_context or None
@@ -621,7 +622,8 @@ class Orchestrator:
             agent_workspace=str(agent.workspace),
         )
 
-        sdk_active = self.pm._sdk_bridge and self.pm._sdk_bridge.has_session(agent.name)
+        sdk_active = (self.pm._sdk_bridge and
+                      self.pm._sdk_bridge.has_session(agent.name, model))
         if sdk_active:
             dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
             effective_context = dynamic_context or None

@@ -46,8 +46,14 @@ class SDKBridgeManager:
     def is_alive(self) -> bool:
         return self._process is not None and self._process.returncode is None
 
-    def has_session(self, agent_name: str) -> bool:
-        return agent_name in self._sessions and self.is_alive
+    @staticmethod
+    def _key(agent_name: str, model: str | None = None) -> str:
+        """Compose internal session key. Format: agent:model (e.g. 'johnny:sonnet')."""
+        return f"{agent_name}:{model or 'default'}"
+
+    def has_session(self, agent_name: str, model: str | None = None) -> bool:
+        """Check if a warm session exists for this (agent, model) pair."""
+        return self._key(agent_name, model) in self._sessions and self.is_alive
 
     async def start(self) -> None:
         """Spawn the Node.js bridge process."""
@@ -214,19 +220,20 @@ class SDKBridgeManager:
         resume_session_id: str | None = None,
         agent_workspace: str | None = None,
     ) -> str | None:
-        """Create a persistent session for an agent. Returns session_id or None."""
+        """Create a persistent session for an (agent, model) pair. Returns session_id or None."""
         req_id = self._new_id()
+        session_key = self._key(agent_name, model)
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = future
 
         # Store system prompt to inject in first message
         if system_prompt:
-            self._system_prompts[agent_name] = system_prompt
+            self._system_prompts[session_key] = system_prompt
 
         await self._send_command({
             "cmd": "create",
             "id": req_id,
-            "agent": agent_name,
+            "agent": session_key,  # Bridge uses this as opaque session identifier
             "model": model,
             "permissionMode": self.config.permission_mode,
             "cwd": agent_workspace,
@@ -237,16 +244,16 @@ class SDKBridgeManager:
             result = await asyncio.wait_for(future, timeout=5.0)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
-            log.warning("SDK create_session timeout for %s", agent_name)
+            log.warning("SDK create_session timeout for %s", session_key)
             return None
 
         if result.get("event") == "error":
-            log.error("SDK create_session error for %s: %s", agent_name, result.get("message"))
+            log.error("SDK create_session error for %s: %s", session_key, result.get("message"))
             return None
 
         session_id = result.get("sessionId")
-        self._sessions[agent_name] = session_id or ""
-        log.info("SDK session created for %s (session=%s)", agent_name, (session_id or "pending")[:12])
+        self._sessions[session_key] = session_id or ""
+        log.info("SDK session created for %s (session=%s)", session_key, (session_id or "pending")[:12])
         return session_id
 
     async def send_message(
@@ -254,24 +261,26 @@ class SDKBridgeManager:
         agent_name: str,
         prompt: str,
         context: str | None = None,
+        model: str | None = None,
     ) -> ClaudeResponse:
         """Send a prompt and return the full response (buffered)."""
         req_id = self._new_id()
+        session_key = self._key(agent_name, model)
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = future
 
-        # Inject static system prompt on first message to this agent
+        # Inject static system prompt on first message to this session
         effective_context = context
-        if agent_name not in self._first_message:
-            self._first_message[agent_name] = True
-            sys_prompt = self._system_prompts.get(agent_name, "")
+        if session_key not in self._first_message:
+            self._first_message[session_key] = True
+            sys_prompt = self._system_prompts.get(session_key, "")
             if sys_prompt:
                 effective_context = sys_prompt + ("\n\n" + context if context else "")
 
         await self._send_command({
             "cmd": "send",
             "id": req_id,
-            "agent": agent_name,
+            "agent": session_key,
             "prompt": prompt,
             "context": effective_context or None,
         })
@@ -285,14 +294,14 @@ class SDKBridgeManager:
         if result.get("event") == "error":
             msg = result.get("message", "Unknown error")
             if result.get("recoverable"):
-                self._sessions.pop(agent_name, None)
-                self._first_message.pop(agent_name, None)
+                self._sessions.pop(session_key, None)
+                self._first_message.pop(session_key, None)
             return ClaudeResponse.error(f"SDK bridge error: {msg}")
 
         # Update session_id if we got one
         session_id = result.get("sessionId", "")
         if session_id:
-            self._sessions[agent_name] = session_id
+            self._sessions[session_key] = session_id
 
         return ClaudeResponse(
             result=result.get("result", ""),
@@ -310,24 +319,26 @@ class SDKBridgeManager:
         agent_name: str,
         prompt: str,
         context: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Send a prompt and stream text deltas, then final ClaudeResponse."""
         req_id = self._new_id()
+        session_key = self._key(agent_name, model)
         queue: asyncio.Queue = asyncio.Queue()
         self._streams[req_id] = queue
 
-        # Inject static system prompt on first message to this agent
+        # Inject static system prompt on first message to this session
         effective_context = context
-        if agent_name not in self._first_message:
-            self._first_message[agent_name] = True
-            sys_prompt = self._system_prompts.get(agent_name, "")
+        if session_key not in self._first_message:
+            self._first_message[session_key] = True
+            sys_prompt = self._system_prompts.get(session_key, "")
             if sys_prompt:
                 effective_context = sys_prompt + ("\n\n" + context if context else "")
 
         await self._send_command({
             "cmd": "send",
             "id": req_id,
-            "agent": agent_name,
+            "agent": session_key,
             "prompt": prompt,
             "context": effective_context or None,
         })
@@ -356,7 +367,7 @@ class SDKBridgeManager:
                 elif event_type == "result":
                     session_id = event.get("sessionId", "")
                     if session_id:
-                        self._sessions[agent_name] = session_id
+                        self._sessions[session_key] = session_id
                     yield ClaudeResponse(
                         result=event.get("result", ""),
                         session_id=session_id,
@@ -372,23 +383,24 @@ class SDKBridgeManager:
                 elif event_type == "error":
                     msg = event.get("message", "Unknown error")
                     if event.get("recoverable"):
-                        self._sessions.pop(agent_name, None)
-                        self._first_message.pop(agent_name, None)
+                        self._sessions.pop(session_key, None)
+                        self._first_message.pop(session_key, None)
                     yield ClaudeResponse.error(f"SDK bridge error: {msg}")
                     return
         finally:
             self._streams.pop(req_id, None)
 
-    async def close_session(self, agent_name: str) -> None:
-        """Close a specific agent's session."""
+    async def close_session(self, agent_name: str, model: str | None = None) -> None:
+        """Close a specific (agent, model) session."""
         req_id = self._new_id()
+        session_key = self._key(agent_name, model)
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = future
 
         await self._send_command({
             "cmd": "close",
             "id": req_id,
-            "agent": agent_name,
+            "agent": session_key,
         })
 
         try:
@@ -396,8 +408,8 @@ class SDKBridgeManager:
         except asyncio.TimeoutError:
             pass
 
-        self._sessions.pop(agent_name, None)
-        self._first_message.pop(agent_name, None)
+        self._sessions.pop(session_key, None)
+        self._first_message.pop(session_key, None)
 
     async def shutdown(self) -> None:
         """Shutdown all sessions and the bridge process."""

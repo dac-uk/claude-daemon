@@ -1058,16 +1058,21 @@ All webhook handlers return `202 Accepted` immediately and process asynchronousl
     │        sdk_bridge.py          │
     └───────────────┬───────────────┘
                     │ stdin/stdout
-    ┌───────────────▼───────────────┐
-    │     Node.js Bridge Process    │   @anthropic-ai/claude-agent-sdk
-    │         sdk/bridge.js         │   v2 API (persistent sessions)
-    │                               │
-    │  Sessions: Map<agent, SDK>    │   One SDKSession per agent
-    │  johnny  → SDKSession (warm)  │   MCP servers stay initialized
-    │  albert  → SDKSession (warm)  │   OAuth token stays validated
-    │  luna    → SDKSession (warm)  │   No per-message startup cost
-    │  ...                          │
-    └───────────────┬───────────────┘
+    ┌───────────────────▼───────────────────┐
+    │       Node.js Bridge Process          │   @anthropic-ai/claude-agent-sdk
+    │           sdk/bridge.js               │   v2 API (persistent sessions)
+    │                                       │
+    │  Sessions: Map<agent:model, SDK>      │   Keyed by (agent, model)
+    │  johnny:sonnet → warm (chat)          │   MCP stays initialized
+    │  johnny:opus   → warm (planning)      │   OAuth stays validated
+    │  albert:opus   → warm (all tasks)     │   No per-message startup
+    │  luna:opus     → warm (all tasks)     │
+    │  max:opus      → warm (all tasks)     │
+    │  penny:sonnet  → warm (chat/default)  │
+    │  jeremy:sonnet → warm (chat/default)  │
+    │  sophie:sonnet → warm (chat/default)  │
+    │                                       │   8 warm sessions at startup
+    └───────────────────┬───────────────────┘
                     │
     ┌───────────────▼───────────────┐
     │     Claude Code Processes     │   One per agent (persistent)
@@ -1098,9 +1103,17 @@ User types message (CLI / Telegram / Discord / API)
   │    @luna prefix → luna
   │    Default → johnny (orchestrator)
   │
-  ├─ Orchestrator checks: SDK session warm for this agent?
-  │    ├─ YES (chat/default) → send via SDK bridge (fast, ~2-5s)
-  │    └─ NO or planning/workflow → subprocess fallback (correct model)
+  ├─ Orchestrator picks the model for task_type (chat=sonnet, planning=opus...)
+  │
+  ├─ Check: warm SDK session for (agent, model)?
+  │    ├─ YES → send via SDK bridge (fast, ~2-5s)
+  │    └─ NO  → subprocess fallback (correct model, ~15s)
+  │
+  │  Example routing:
+  │    "hey albert" (chat, opus)     → albert:opus session ✓ (fast)
+  │    "@johnny plan X" (planning)   → johnny:opus session ✓ (fast)
+  │    "@johnny what's up" (chat)    → johnny:sonnet session ✓ (fast)
+  │    "@penny plan budget" (plan)   → penny:opus NOT warm → subprocess
   │
   ├─ SDK bridge writes to the agent's SDKSession
   │    session.send(prompt) → session.stream()
