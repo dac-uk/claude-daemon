@@ -441,6 +441,7 @@ class ProcessManager:
         sdk_model = model_override or self.config.default_model
         if (agent_name and self._sdk_bridge
                 and self._sdk_bridge.has_session(agent_name, sdk_model)):
+            sdk_ok = False
             try:
                 async for chunk in self._sdk_bridge.stream_message(
                     agent_name=agent_name,
@@ -448,16 +449,27 @@ class ProcessManager:
                     context=system_context,
                     model=sdk_model,
                 ):
-                    if isinstance(chunk, ClaudeResponse) and chunk.session_id:
-                        self._confirmed_sessions.add(chunk.session_id)
+                    if isinstance(chunk, ClaudeResponse):
+                        if chunk.session_id:
+                            self._confirmed_sessions.add(chunk.session_id)
+                        if chunk.is_error:
+                            log.warning(
+                                "SDK bridge error for %s:%s: %s — falling back to CLI",
+                                agent_name, sdk_model, chunk.result[:200],
+                            )
+                            break  # Don't yield the error; fall through to CLI
+                        sdk_ok = True
                     yield chunk
-                return
+                if sdk_ok:
+                    return
             except Exception as e:
                 log.warning("SDK streaming error for %s:%s, falling back: %s",
                             agent_name, sdk_model, e)
-                self._sdk_bridge._sessions.pop(
-                    self._sdk_bridge._key(agent_name, sdk_model), None,
-                )
+            # SDK path failed or errored — invalidate session and fall through to CLI
+            self._sdk_bridge._sessions.pop(
+                self._sdk_bridge._key(agent_name, sdk_model), None,
+            )
+            log.info("Falling back to CLI subprocess for %s", agent_name)
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:

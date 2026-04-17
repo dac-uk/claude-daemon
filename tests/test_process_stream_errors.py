@@ -196,3 +196,89 @@ async def test_stream_to_agent_logs_warning_on_empty_response(caplog):
     ]
     assert len(warnings) == 1
     assert "albert" in warnings[0].getMessage()
+
+
+# -- SDK bridge failure → CLI fallback --
+
+
+@pytest.mark.asyncio
+async def test_sdk_bridge_error_falls_back_to_cli():
+    """When the SDK bridge yields an error, pm.stream_message falls through to CLI."""
+    pm = _make_pm()
+
+    # Set up a fake SDK bridge that has a session but yields an error
+    bridge = MagicMock()
+    bridge.has_session.return_value = True
+
+    async def failing_sdk_stream(**kwargs):
+        yield ClaudeResponse.error("SDK bridge: stream ended without result")
+
+    bridge.stream_message = failing_sdk_stream
+    bridge._key = lambda a, m: f"{a}:{m}"
+    bridge._sessions = {"albert:sonnet": "warm-session-123"}
+    pm._sdk_bridge = bridge
+    pm.config.default_model = "sonnet"
+
+    # Set up CLI subprocess to produce a real response
+    result_line = (
+        b'{"type":"result","subtype":"success","is_error":false,'
+        b'"result":"Hello from CLI!","session_id":"cli-123",'
+        b'"total_cost_usd":0.01,"num_turns":1,"duration_ms":500,'
+        b'"usage":{"input_tokens":10,"output_tokens":5}}\n'
+    )
+    proc = _FakeProc(stdout_lines=[result_line], stderr=b"", returncode=0)
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    chunks: list = []
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        async for chunk in pm.stream_message(prompt="hi", agent_name="albert"):
+            chunks.append(chunk)
+
+    # The CLI fallback should produce the real response
+    final = [c for c in chunks if isinstance(c, ClaudeResponse)]
+    assert len(final) == 1
+    assert final[0].is_error is False
+    assert final[0].result == "Hello from CLI!"
+    # SDK bridge session should have been invalidated
+    assert "albert:sonnet" not in bridge._sessions
+
+
+@pytest.mark.asyncio
+async def test_sdk_bridge_empty_stream_falls_back_to_cli():
+    """When the SDK bridge yields nothing (shouldn't happen after fix), CLI is used."""
+    pm = _make_pm()
+
+    bridge = MagicMock()
+    bridge.has_session.return_value = True
+
+    async def empty_sdk_stream(**kwargs):
+        return
+        yield  # make it a generator
+
+    bridge.stream_message = empty_sdk_stream
+    bridge._key = lambda a, m: f"{a}:{m}"
+    bridge._sessions = {"albert:sonnet": "warm-session-123"}
+    pm._sdk_bridge = bridge
+    pm.config.default_model = "sonnet"
+
+    result_line = (
+        b'{"type":"result","subtype":"success","is_error":false,'
+        b'"result":"CLI fallback response","session_id":"cli-456",'
+        b'"total_cost_usd":0.01,"num_turns":1,"duration_ms":200,'
+        b'"usage":{"input_tokens":5,"output_tokens":3}}\n'
+    )
+    proc = _FakeProc(stdout_lines=[result_line], stderr=b"", returncode=0)
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    chunks: list = []
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        async for chunk in pm.stream_message(prompt="hi", agent_name="albert"):
+            chunks.append(chunk)
+
+    final = [c for c in chunks if isinstance(c, ClaudeResponse)]
+    assert len(final) == 1
+    assert final[0].result == "CLI fallback response"
