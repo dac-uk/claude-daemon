@@ -358,9 +358,13 @@ class HttpApi:
                     if isinstance(chunk, ClaudeResponse) and chunk.is_error:
                         done_event["error"] = chunk.result
                     await resp.write(f"data: {json.dumps(done_event)}\n\n".encode())
-        except Exception:
+        except Exception as exc:
             log.exception("API streaming handler error")
-            await resp.write(f"data: {json.dumps({'error': 'Internal error'})}\n\n".encode())
+            done_event = {"done": True, "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                await resp.write(f"data: {json.dumps(done_event)}\n\n".encode())
+            except Exception:
+                pass
 
         await resp.write_eof()
         return resp

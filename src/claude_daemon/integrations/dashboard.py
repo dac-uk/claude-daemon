@@ -12,10 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from aiohttp import web
+from aiohttp import web
 
 log = logging.getLogger(__name__)
 
@@ -47,14 +46,12 @@ class DashboardHub:
             *(_send(ws) for ws in self._clients),
             return_exceptions=True,
         )
-        dead = {r for r in results if isinstance(r, web.WebSocketResponse)}
+        dead = {r for r in results if r is not None and not isinstance(r, BaseException)}
         self._clients -= dead
 
     async def ws_handler(self, request: web.Request) -> web.WebSocketResponse:
         """Handle a new WebSocket connection from the dashboard."""
-        from aiohttp import web as aio_web
-
-        ws = aio_web.WebSocketResponse()
+        ws = web.WebSocketResponse()
         await ws.prepare(request)
         self._clients.add(ws)
         log.info("Dashboard client connected (%d total)", len(self._clients))
