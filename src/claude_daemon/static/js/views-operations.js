@@ -5,6 +5,7 @@ CC.opsState = {
   tasks: [],           // merged recent list
   expandedId: null,
   budgets: [],         // budget gauge data
+  goals: [],           // active goals
 };
 
 CC.renderOperationsView = async function() {
@@ -18,9 +19,11 @@ CC._opsLoad = async function() {
   var results = await Promise.all([
     CC.api('/api/v1/tasks/recent?limit=100'),
     CC.api('/api/v1/budgets'),
+    CC.api('/api/v1/goals?status=active'),
   ]);
   CC.opsState.tasks = (results[0] && results[0].tasks) || [];
   CC.opsState.budgets = (results[1] && results[1].budgets) || [];
+  CC.opsState.goals = (results[2] && results[2].goals) || [];
 };
 
 CC._opsFilterChip = function(key, label) {
@@ -55,6 +58,48 @@ CC._opsBudgetGauges = function() {
   });
   html += '</div>';
   return html;
+};
+
+CC._opsGoalCards = function() {
+  var goals = CC.opsState.goals;
+  if (goals.length === 0) return '';
+  var html = '<div class="goal-cards">';
+  goals.forEach(function(g) {
+    var owner = g.owner_agent || 'unassigned';
+    var ownerColor = CC.agentColor ? CC.agentColor(owner) : 'var(--text-secondary)';
+    var target = g.target_date ? new Date(g.target_date).toLocaleDateString() : '';
+    html += '<div class="goal-card glass-sm" data-goal-id="' + g.id + '">' +
+      '<div class="goal-card-header">' +
+        '<span class="goal-card-title">' + CC.escHtml(g.title) + '</span>' +
+        '<span class="goal-card-status">' + g.status + '</span>' +
+      '</div>' +
+      (g.description
+        ? '<div class="goal-card-desc">' + CC.escHtml(g.description).substring(0, 120) + '</div>'
+        : '') +
+      '<div class="goal-card-bar"><div class="goal-card-fill" id="goalFill' + g.id + '"></div></div>' +
+      '<div class="goal-card-meta">' +
+        '<span class="goal-card-owner" style="color:' + ownerColor + '">' +
+          (CC.AGENT_EMOJI && CC.AGENT_EMOJI[owner] ? CC.AGENT_EMOJI[owner] + ' ' : '') + owner +
+        '</span>' +
+        (target ? '<span class="goal-card-target">Due ' + target + '</span>' : '') +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  return html;
+};
+
+CC._opsLoadGoalProgress = function() {
+  CC.opsState.goals.forEach(function(g) {
+    CC.api('/api/v1/goals/' + g.id + '/progress').then(function(p) {
+      if (!p) return;
+      var fill = document.getElementById('goalFill' + g.id);
+      if (fill) {
+        fill.style.width = (p.pct || 0) + '%';
+        fill.title = (p.completed || 0) + '/' + (p.total || 0) + ' tasks';
+      }
+    });
+  });
 };
 
 CC._opsStatusColor = function(status) {
@@ -93,7 +138,8 @@ CC._opsRender = function() {
       CC._opsFilterChip('failed', 'Failed (' + (counts.failed || 0) + ')') +
       CC._opsFilterChip('cancelled', 'Cancelled (' + (counts.cancelled || 0) + ')') +
     '</div>' +
-    CC._opsBudgetGauges();
+    CC._opsBudgetGauges() +
+    CC._opsGoalCards();
 
   if (tasks.length === 0) {
     html += '<div class="empty glass"><div class="icon">\u26A1</div>' +
@@ -164,6 +210,7 @@ CC._opsRender = function() {
 
   el.innerHTML = html;
   CC._opsBindEvents();
+  CC._opsLoadGoalProgress();
 };
 
 CC._opsBindEvents = function() {
@@ -238,7 +285,8 @@ CC.escHtml = CC.escHtml || function(s) {
 CC.opsHandleEvent = function(evt) {
   if (CC.currentView !== 'operations') return;
   var live = ['task_created', 'task_update', 'task_cancelled',
-              'budget_update', 'budget_exceeded'];
+              'budget_update', 'budget_exceeded',
+              'goal_update', 'goal_progress'];
   if (live.indexOf(evt.type) >= 0) {
     CC.renderOperationsView();
   }

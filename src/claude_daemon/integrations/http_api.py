@@ -20,6 +20,7 @@ from aiohttp import web
 from claude_daemon.integrations.dashboard import DashboardHub
 from claude_daemon.orchestration import TaskAPI, TaskSubmission
 from claude_daemon.orchestration.budgets import BudgetStore
+from claude_daemon.orchestration.goals import GoalsStore
 
 if TYPE_CHECKING:
     from claude_daemon.core.daemon import ClaudeDaemon
@@ -41,6 +42,7 @@ class HttpApi:
         self._runner: web.AppRunner | None = None
         self._task_api: TaskAPI | None = None
         self._budget_store: BudgetStore | None = None
+        self._goals_store: GoalsStore | None = None
         self._setup_routes()
 
     def _get_budget_store(self) -> BudgetStore | None:
@@ -53,6 +55,15 @@ class HttpApi:
         if self.daemon.orchestrator:
             self.daemon.orchestrator.set_budget_store(self._budget_store)
         return self._budget_store
+
+    def _get_goals_store(self) -> GoalsStore | None:
+        """Lazily construct GoalsStore once store is ready."""
+        if self._goals_store is not None:
+            return self._goals_store
+        if not self.daemon.store:
+            return None
+        self._goals_store = GoalsStore(self.daemon.store)
+        return self._goals_store
 
     def _get_task_api(self) -> TaskAPI | None:
         """Lazily construct TaskAPI once orchestrator is ready."""
@@ -101,6 +112,13 @@ class HttpApi:
         self._app.router.add_get("/api/v1/budgets/{budget_id}", self._handle_v1_budgets_get)
         self._app.router.add_put("/api/v1/budgets/{budget_id}", self._handle_v1_budgets_update)
         self._app.router.add_delete("/api/v1/budgets/{budget_id}", self._handle_v1_budgets_delete)
+        # Goal tracking (Phase 3)
+        self._app.router.add_get("/api/v1/goals", self._handle_v1_goals_list)
+        self._app.router.add_post("/api/v1/goals", self._handle_v1_goals_create)
+        self._app.router.add_get("/api/v1/goals/{goal_id}", self._handle_v1_goals_get)
+        self._app.router.add_put("/api/v1/goals/{goal_id}", self._handle_v1_goals_update)
+        self._app.router.add_delete("/api/v1/goals/{goal_id}", self._handle_v1_goals_delete)
+        self._app.router.add_get("/api/v1/goals/{goal_id}/progress", self._handle_v1_goals_progress)
         self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
         self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
         self._app.router.add_get("/api/discussions", self._handle_discussions)
@@ -529,6 +547,116 @@ class HttpApi:
         if not ok:
             return web.json_response({"error": "Budget not found"}, status=404)
         return web.json_response({"status": "deleted"})
+
+    # -- /api/v1/goals — goal tracking --
+
+    async def _handle_v1_goals_list(self, request: web.Request) -> web.Response:
+        gs = self._get_goals_store()
+        if gs is None:
+            return web.json_response({"goals": []})
+        status = request.query.get("status")
+        owner = request.query.get("owner_agent")
+        return web.json_response({"goals": gs.list_all(status=status, owner_agent=owner)})
+
+    async def _handle_v1_goals_create(self, request: web.Request) -> web.Response:
+        gs = self._get_goals_store()
+        if gs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        try:
+            gid = gs.create(
+                title=body.get("title", ""),
+                description=body.get("description"),
+                owner_agent=body.get("owner_agent"),
+                target_date=body.get("target_date"),
+                parent_goal_id=body.get("parent_goal_id"),
+            )
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        try:
+            await self.hub.goal_update(gid, body.get("title", ""), "active")
+        except Exception:
+            pass
+        return web.json_response({"id": gid, "status": "created"}, status=201)
+
+    async def _handle_v1_goals_get(self, request: web.Request) -> web.Response:
+        gs = self._get_goals_store()
+        if gs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            gid = int(request.match_info["goal_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid goal_id"}, status=400)
+        row = gs.get(gid)
+        if row is None:
+            return web.json_response({"error": "Goal not found"}, status=404)
+        return web.json_response(row)
+
+    async def _handle_v1_goals_update(self, request: web.Request) -> web.Response:
+        gs = self._get_goals_store()
+        if gs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            gid = int(request.match_info["goal_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid goal_id"}, status=400)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        kwargs: dict = {}
+        if "title" in body:
+            kwargs["title"] = body["title"]
+        if "description" in body:
+            kwargs["description"] = body["description"]
+        if "owner_agent" in body:
+            kwargs["owner_agent"] = body["owner_agent"]
+        if "target_date" in body:
+            kwargs["target_date"] = body["target_date"]
+        if "status" in body:
+            kwargs["status"] = body["status"]
+        try:
+            ok = gs.update(gid, **kwargs)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        if not ok:
+            return web.json_response({"error": "Goal not found"}, status=404)
+        try:
+            row = gs.get(gid)
+            await self.hub.goal_update(gid, row["title"], row["status"])
+        except Exception:
+            pass
+        return web.json_response({"status": "updated"})
+
+    async def _handle_v1_goals_delete(self, request: web.Request) -> web.Response:
+        gs = self._get_goals_store()
+        if gs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            gid = int(request.match_info["goal_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid goal_id"}, status=400)
+        ok = gs.delete(gid)
+        if not ok:
+            return web.json_response({"error": "Goal not found"}, status=404)
+        return web.json_response({"status": "deleted"})
+
+    async def _handle_v1_goals_progress(self, request: web.Request) -> web.Response:
+        gs = self._get_goals_store()
+        if gs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            gid = int(request.match_info["goal_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid goal_id"}, status=400)
+        row = gs.get(gid)
+        if row is None:
+            return web.json_response({"error": "Goal not found"}, status=404)
+        progress = gs.compute_progress(gid)
+        return web.json_response({"goal_id": gid, **progress})
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket endpoint for live dashboard events."""

@@ -136,6 +136,30 @@ class DashboardHub:
             "ts": time.time(),
         })
 
+    async def goal_update(
+        self, goal_id: int, title: str, status: str,
+    ) -> None:
+        """Broadcast when a goal is created or updated."""
+        await self.broadcast({
+            "type": "goal_update",
+            "goal_id": goal_id,
+            "title": title,
+            "status": status,
+            "ts": time.time(),
+        })
+
+    async def goal_progress(
+        self, goal_id: int, title: str, pct: float,
+    ) -> None:
+        """Broadcast goal progress changes."""
+        await self.broadcast({
+            "type": "goal_progress",
+            "goal_id": goal_id,
+            "title": title,
+            "pct": pct,
+            "ts": time.time(),
+        })
+
     async def budget_update(
         self,
         budget_id: int,

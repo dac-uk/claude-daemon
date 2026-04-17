@@ -173,3 +173,17 @@ CREATE TABLE IF NOT EXISTS budgets (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_budgets_scope ON budgets(scope, scope_value);
+
+-- Goal tracking (native orchestration Phase 3)
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT,
+    owner_agent TEXT,
+    target_date DATE,
+    status TEXT NOT NULL DEFAULT 'active',
+    parent_goal_id INTEGER REFERENCES goals(id),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_agent, status);

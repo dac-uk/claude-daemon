@@ -119,6 +119,27 @@ class ConversationStore:
             """)
             self._db.commit()
 
+        # goals table (Phase 3 native orchestration)
+        try:
+            self._db.execute("SELECT 1 FROM goals LIMIT 0")
+        except sqlite3.OperationalError:
+            log.info("Migrating schema: creating goals table")
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    owner_agent TEXT,
+                    target_date DATE,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    parent_goal_id INTEGER REFERENCES goals(id),
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_agent, status);
+            """)
+            self._db.commit()
+
         # task_queue: add metadata (JSON) and goal_id columns for native orchestration
         try:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(task_queue)").fetchall()}

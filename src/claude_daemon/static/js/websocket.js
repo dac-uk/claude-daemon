@@ -101,6 +101,11 @@ CC.handleEvent = function(evt) {
       }
       break;
 
+    case 'goal_update':
+    case 'goal_progress':
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
     case 'budget_update':
       if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
       break;
