@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS task_queue (
     task_type TEXT DEFAULT 'default',
     platform TEXT DEFAULT 'spawn',
     user_id TEXT DEFAULT 'local',
+    metadata TEXT,
+    goal_id INTEGER,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP

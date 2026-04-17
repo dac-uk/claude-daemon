@@ -97,6 +97,21 @@ class ConversationStore:
             """)
             self._db.commit()
 
+        # task_queue: add metadata (JSON) and goal_id columns for native orchestration
+        try:
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(task_queue)").fetchall()}
+            if "metadata" not in cols:
+                log.info("Migrating schema: adding task_queue.metadata column")
+                self._db.execute("ALTER TABLE task_queue ADD COLUMN metadata TEXT")
+                self._db.commit()
+            if "goal_id" not in cols:
+                log.info("Migrating schema: adding task_queue.goal_id column")
+                self._db.execute("ALTER TABLE task_queue ADD COLUMN goal_id INTEGER")
+                self._db.commit()
+        except sqlite3.OperationalError:
+            # task_queue doesn't exist yet — schema.sql will create it on next startup
+            pass
+
     def close(self) -> None:
         self._db.close()
 
@@ -433,11 +448,13 @@ class ConversationStore:
     def create_task(
         self, task_id: str, agent_name: str, prompt: str,
         task_type: str = "default", platform: str = "spawn", user_id: str = "local",
+        metadata: str | None = None, goal_id: int | None = None,
     ) -> None:
         self._db.execute(
-            "INSERT INTO task_queue (id, agent_name, prompt, status, task_type, platform, user_id) "
-            "VALUES (?, ?, ?, 'pending', ?, ?, ?)",
-            (task_id, agent_name, prompt, task_type, platform, user_id),
+            "INSERT INTO task_queue "
+            "(id, agent_name, prompt, status, task_type, platform, user_id, metadata, goal_id) "
+            "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (task_id, agent_name, prompt, task_type, platform, user_id, metadata, goal_id),
         )
         self._db.commit()
 

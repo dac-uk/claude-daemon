@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from claude_daemon.integrations.dashboard import DashboardHub
+from claude_daemon.orchestration import TaskAPI, TaskSubmission
 
 if TYPE_CHECKING:
     from claude_daemon.core.daemon import ClaudeDaemon
@@ -37,7 +38,21 @@ class HttpApi:
         self.hub = DashboardHub()
         self._app = web.Application(middlewares=[self._auth_middleware])
         self._runner: web.AppRunner | None = None
+        self._task_api: TaskAPI | None = None
         self._setup_routes()
+
+    def _get_task_api(self) -> TaskAPI | None:
+        """Lazily construct TaskAPI once orchestrator is ready."""
+        if self._task_api is not None:
+            return self._task_api
+        if not (self.daemon.orchestrator and self.daemon.store and self.daemon.agent_registry):
+            return None
+        self._task_api = TaskAPI(
+            orchestrator=self.daemon.orchestrator,
+            registry=self.daemon.agent_registry,
+            store=self.daemon.store,
+        )
+        return self._task_api
 
     def _setup_routes(self) -> None:
         self._app.router.add_get("/api/health", self._handle_health)
@@ -60,6 +75,12 @@ class HttpApi:
         self._app.router.add_post("/api/settings/thinking", self._handle_settings_thinking)
         self._app.router.add_post("/api/settings/effort", self._handle_settings_effort)
         self._app.router.add_post("/api/paperclip/heartbeat", self._handle_paperclip_heartbeat)
+        # Native orchestration API (absorbs Paperclip task-queue capabilities)
+        self._app.router.add_post("/api/v1/tasks", self._handle_v1_tasks_submit)
+        self._app.router.add_get("/api/v1/tasks/pending", self._handle_v1_tasks_pending)
+        self._app.router.add_get("/api/v1/tasks/recent", self._handle_v1_tasks_recent)
+        self._app.router.add_get("/api/v1/tasks/{task_id}", self._handle_v1_tasks_get)
+        self._app.router.add_post("/api/v1/tasks/{task_id}/cancel", self._handle_v1_tasks_cancel)
         self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
         self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
         self._app.router.add_get("/api/discussions", self._handle_discussions)
@@ -312,19 +333,98 @@ class HttpApi:
         return web.json_response({"sessions": sessions})
 
     async def _handle_tasks(self, request: web.Request) -> web.Response:
-        """GET /api/tasks — spawned background tasks."""
+        """GET /api/tasks — merged view of live spawned + recent persisted tasks."""
         if not self.daemon.orchestrator:
             return web.json_response({"tasks": []})
-        tasks = []
+
+        # Collect live tasks from orchestrator
+        live: dict[str, dict] = {}
         for t in self.daemon.orchestrator.list_tasks():
-            tasks.append({
+            live[t.task_id] = {
                 "task_id": t.task_id,
                 "agent": t.agent_name,
                 "status": t.status,
                 "prompt": t.prompt[:200],
                 "cost": t.cost,
-            })
+            }
+
+        # Merge in recent persisted rows (DB truth)
+        tasks = list(live.values())
+        if self.daemon.store:
+            seen = set(live.keys())
+            for row in self.daemon.store.get_recent_tasks(limit=100):
+                tid = row.get("id")
+                if tid in seen:
+                    continue
+                tasks.append({
+                    "task_id": tid,
+                    "agent": row.get("agent_name"),
+                    "status": row.get("status"),
+                    "prompt": (row.get("prompt") or "")[:200],
+                    "cost": row.get("cost_usd") or 0.0,
+                })
         return web.json_response({"tasks": tasks})
+
+    # -- /api/v1/tasks — native orchestration API --
+
+    async def _handle_v1_tasks_submit(self, request: web.Request) -> web.Response:
+        api = self._get_task_api()
+        if api is None:
+            return web.json_response({"error": "Orchestrator not ready"}, status=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        prompt = body.get("prompt") or body.get("description", "")
+        if not prompt:
+            return web.json_response({"error": "Missing 'prompt'"}, status=400)
+
+        req = TaskSubmission(
+            prompt=prompt,
+            agent=body.get("agent") or body.get("assigned_to"),
+            user_id=body.get("user_id") or body.get("user") or body.get("created_by", "api"),
+            task_type=body.get("task_type", "default"),
+            platform=body.get("platform", "api"),
+            goal_id=body.get("goal_id"),
+            metadata=body.get("metadata") or {},
+        )
+        result = api.submit_task(req)
+        status = 201 if result.status == "pending" else 400
+        return web.json_response(result.to_dict(), status=status)
+
+    async def _handle_v1_tasks_pending(self, request: web.Request) -> web.Response:
+        api = self._get_task_api()
+        if api is None:
+            return web.json_response({"tasks": []})
+        agent = request.query.get("agent")
+        limit = min(int(request.query.get("limit", "50")), 200)
+        return web.json_response({"tasks": api.list_pending(agent=agent, limit=limit)})
+
+    async def _handle_v1_tasks_recent(self, request: web.Request) -> web.Response:
+        api = self._get_task_api()
+        if api is None:
+            return web.json_response({"tasks": []})
+        limit = min(int(request.query.get("limit", "50")), 200)
+        return web.json_response({"tasks": api.list_recent(limit=limit)})
+
+    async def _handle_v1_tasks_get(self, request: web.Request) -> web.Response:
+        api = self._get_task_api()
+        if api is None:
+            return web.json_response({"error": "Orchestrator not ready"}, status=503)
+        task_id = request.match_info["task_id"]
+        row = api.get_task(task_id)
+        if row is None:
+            return web.json_response({"error": "Task not found"}, status=404)
+        return web.json_response(row)
+
+    async def _handle_v1_tasks_cancel(self, request: web.Request) -> web.Response:
+        api = self._get_task_api()
+        if api is None:
+            return web.json_response({"error": "Orchestrator not ready"}, status=503)
+        task_id = request.match_info["task_id"]
+        result = await api.cancel_task(task_id)
+        return web.json_response(result)
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket endpoint for live dashboard events."""
@@ -458,49 +558,56 @@ class HttpApi:
         )
 
     async def _handle_paperclip_heartbeat(self, request: web.Request) -> web.Response:
-        """POST /api/paperclip/heartbeat — Receive a Paperclip heartbeat.
+        """POST /api/paperclip/heartbeat — Paperclip compat shim.
 
-        Paperclip pushes tasks to agents via webhooks. This endpoint accepts
-        the heartbeat payload, routes the task to the appropriate daemon agent,
-        and returns the result synchronously.
+        Accepts the Paperclip heartbeat payload shape and forwards it to the
+        native task API. Preserves cost-reporting to Paperclip when the
+        outbound integration is active (via its message handler).
         """
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response({"error": "Invalid JSON body"}, status=400)
 
-        # Find the Paperclip integration
+        # Prefer the outbound Paperclip integration (provides cost reporting)
         pc = self.daemon.router.integrations.get("paperclip") if self.daemon.router else None
-        if not pc:
-            # No Paperclip integration running — handle directly via daemon
-            prompt = body.get("prompt") or body.get("description", "")
-            if not prompt:
-                task = body.get("task", {})
-                prompt = task.get("prompt") or task.get("description", "")
-            if not prompt:
-                return web.json_response({"error": "No prompt in payload"}, status=400)
-
-            agent_name = body.get("agent") or body.get("assigned_to")
+        if pc:
             try:
-                result = await self.daemon.handle_message(
-                    prompt=prompt,
-                    platform="paperclip",
-                    user_id=body.get("created_by", "paperclip"),
-                    agent_name=agent_name,
-                )
-                return web.json_response({"status": "ok", "result": result})
+                result = await pc.handle_heartbeat(body)
+                status = 200 if result.get("status") == "ok" else 500
+                return web.json_response(result, status=status)
             except Exception:
                 log.exception("Paperclip heartbeat handler error")
                 return web.json_response({"error": "Processing failed"}, status=500)
 
-        # Route through Paperclip integration (has handler + cost reporting)
-        try:
-            result = await pc.handle_heartbeat(body)
-            status = 200 if result.get("status") == "ok" else 500
-            return web.json_response(result, status=status)
-        except Exception:
-            log.exception("Paperclip heartbeat handler error")
-            return web.json_response({"error": "Processing failed"}, status=500)
+        # No outbound integration — forward to native task API
+        api = self._get_task_api()
+        if api is None:
+            return web.json_response({"error": "Orchestrator not ready"}, status=503)
+
+        task = body.get("task") or body
+        prompt = task.get("prompt") or task.get("description", "")
+        if not prompt:
+            return web.json_response({"error": "No prompt in payload"}, status=400)
+
+        external_id = task.get("id") or task.get("task_id")
+        req = TaskSubmission(
+            prompt=prompt,
+            agent=task.get("agent") or task.get("assigned_to"),
+            user_id=task.get("created_by", "paperclip"),
+            task_type=task.get("task_type", "default"),
+            platform="paperclip",
+            metadata={"paperclip_task_id": external_id, "heartbeat": True},
+        )
+        result = api.submit_task(req)
+        if result.status == "pending":
+            return web.json_response(
+                {"status": "ok", "task_id": result.task_id}, status=200,
+            )
+        return web.json_response(
+            {"status": "error", "error": result.error or "submission failed"},
+            status=400,
+        )
 
     async def _handle_audit(self, request: web.Request) -> web.Response:
         """GET /api/audit?action=agent_message&agent=albert&limit=50&offset=0"""

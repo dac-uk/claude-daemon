@@ -75,6 +75,22 @@ CC.handleEvent = function(evt) {
       var label = evt.status === 'completed' ? 'Task completed' : evt.status === 'failed' ? 'Task failed' : 'Task ' + evt.status;
       CC.addFeed(evt.agent, evt.status === 'failed' ? 'error' : 'task', label);
       if (CC.currentView === 'tasks') CC.renderTasksView();
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
+    case 'task_created':
+      CC.tasks[evt.task_id] = {
+        task_id: evt.task_id, agent: evt.agent, status: 'pending',
+        prompt: evt.prompt, cost: 0
+      };
+      CC.addFeed(evt.agent, 'task', 'Task queued: ' + (evt.prompt || '').substring(0, 60));
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
+    case 'task_cancelled':
+      if (CC.tasks[evt.task_id]) CC.tasks[evt.task_id].status = 'cancelled';
+      CC.addFeed(evt.agent, 'task', 'Task cancelled');
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
       break;
 
     case 'metrics_tick':

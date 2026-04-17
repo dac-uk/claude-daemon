@@ -113,6 +113,29 @@ class DashboardHub:
             "ts": time.time(),
         })
 
+    async def task_created(
+        self, task_id: str, agent_name: str, prompt: str = "",
+    ) -> None:
+        """Broadcast when a new task enters the queue (pre-dispatch)."""
+        await self.broadcast({
+            "type": "task_created",
+            "task_id": task_id,
+            "agent": agent_name,
+            "prompt": prompt[:200],
+            "status": "pending",
+            "ts": time.time(),
+        })
+
+    async def task_cancelled(self, task_id: str, agent_name: str = "") -> None:
+        """Broadcast when a task is cancelled."""
+        await self.broadcast({
+            "type": "task_cancelled",
+            "task_id": task_id,
+            "agent": agent_name,
+            "status": "cancelled",
+            "ts": time.time(),
+        })
+
     async def auto_parallel(self, agent_name: str, session_id: str) -> None:
         await self.broadcast({
             "type": "auto_parallel",

@@ -451,6 +451,96 @@ html, body {
 .chat-send-btn:hover { box-shadow: 0 0 20px rgba(0,200,255,0.4), 0 0 40px rgba(168,85,247,0.2); }
 .chat-send-btn svg { width: 18px; height: 18px; stroke: white; }
 
+/* ── Operations view ───────────────────────────────────────── */
+#view-operations { padding: 20px; overflow-y: auto; height: 100%; }
+.ops-header { display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px; }
+.ops-header h2 { font-family: 'Orbitron', var(--font); font-size: 20px;
+  font-weight: 700; letter-spacing: 0.5px;
+  background: linear-gradient(90deg, var(--accent), var(--neon-purple));
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ops-submit-btn { padding: 10px 20px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--neon-blue), var(--neon-purple));
+  color: white; border: none; cursor: pointer; font-weight: 600;
+  box-shadow: 0 0 14px rgba(0,200,255,0.3);
+  transition: all 0.2s; }
+.ops-submit-btn:hover { box-shadow: 0 0 24px rgba(0,200,255,0.5),
+  0 0 40px rgba(168,85,247,0.2); transform: translateY(-1px); }
+
+.ops-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.ops-chip { padding: 6px 14px; border-radius: 999px;
+  background: rgba(0,240,255,0.04); color: var(--text-secondary);
+  border: 1px solid var(--border); cursor: pointer; font-size: 12px;
+  font-weight: 500; transition: all 0.2s; }
+.ops-chip:hover { background: rgba(0,240,255,0.08); color: var(--text); }
+.ops-chip.active { background: rgba(0,240,255,0.15); color: var(--accent);
+  border-color: var(--border-accent); box-shadow: 0 0 12px rgba(0,240,255,0.15); }
+
+.ops-task-list { display: flex; flex-direction: column; gap: 8px; }
+.ops-task { padding: 0; border-radius: var(--radius-sm); overflow: hidden;
+  transition: all 0.2s; }
+.ops-task:hover { border-color: var(--border-accent); }
+.ops-task.expanded { box-shadow: var(--glow-accent); }
+.ops-task-row { display: grid; grid-template-columns: 180px 1fr 110px 90px;
+  gap: 12px; padding: 12px 16px; cursor: pointer; align-items: center; }
+.ops-task-agent { font-weight: 600; font-size: 13px; }
+.ops-task-prompt { color: var(--text-secondary); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-task-status { text-transform: uppercase; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.5px; text-align: center; }
+.ops-task-cost { font-family: var(--mono); font-size: 12px; text-align: right;
+  color: var(--text-secondary); }
+
+.ops-task-detail { padding: 14px 16px; border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.25); display: flex; flex-direction: column; gap: 6px;
+  font-size: 12px; color: var(--text-secondary); }
+.ops-task-detail code { font-family: var(--mono); color: var(--accent); }
+.ops-task-full-prompt, .ops-task-result, .ops-task-error {
+  margin-top: 6px; padding: 8px 10px; border-radius: var(--radius-xs);
+  background: rgba(0,0,0,0.3); white-space: pre-wrap; word-break: break-word;
+  color: var(--text); max-height: 200px; overflow-y: auto; }
+.ops-task-error { color: var(--red); border: 1px solid rgba(255,34,102,0.3); }
+.ops-cancel-btn { align-self: flex-start; margin-top: 8px;
+  padding: 6px 14px; border-radius: 6px;
+  background: rgba(255,34,102,0.15); color: var(--red);
+  border: 1px solid rgba(255,34,102,0.3); cursor: pointer; font-weight: 600;
+  font-size: 12px; transition: all 0.2s; }
+.ops-cancel-btn:hover { background: rgba(255,34,102,0.25);
+  box-shadow: 0 0 12px rgba(255,34,102,0.25); }
+.ops-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ops-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px); opacity: 0; pointer-events: none;
+  transition: opacity 0.2s; z-index: 90; }
+.ops-modal-overlay.open { opacity: 1; pointer-events: auto; }
+.ops-modal { position: fixed; top: 50%; left: 50%;
+  transform: translate(-50%, -50%) scale(0.95);
+  width: 520px; max-width: 90vw; padding: 24px;
+  border-radius: var(--radius); z-index: 100;
+  opacity: 0; pointer-events: none; transition: all 0.2s;
+  display: flex; flex-direction: column; gap: 12px; }
+.ops-modal.open { opacity: 1; pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1); }
+.ops-modal h3 { font-family: 'Orbitron', var(--font); font-size: 16px;
+  color: var(--accent); margin-bottom: 8px; }
+.ops-modal label { font-size: 12px; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px; }
+.ops-modal select, .ops-modal textarea {
+  background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-family: inherit; font-size: 14px;
+  outline: none; transition: border-color 0.2s; }
+.ops-modal select:focus, .ops-modal textarea:focus { border-color: var(--accent); }
+.ops-modal-actions { display: flex; gap: 8px; justify-content: flex-end;
+  margin-top: 8px; }
+.ops-modal-cancel, .ops-modal-submit { padding: 8px 18px; border-radius: 8px;
+  border: none; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+.ops-modal-cancel { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+.ops-modal-cancel:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+.ops-modal-submit { background: linear-gradient(135deg, var(--neon-blue), var(--neon-purple));
+  color: white; box-shadow: 0 0 14px rgba(0,200,255,0.3); }
+.ops-modal-submit:hover { box-shadow: 0 0 24px rgba(0,200,255,0.5); }
+
 /* ── Scrollbar ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -30,6 +30,9 @@ CC.navigate = function(viewName) {
     case 'tasks':
       CC.renderTasksView();
       break;
+    case 'operations':
+      CC.renderOperationsView();
+      break;
     case 'analytics':
       CC.renderAnalyticsView();
       break;

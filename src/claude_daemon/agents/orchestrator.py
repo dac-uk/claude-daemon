@@ -718,26 +718,43 @@ class Orchestrator:
         platform: str = "spawn",
         user_id: str = "local",
         task_type: str = "default",
+        task_id: str | None = None,
     ) -> SpawnedTask:
         """Launch a task on an agent in the background (non-blocking).
 
         Each spawned task gets its own fresh session so multiple tasks
         to the same agent run truly in parallel (no --resume collision).
         Returns immediately with a SpawnedTask for tracking.
+
+        If ``task_id`` is provided, it's used as-is and the DB row is assumed
+        to already exist (created by an external caller via TaskAPI). If None,
+        a fresh id is generated and the row is created here.
         """
         # Cleanup old completed tasks to prevent memory leak
         self._cleanup_finished_tasks()
 
-        task_id = str(uuid.uuid4())[:12]
+        pre_persisted = task_id is not None
+        if task_id is None:
+            task_id = str(uuid.uuid4())[:12]
 
-        # Persist to SQLite so tasks survive daemon restarts
-        try:
-            self.store.create_task(
-                task_id, agent.name, prompt[:2000],
-                task_type=task_type, platform=platform, user_id=user_id,
-            )
-        except Exception:
-            log.debug("Could not persist task %s to DB", task_id)
+        # Persist to SQLite so tasks survive daemon restarts (unless already done)
+        if not pre_persisted:
+            try:
+                self.store.create_task(
+                    task_id, agent.name, prompt[:2000],
+                    task_type=task_type, platform=platform, user_id=user_id,
+                )
+            except Exception:
+                log.debug("Could not persist task %s to DB", task_id)
+
+        # Broadcast task creation so the dashboard updates immediately
+        if self.hub:
+            try:
+                asyncio.create_task(
+                    self.hub.task_created(task_id, agent.name, prompt[:200]),
+                )
+            except Exception:
+                pass
 
         async def _run():
             try:
