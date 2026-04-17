@@ -4,6 +4,7 @@ CC.opsState = {
   filter: 'all',       // all | pending | running | completed | failed | cancelled
   tasks: [],           // merged recent list
   expandedId: null,
+  budgets: [],         // budget gauge data
 };
 
 CC.renderOperationsView = async function() {
@@ -12,16 +13,48 @@ CC.renderOperationsView = async function() {
 };
 
 CC._opsLoad = async function() {
-  // Force fresh on every full render so the queue reflects reality
   CC.cache['/api/v1/tasks/recent?limit=100'] = null;
-  var data = await CC.api('/api/v1/tasks/recent?limit=100');
-  CC.opsState.tasks = (data && data.tasks) || [];
+  CC.cache['/api/v1/budgets'] = null;
+  var results = await Promise.all([
+    CC.api('/api/v1/tasks/recent?limit=100'),
+    CC.api('/api/v1/budgets'),
+  ]);
+  CC.opsState.tasks = (results[0] && results[0].tasks) || [];
+  CC.opsState.budgets = (results[1] && results[1].budgets) || [];
 };
 
 CC._opsFilterChip = function(key, label) {
   var active = CC.opsState.filter === key;
   return '<button class="ops-chip' + (active ? ' active' : '') + '" data-filter="' +
     key + '">' + label + '</button>';
+};
+
+CC._opsBudgetGauges = function() {
+  var budgets = CC.opsState.budgets.filter(function(b) { return b.enabled; });
+  if (budgets.length === 0) return '';
+  var html = '<div class="budget-gauges">';
+  budgets.forEach(function(b) {
+    var pct = b.limit_usd > 0 ? Math.min(100, (b.current_spend / b.limit_usd) * 100) : 0;
+    var warn = pct >= 80;
+    var label = b.scope === 'global' ? 'Global' :
+      (b.scope.charAt(0).toUpperCase() + b.scope.slice(1) + ': ' + (b.scope_value || '*'));
+    var deg = (pct / 100) * 360;
+    html += '<div class="budget-gauge ' + (warn ? 'warn' : '') + '">' +
+      '<div class="budget-gauge-ring" style="background:conic-gradient(' +
+        (warn ? 'var(--red)' : 'var(--accent)') + ' ' + deg + 'deg, ' +
+        'rgba(255,255,255,0.05) ' + deg + 'deg)">' +
+        '<div class="budget-gauge-inner">' +
+          '<span class="budget-gauge-pct">' + Math.round(pct) + '%</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="budget-gauge-label">' + CC.escHtml(label) + '</div>' +
+      '<div class="budget-gauge-detail">$' + b.current_spend.toFixed(2) +
+        ' / $' + b.limit_usd.toFixed(2) + '</div>' +
+      '<div class="budget-gauge-period">' + b.period + '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  return html;
 };
 
 CC._opsStatusColor = function(status) {
@@ -59,7 +92,8 @@ CC._opsRender = function() {
       CC._opsFilterChip('completed', 'Completed (' + (counts.completed || 0) + ')') +
       CC._opsFilterChip('failed', 'Failed (' + (counts.failed || 0) + ')') +
       CC._opsFilterChip('cancelled', 'Cancelled (' + (counts.cancelled || 0) + ')') +
-    '</div>';
+    '</div>' +
+    CC._opsBudgetGauges();
 
   if (tasks.length === 0) {
     html += '<div class="empty glass"><div class="icon">\u26A1</div>' +
@@ -203,7 +237,9 @@ CC.escHtml = CC.escHtml || function(s) {
 /* Hook for WebSocket events to live-refresh */
 CC.opsHandleEvent = function(evt) {
   if (CC.currentView !== 'operations') return;
-  if (['task_created', 'task_update', 'task_cancelled'].indexOf(evt.type) >= 0) {
+  var live = ['task_created', 'task_update', 'task_cancelled',
+              'budget_update', 'budget_exceeded'];
+  if (live.indexOf(evt.type) >= 0) {
     CC.renderOperationsView();
   }
 };

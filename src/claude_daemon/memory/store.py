@@ -97,6 +97,28 @@ class ConversationStore:
             """)
             self._db.commit()
 
+        # budgets table (Phase 2 native orchestration)
+        try:
+            self._db.execute("SELECT 1 FROM budgets LIMIT 0")
+        except sqlite3.OperationalError:
+            log.info("Migrating schema: creating budgets table")
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS budgets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL,
+                    scope_value TEXT,
+                    limit_usd REAL NOT NULL,
+                    period TEXT NOT NULL,
+                    current_spend REAL NOT NULL DEFAULT 0.0,
+                    reset_at TIMESTAMP,
+                    approval_threshold_usd REAL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_budgets_scope ON budgets(scope, scope_value);
+            """)
+            self._db.commit()
+
         # task_queue: add metadata (JSON) and goal_id columns for native orchestration
         try:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(task_queue)").fetchall()}

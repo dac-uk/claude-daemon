@@ -101,6 +101,17 @@ CC.handleEvent = function(evt) {
       }
       break;
 
+    case 'budget_update':
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
+    case 'budget_exceeded':
+      CC.addFeed(evt.scope_value || 'system', 'error',
+        'Budget exceeded: ' + evt.scope + ':' + (evt.scope_value || '*') +
+        ' $' + (evt.current_spend || 0).toFixed(2) + '/' + (evt.limit_usd || 0).toFixed(2));
+      if (CC.opsHandleEvent) CC.opsHandleEvent(evt);
+      break;
+
     case 'auto_parallel':
       CC.addFeed(evt.agent, 'parallel', 'Auto-spawned parallel session');
       break;

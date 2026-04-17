@@ -123,6 +123,7 @@ class Orchestrator:
         self._embedding_store = embedding_store
         self._discussion_engine = None
         self._workflow_engine = None
+        self._budget_store = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
 
     def set_discussion_engine(self, engine) -> None:
@@ -132,6 +133,10 @@ class Orchestrator:
     def set_workflow_engine(self, engine) -> None:
         """Inject workflow engine (avoids circular init)."""
         self._workflow_engine = engine
+
+    def set_budget_store(self, budget_store) -> None:
+        """Inject budget store for post-completion spend recording."""
+        self._budget_store = budget_store
 
     async def _semantic_search(self, prompt: str) -> list[dict]:
         """Hybrid search: semantic vector search with FTS5 keyword fallback.
@@ -788,6 +793,23 @@ class Orchestrator:
                 )
             except Exception:
                 pass
+            # Record actual spend against applicable budgets
+            if spawned.cost > 0 and self._budget_store is not None:
+                try:
+                    updated = self._budget_store.record_spend(
+                        agent_name=agent.name,
+                        user_id=user_id,
+                        task_type=task_type,
+                        actual_cost=spawned.cost,
+                    )
+                    if self.hub and updated:
+                        for b in updated:
+                            await self.hub.budget_update(
+                                b["id"], b["scope"], b.get("scope_value"),
+                                b["current_spend"], b["limit_usd"],
+                            )
+                except Exception:
+                    log.debug("Budget spend recording failed for task %s", task_id)
             if self.hub:
                 try:
                     await self.hub.task_update(

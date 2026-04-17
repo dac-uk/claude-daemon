@@ -136,6 +136,40 @@ class DashboardHub:
             "ts": time.time(),
         })
 
+    async def budget_update(
+        self,
+        budget_id: int,
+        scope: str,
+        scope_value: str | None,
+        current_spend: float,
+        limit_usd: float,
+    ) -> None:
+        """Broadcast when a budget's spend changes."""
+        await self.broadcast({
+            "type": "budget_update",
+            "budget_id": budget_id,
+            "scope": scope,
+            "scope_value": scope_value,
+            "current_spend": current_spend,
+            "limit_usd": limit_usd,
+            "ts": time.time(),
+        })
+
+    async def budget_exceeded(
+        self, budget_id: int, scope: str, scope_value: str | None,
+        current_spend: float, limit_usd: float,
+    ) -> None:
+        """Broadcast when a task is rejected due to budget exhaustion."""
+        await self.broadcast({
+            "type": "budget_exceeded",
+            "budget_id": budget_id,
+            "scope": scope,
+            "scope_value": scope_value,
+            "current_spend": current_spend,
+            "limit_usd": limit_usd,
+            "ts": time.time(),
+        })
+
     async def auto_parallel(self, agent_name: str, session_id: str) -> None:
         await self.broadcast({
             "type": "auto_parallel",

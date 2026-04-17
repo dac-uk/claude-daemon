@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from claude_daemon.agents.orchestrator import Orchestrator, SpawnedTask
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.memory.store import ConversationStore
+    from claude_daemon.orchestration.budgets import BudgetStore
 
 log = logging.getLogger(__name__)
 
@@ -65,10 +66,12 @@ class TaskAPI:
         orchestrator: Orchestrator,
         registry: AgentRegistry,
         store: ConversationStore,
+        budget_store: BudgetStore | None = None,
     ) -> None:
         self._orch = orchestrator
         self._registry = registry
         self._store = store
+        self._budget_store = budget_store
 
     def _resolve_agent(self, name: str | None) -> tuple[str | None, Any]:
         """Resolve an agent name via the registry. Returns (name, agent) or (None, None)."""
@@ -99,6 +102,21 @@ class TaskAPI:
                 task_id="", status="rejected",
                 error=f"Unknown agent: {req.agent}",
             )
+
+        # Budget enforcement (Phase 2)
+        if self._budget_store is not None:
+            from claude_daemon.orchestration.enforcement import enforce_budget
+            decision = enforce_budget(
+                self._budget_store,
+                agent_name=agent_name,
+                user_id=req.user_id,
+                task_type=req.task_type,
+            )
+            if not decision.allowed:
+                return TaskSubmissionResult(
+                    task_id="", status=decision.outcome,
+                    agent=agent_name, error=decision.reason,
+                )
 
         # Generate task_id up-front so caller gets it synchronously
         task_id = str(uuid.uuid4())[:12]

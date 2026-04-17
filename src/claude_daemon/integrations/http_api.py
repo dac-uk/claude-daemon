@@ -19,6 +19,7 @@ from aiohttp import web
 
 from claude_daemon.integrations.dashboard import DashboardHub
 from claude_daemon.orchestration import TaskAPI, TaskSubmission
+from claude_daemon.orchestration.budgets import BudgetStore
 
 if TYPE_CHECKING:
     from claude_daemon.core.daemon import ClaudeDaemon
@@ -39,7 +40,19 @@ class HttpApi:
         self._app = web.Application(middlewares=[self._auth_middleware])
         self._runner: web.AppRunner | None = None
         self._task_api: TaskAPI | None = None
+        self._budget_store: BudgetStore | None = None
         self._setup_routes()
+
+    def _get_budget_store(self) -> BudgetStore | None:
+        """Lazily construct BudgetStore once store is ready."""
+        if self._budget_store is not None:
+            return self._budget_store
+        if not self.daemon.store:
+            return None
+        self._budget_store = BudgetStore(self.daemon.store)
+        if self.daemon.orchestrator:
+            self.daemon.orchestrator.set_budget_store(self._budget_store)
+        return self._budget_store
 
     def _get_task_api(self) -> TaskAPI | None:
         """Lazily construct TaskAPI once orchestrator is ready."""
@@ -51,6 +64,7 @@ class HttpApi:
             orchestrator=self.daemon.orchestrator,
             registry=self.daemon.agent_registry,
             store=self.daemon.store,
+            budget_store=self._get_budget_store(),
         )
         return self._task_api
 
@@ -81,6 +95,12 @@ class HttpApi:
         self._app.router.add_get("/api/v1/tasks/recent", self._handle_v1_tasks_recent)
         self._app.router.add_get("/api/v1/tasks/{task_id}", self._handle_v1_tasks_get)
         self._app.router.add_post("/api/v1/tasks/{task_id}/cancel", self._handle_v1_tasks_cancel)
+        # Budget management (Phase 2)
+        self._app.router.add_get("/api/v1/budgets", self._handle_v1_budgets_list)
+        self._app.router.add_post("/api/v1/budgets", self._handle_v1_budgets_create)
+        self._app.router.add_get("/api/v1/budgets/{budget_id}", self._handle_v1_budgets_get)
+        self._app.router.add_put("/api/v1/budgets/{budget_id}", self._handle_v1_budgets_update)
+        self._app.router.add_delete("/api/v1/budgets/{budget_id}", self._handle_v1_budgets_delete)
         self._app.router.add_get("/api/settings/backend", self._handle_backend_status)
         self._app.router.add_post("/api/settings/backend", self._handle_backend_set)
         self._app.router.add_get("/api/discussions", self._handle_discussions)
@@ -425,6 +445,90 @@ class HttpApi:
         task_id = request.match_info["task_id"]
         result = await api.cancel_task(task_id)
         return web.json_response(result)
+
+    # -- /api/v1/budgets — budget management --
+
+    async def _handle_v1_budgets_list(self, request: web.Request) -> web.Response:
+        bs = self._get_budget_store()
+        if bs is None:
+            return web.json_response({"budgets": []})
+        enabled_only = request.query.get("enabled") == "1"
+        return web.json_response({"budgets": bs.list_all(enabled_only=enabled_only)})
+
+    async def _handle_v1_budgets_create(self, request: web.Request) -> web.Response:
+        bs = self._get_budget_store()
+        if bs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        try:
+            bid = bs.create(
+                scope=body.get("scope", ""),
+                limit_usd=float(body.get("limit_usd", 0)),
+                period=body.get("period", ""),
+                scope_value=body.get("scope_value"),
+                approval_threshold_usd=body.get("approval_threshold_usd"),
+            )
+        except (ValueError, TypeError) as e:
+            return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"id": bid, "status": "created"}, status=201)
+
+    async def _handle_v1_budgets_get(self, request: web.Request) -> web.Response:
+        bs = self._get_budget_store()
+        if bs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            bid = int(request.match_info["budget_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid budget_id"}, status=400)
+        row = bs.get(bid)
+        if row is None:
+            return web.json_response({"error": "Budget not found"}, status=404)
+        return web.json_response(row)
+
+    async def _handle_v1_budgets_update(self, request: web.Request) -> web.Response:
+        bs = self._get_budget_store()
+        if bs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            bid = int(request.match_info["budget_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid budget_id"}, status=400)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        kwargs: dict = {}
+        if "limit_usd" in body:
+            kwargs["limit_usd"] = float(body["limit_usd"])
+        if "period" in body:
+            kwargs["period"] = body["period"]
+        if "enabled" in body:
+            kwargs["enabled"] = bool(body["enabled"])
+        if "approval_threshold_usd" in body:
+            kwargs["approval_threshold_usd"] = body["approval_threshold_usd"]
+        try:
+            ok = bs.update(bid, **kwargs)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        if not ok:
+            return web.json_response({"error": "Budget not found"}, status=404)
+        return web.json_response({"status": "updated"})
+
+    async def _handle_v1_budgets_delete(self, request: web.Request) -> web.Response:
+        bs = self._get_budget_store()
+        if bs is None:
+            return web.json_response({"error": "Store not ready"}, status=503)
+        try:
+            bid = int(request.match_info["budget_id"])
+        except ValueError:
+            return web.json_response({"error": "Invalid budget_id"}, status=400)
+        ok = bs.delete(bid)
+        if not ok:
+            return web.json_response({"error": "Budget not found"}, status=404)
+        return web.json_response({"status": "deleted"})
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket endpoint for live dashboard events."""

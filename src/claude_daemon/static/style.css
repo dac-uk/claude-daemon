@@ -541,6 +541,31 @@ html, body {
   color: white; box-shadow: 0 0 14px rgba(0,200,255,0.3); }
 .ops-modal-submit:hover { box-shadow: 0 0 24px rgba(0,200,255,0.5); }
 
+/* ── Budget gauges ──────────────────────────────────────────── */
+.budget-gauges { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.budget-gauge { display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 14px 18px; border-radius: var(--radius); background: var(--bg-card);
+  border: 1px solid var(--border); transition: box-shadow var(--transition); min-width: 120px; }
+.budget-gauge.warn { border-color: rgba(255,34,102,0.4);
+  box-shadow: 0 0 18px rgba(255,34,102,0.2); }
+.budget-gauge-ring { width: 72px; height: 72px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 12px rgba(0,240,255,0.15); }
+.budget-gauge.warn .budget-gauge-ring { box-shadow: 0 0 18px rgba(255,34,102,0.3); }
+.budget-gauge-inner { width: 54px; height: 54px; border-radius: 50%;
+  background: var(--bg-primary); display: flex; align-items: center;
+  justify-content: center; }
+.budget-gauge-pct { font-family: 'Orbitron', monospace; font-size: 14px;
+  font-weight: 700; color: var(--accent); }
+.budget-gauge.warn .budget-gauge-pct { color: var(--red); }
+.budget-gauge-label { font-size: 12px; font-weight: 600; color: var(--text);
+  text-align: center; max-width: 120px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.budget-gauge-detail { font-family: var(--mono); font-size: 11px;
+  color: var(--text-secondary); }
+.budget-gauge-period { font-size: 10px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; }
+
 /* ── Scrollbar ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

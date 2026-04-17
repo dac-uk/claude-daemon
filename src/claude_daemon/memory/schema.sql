@@ -158,3 +158,18 @@ CREATE TABLE IF NOT EXISTS discussions (
 CREATE INDEX IF NOT EXISTS idx_discussions_type ON discussions(discussion_type);
 CREATE INDEX IF NOT EXISTS idx_discussions_ts ON discussions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_discussions_initiator ON discussions(initiator);
+
+-- Budget caps for cost governance (native orchestration Phase 2)
+CREATE TABLE IF NOT EXISTS budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,                -- global | agent | user | task_type
+    scope_value TEXT,                   -- e.g. agent name, user id (null for global)
+    limit_usd REAL NOT NULL,
+    period TEXT NOT NULL,               -- daily | weekly | monthly | lifetime
+    current_spend REAL NOT NULL DEFAULT 0.0,
+    reset_at TIMESTAMP,
+    approval_threshold_usd REAL,        -- null = no approval needed
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_budgets_scope ON budgets(scope, scope_value);
