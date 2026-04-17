@@ -71,7 +71,7 @@ class TestApprovalsCRUD:
 
 class TestApproveFlow:
     def test_approve_sets_status(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         ok = appr.approve(aid, approver="bob")
         assert ok is True
@@ -81,15 +81,14 @@ class TestApproveFlow:
         assert row["resolved_at"] is not None
 
     def test_approve_updates_task_to_pending(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
-        store.update_task_status("t1", "pending_approval")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.approve(aid)
         task = store.get_task("t1")
         assert task["status"] == "pending"
 
     def test_approve_already_resolved_returns_false(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.approve(aid)
         assert appr.approve(aid) is False
@@ -102,7 +101,7 @@ class TestApproveFlow:
 
 class TestRejectFlow:
     def test_reject_sets_status(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         ok = appr.reject(aid, approver="alice")
         assert ok is True
@@ -112,14 +111,14 @@ class TestRejectFlow:
         assert row["resolved_at"] is not None
 
     def test_reject_cancels_task(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.reject(aid)
         task = store.get_task("t1")
         assert task["status"] == "cancelled"
 
     def test_reject_already_resolved_returns_false(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.reject(aid)
         assert appr.reject(aid) is False
@@ -132,20 +131,20 @@ class TestRejectFlow:
 
 class TestApprovalEdgeCases:
     def test_approve_then_reject_fails(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.approve(aid)
         assert appr.reject(aid) is False
 
     def test_reject_then_approve_fails(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.reject(aid)
         assert appr.approve(aid) is False
 
     def test_list_pending_excludes_resolved(self, appr: ApprovalsStore, store):
-        store.create_task("t1", "albert", "p1")
-        store.create_task("t2", "albert", "p2")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
+        store.create_task("t2", "albert", "p2", initial_status="pending_approval")
         a1 = appr.create(task_id="t1")
         appr.create(task_id="t2")
         appr.approve(a1)

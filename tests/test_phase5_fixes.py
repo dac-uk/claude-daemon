@@ -212,7 +212,7 @@ class TestPendingApprovalVisible:
 
 class TestAtomicApproveReject:
     def test_double_approve_only_first_succeeds(self, store, appr):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         ok1 = appr.approve(aid, approver="a")
         ok2 = appr.approve(aid, approver="b")
@@ -222,7 +222,7 @@ class TestAtomicApproveReject:
         assert row["approver_user"] == "a"
 
     def test_double_reject_only_first_succeeds(self, store, appr):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         ok1 = appr.reject(aid, approver="a")
         ok2 = appr.reject(aid, approver="b")
@@ -230,7 +230,7 @@ class TestAtomicApproveReject:
         assert ok2 is False
 
     def test_approve_then_reject_fails(self, store, appr):
-        store.create_task("t1", "albert", "p1")
+        store.create_task("t1", "albert", "p1", initial_status="pending_approval")
         aid = appr.create(task_id="t1")
         appr.approve(aid)
         assert appr.reject(aid) is False

@@ -688,6 +688,14 @@ class HttpApi:
         return web.json_response({"approvals": appr.list_all(limit=limit)})
 
     async def _handle_v1_approvals_approve(self, request: web.Request) -> web.Response:
+        """Approve a pending approval and dispatch the linked task.
+
+        Flow: load approval → load task → re-enforce budget (skip threshold
+        since user already approved) → stash fresh reservations on task →
+        atomically transition approval + task → spawn → broadcast.  Any
+        failure rolls back the preceding step so the task can never end up
+        in an inconsistent state.
+        """
         appr = self._get_approvals_store()
         if appr is None:
             return web.json_response({"error": "Store not ready"}, status=503)
@@ -701,38 +709,94 @@ class HttpApi:
             approver = body.get("approver", "api")
         except Exception:
             pass
-        ok = appr.approve(aid, approver=approver)
-        if not ok:
+
+        # Load approval + linked task without mutating state.
+        approval_row = appr.get(aid)
+        if approval_row is None:
+            return web.json_response({"error": "Approval not found"}, status=404)
+        if approval_row["status"] != "pending":
             return web.json_response(
-                {"error": "Approval not found or already resolved"}, status=409,
+                {"error": f"Approval already {approval_row['status']}"},
+                status=409,
             )
-        row = appr.get(aid)
-        if not row:
-            return web.json_response({"error": "Approval row missing"}, status=500)
-        try:
-            await self.hub.approval_resolved(aid, row["task_id"], "approved", approver)
-        except Exception:
-            pass
-        # Dispatch the approved task via orchestrator with full context
-        task = self.daemon.store.get_task(row["task_id"]) if self.daemon.store else None
-        if task and self.daemon.orchestrator and self.daemon.agent_registry:
-            agent_name = task.get("agent_name")
-            agent = self.daemon.agent_registry.get(agent_name) if agent_name else None
-            if agent:
+        task_id = approval_row["task_id"]
+        task = self.daemon.store.get_task(task_id) if self.daemon.store else None
+        if not task:
+            return web.json_response({"error": "Linked task missing"}, status=500)
+
+        # Re-enforce budget — the situation may have changed during the wait.
+        budget_store = self._get_budget_store()
+        reservations: list[tuple[int, float]] = []
+        if budget_store is not None:
+            from claude_daemon.orchestration.enforcement import enforce_budget
+            decision = enforce_budget(
+                budget_store,
+                agent_name=task.get("agent_name"),
+                user_id=task.get("user_id"),
+                task_type=task.get("task_type"),
+                skip_approval_threshold=True,
+            )
+            if decision.outcome == "rejected":
+                return web.json_response(
+                    {"error": decision.reason,
+                     "detail": "Budget exhausted during approval wait"},
+                    status=409,
+                )
+            reservations = decision.reservations
+
+        # Persist fresh reservations before dispatch so completion can drain them.
+        if reservations and self.daemon.store:
+            self.daemon.store.update_task_metadata(
+                task_id,
+                {"_budget_reservations": [[bid, amt] for bid, amt in reservations]},
+            )
+
+        # Atomic transition: approvals.pending → approved AND
+        # task_queue.pending_approval → pending.
+        if not appr.approve(aid, approver=approver):
+            if reservations and budget_store:
+                budget_store.release_reservations(reservations)
+            return web.json_response(
+                {"error": "Approval not found or already resolved"},
+                status=409,
+            )
+
+        # Dispatch.
+        agent_name = task.get("agent_name")
+        agent = (
+            self.daemon.agent_registry.get(agent_name)
+            if (agent_name and self.daemon.agent_registry) else None
+        )
+        if self.daemon.orchestrator and agent:
+            try:
+                self.daemon.orchestrator.spawn_task(
+                    agent=agent,
+                    prompt=task.get("prompt", ""),
+                    platform=task.get("platform", "api"),
+                    user_id=task.get("user_id", "local"),
+                    task_type=task.get("task_type", "default"),
+                    task_id=task_id,
+                )
+            except Exception:
+                log.exception("Failed to dispatch approved task %s", task_id)
+                # Rollback: release fresh reservations and mark task failed.
+                if reservations and budget_store:
+                    budget_store.release_reservations(reservations)
                 try:
-                    self.daemon.orchestrator.spawn_task(
-                        agent=agent,
-                        prompt=task.get("prompt", ""),
-                        platform=task.get("platform", "api"),
-                        user_id=task.get("user_id", "local"),
-                        task_type=task.get("task_type", "default"),
-                        task_id=row["task_id"],
+                    self.daemon.store.update_task_status(
+                        task_id, "failed",
+                        error="dispatch failed after approve",
                     )
                 except Exception:
-                    log.exception("Failed to dispatch approved task %s", row["task_id"])
-                    return web.json_response(
-                        {"error": "Dispatch failed"}, status=500,
-                    )
+                    log.exception("Could not mark task %s failed", task_id)
+                return web.json_response(
+                    {"error": "Dispatch failed after approve"}, status=500,
+                )
+
+        try:
+            await self.hub.approval_resolved(aid, task_id, "approved", approver)
+        except Exception:
+            pass
         return web.json_response({"status": "approved"})
 
     async def _handle_v1_approvals_reject(self, request: web.Request) -> web.Response:

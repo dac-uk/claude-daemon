@@ -176,14 +176,24 @@ class BudgetStore:
         self._db.commit()
 
     def release_reservations(self, reservations: list[tuple[int, float]]) -> None:
-        """Release multiple reservations in a single transaction."""
+        """Release multiple reservations in a single transaction.
+
+        Logs a warning if a budget row has disappeared (deleted between reserve
+        and release) so spend drift is audit-visible.
+        """
         if not reservations:
             return
         for bid, amount in reservations:
-            self._db.execute(
-                "UPDATE budgets SET current_spend = MAX(0, current_spend - ?) WHERE id = ?",
+            cur = self._db.execute(
+                "UPDATE budgets SET current_spend = MAX(0, current_spend - ?) "
+                "WHERE id = ?",
                 (amount, bid),
             )
+            if cur.rowcount == 0:
+                log.warning(
+                    "release_reservations: budget %s missing — %.4f lost",
+                    bid, amount,
+                )
         self._db.commit()
 
     def apply_actual_spend(
@@ -207,15 +217,23 @@ class BudgetStore:
                 if row:
                     updated.append(row)
                 continue
-            self._db.execute(
-                "UPDATE budgets SET current_spend = MAX(0, current_spend + ?) WHERE id = ?",
+            cur = self._db.execute(
+                "UPDATE budgets SET current_spend = MAX(0, current_spend + ?) "
+                "WHERE id = ?",
                 (delta, bid),
             )
+            if cur.rowcount == 0:
+                log.warning(
+                    "apply_actual_spend: budget %s missing — delta %.4f lost",
+                    bid, delta,
+                )
+                continue
             row = self.get(bid)
             if row:
                 updated.append(row)
-        if updated:
-            self._db.commit()
+        # Always commit: UPDATEs may have been issued even if no row was
+        # returned (rowcount==0 branches still consumed write intent).
+        self._db.commit()
         return updated
 
     # ── Post-completion spend recording ───────────────────────

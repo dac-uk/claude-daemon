@@ -8,6 +8,7 @@ Designed to be called from HTTP handlers and from the Paperclip compat shim.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -186,7 +187,13 @@ class TaskAPI:
         agent_name: str,
         decision,
     ) -> TaskSubmissionResult:
-        """Create task_queue row + approvals row for tasks needing human review."""
+        """Create task_queue row + approvals row for tasks needing human review.
+
+        The task is persisted directly as ``pending_approval`` (single INSERT,
+        no transient ``pending`` window).  An approvals row is written, then
+        the hub is notified with the correct ``(approval_id, task_id, reason)``
+        signature.
+        """
         task_id = str(uuid.uuid4())[:12]
 
         meta = dict(req.metadata) if req.metadata else {}
@@ -195,10 +202,10 @@ class TaskAPI:
         try:
             self._store.create_task(
                 task_id, agent_name, req.prompt[:2000],
-                task_type=req.task_type, platform=req.platform, user_id=req.user_id,
-                metadata=metadata_json, goal_id=req.goal_id,
+                task_type=req.task_type, platform=req.platform,
+                user_id=req.user_id, metadata=metadata_json,
+                goal_id=req.goal_id, initial_status="pending_approval",
             )
-            self._store.update_task_status(task_id, "pending_approval")
         except Exception:
             log.exception("Could not persist approval task %s", task_id)
             return TaskSubmissionResult(
@@ -206,9 +213,10 @@ class TaskAPI:
                 error="DB persistence failed",
             )
 
+        approval_id: int | None = None
         if self._approvals_store:
             try:
-                self._approvals_store.create(
+                approval_id = self._approvals_store.create(
                     task_id=task_id,
                     reason=decision.reason,
                     threshold_usd=decision.threshold_usd,
@@ -217,14 +225,21 @@ class TaskAPI:
                 log.exception("Could not create approval for task %s", task_id)
 
         hub = getattr(self._orch, "hub", None)
-        if hub:
+        if hub and approval_id is not None:
             try:
-                import asyncio
-                asyncio.get_event_loop().create_task(
-                    hub.approval_requested(task_id, decision.reason, agent_name),
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    hub.approval_requested(
+                        approval_id, task_id, decision.reason,
+                    ),
+                )
+            except RuntimeError:
+                # Not running under an event loop (sync caller / test).
+                log.debug(
+                    "approval_requested broadcast skipped — no running loop",
                 )
             except Exception:
-                pass
+                log.exception("Failed to broadcast approval_requested")
 
         return TaskSubmissionResult(
             task_id=task_id, status="pending_approval", agent=agent_name,
@@ -272,8 +287,28 @@ class TaskAPI:
                 if reservations:
                     typed = [(int(bid), float(amt)) for bid, amt in reservations]
                     self._budget_store.release_reservations(typed)
+            except (ValueError, TypeError) as exc:
+                log.warning(
+                    "cancel_task %s: metadata JSON corrupt — reservations "
+                    "may leak (%s)", task_id, exc,
+                )
             except Exception:
-                log.debug("Could not release reservations for task %s", task_id)
+                log.exception(
+                    "cancel_task %s: failed to release reservations", task_id,
+                )
+
+        # Resolve linked approval row if the task was waiting on one.
+        if self._approvals_store:
+            try:
+                approval = self._approvals_store.get_by_task(task_id)
+                if approval and approval["status"] == "pending":
+                    self._approvals_store.reject(
+                        approval["id"], approver="cancel",
+                    )
+            except Exception:
+                log.exception(
+                    "cancel_task %s: failed to resolve approval row", task_id,
+                )
 
         spawned = self._orch._spawned_tasks.get(task_id)
         cancelled = False

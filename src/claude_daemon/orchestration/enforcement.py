@@ -4,14 +4,18 @@ Called by ``TaskAPI.submit_task()`` before spawning.  Checks all applicable
 budgets for the task context and returns a decision:
 
 - ``allowed``  — no budget applies or all budgets have headroom
-- ``rejected`` — at least one budget is exhausted
-- ``approval_required`` — estimated cost exceeds an approval threshold
-                          (Phase 4 will wire approval workflow)
+- ``rejected`` — at least one budget is exhausted (wins over approval_required)
+- ``approval_required`` — estimated cost exceeds an approval threshold and
+                          no budget is blocking
 
 Cost estimation: Claude cost only materialises after the response, so we use
 a configurable minimum reservation (default $0.01) to reject requests when a
 budget is already at its limit.  The actual spend is reconciled after task
-completion via ``BudgetStore.record_spend()``.
+completion via ``BudgetStore.apply_actual_spend()``.
+
+Evaluation order matters — **rejection wins**.  A task that both exhausts a
+budget *and* trips an approval threshold is rejected outright.  Approval is
+only returned when no hard cap blocks the request.
 """
 from __future__ import annotations
 
@@ -46,12 +50,18 @@ def enforce_budget(
     user_id: str | None = None,
     task_type: str | None = None,
     estimated_cost: float = MIN_RESERVATION_USD,
+    skip_approval_threshold: bool = False,
 ) -> EnforcementDecision:
     """Check all applicable budgets and reserve headroom atomically.
 
-    Returns an ``EnforcementDecision``.  If outcome is ``allowed``,
-    ``reservations`` contains ``(budget_id, amount)`` pairs that were
-    reserved and must be released if the task is cancelled before running.
+    Two-pass evaluation: rejection beats approval_required.  Pass 1 looks for
+    any exhausted budget; if one exists, reject.  Pass 2 (unless
+    ``skip_approval_threshold`` is True) looks for any threshold trigger and
+    returns ``approval_required`` without reserving.  Pass 3 reserves atomically
+    on every applicable budget and rolls back on contention.
+
+    ``skip_approval_threshold`` is used on the approve path: the user has
+    already approved, so we must not bounce the task back into the queue.
     """
     applicable = budget_store.get_applicable(
         agent_name=agent_name,
@@ -63,34 +73,13 @@ def enforce_budget(
         return EnforcementDecision(outcome="allowed")
 
     amount = max(estimated_cost, MIN_RESERVATION_USD)
-    reservations: list[tuple[int, float]] = []
-    blocked: list[dict] = []
 
-    for b in applicable:
-        # Check approval threshold first (Phase 4 hook)
-        threshold = b.get("approval_threshold_usd")
-        if threshold is not None and amount >= threshold:
-            # Roll back any reservations we've already made
-            for bid, res_amt in reservations:
-                budget_store.release_reservation(bid, res_amt)
-            return EnforcementDecision(
-                outcome="approval_required",
-                reason=f"Estimated ${amount:.4f} exceeds approval threshold "
-                       f"${threshold:.2f} on budget {b['id']}",
-                blocked_by=[b],
-                threshold_usd=threshold,
-            )
-
-        ok = budget_store.check_and_reserve(b["id"], amount)
-        if ok:
-            reservations.append((b["id"], amount))
-        else:
-            blocked.append(b)
-
+    # Pass 1: rejection always wins over approval_required.
+    blocked = [
+        b for b in applicable
+        if b["current_spend"] + amount > b["limit_usd"]
+    ]
     if blocked:
-        # Roll back partial reservations
-        for bid, res_amt in reservations:
-            budget_store.release_reservation(bid, res_amt)
         names = ", ".join(
             f"{b['scope']}:{b.get('scope_value', '*')} "
             f"(${b['current_spend']:.2f}/${b['limit_usd']:.2f})"
@@ -101,6 +90,36 @@ def enforce_budget(
             reason=f"Budget exceeded: {names}",
             blocked_by=blocked,
         )
+
+    # Pass 2: threshold triggers — only if caller hasn't pre-approved.
+    if not skip_approval_threshold:
+        for b in applicable:
+            threshold = b.get("approval_threshold_usd")
+            if threshold is not None and amount >= threshold:
+                return EnforcementDecision(
+                    outcome="approval_required",
+                    reason=f"Estimated ${amount:.4f} exceeds approval "
+                           f"threshold ${threshold:.2f} on budget {b['id']}",
+                    blocked_by=[b],
+                    threshold_usd=threshold,
+                )
+
+    # Pass 3: atomically reserve against every applicable budget.
+    reservations: list[tuple[int, float]] = []
+    for b in applicable:
+        ok = budget_store.check_and_reserve(b["id"], amount)
+        if ok:
+            reservations.append((b["id"], amount))
+        else:
+            # Raced — another writer drained it between pass 1 and pass 3.
+            for bid, res_amt in reservations:
+                budget_store.release_reservation(bid, res_amt)
+            return EnforcementDecision(
+                outcome="rejected",
+                reason=f"Budget raced during reservation on {b['scope']}:"
+                       f"{b.get('scope_value', '*')}",
+                blocked_by=[b],
+            )
 
     return EnforcementDecision(
         outcome="allowed",

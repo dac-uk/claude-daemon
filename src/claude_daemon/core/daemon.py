@@ -303,6 +303,7 @@ class ClaudeDaemon:
 
         # Initialize subsystems
         self.store = ConversationStore(self.config.db_path)
+        self._sweep_orphan_tasks_on_startup()
         self.durable = DurableMemory(self.config.memory_dir)
         self.durable.ensure_soul()
         self.working = WorkingMemory(self.store, self.durable, self.config)
@@ -1077,6 +1078,55 @@ class ClaudeDaemon:
         if platform == "discord" and self.config.discord_alert_channel_ids:
             return list(self.config.discord_alert_channel_ids)
         return []
+
+    def _sweep_orphan_tasks_on_startup(self) -> None:
+        """Mark pre-crash ``running``/``pending`` tasks as failed orphans.
+
+        Runs once during daemon start, before the orchestrator can spawn
+        anything new.  Also releases any budget reservations held by the
+        swept rows so the budget ledger doesn't drift after a crash.
+        ``pending_approval`` rows are left alone — they're awaiting a human.
+        """
+        if not self.store:
+            return
+        try:
+            orphans = self.store.sweep_orphan_tasks(live_ids=set())
+        except Exception:
+            log.exception("Orphan task sweep failed")
+            return
+        if not orphans:
+            return
+        # Lazy-import to avoid circular import during module load.
+        from claude_daemon.orchestration.budgets import BudgetStore
+        try:
+            budget_store = BudgetStore(self.store)
+        except Exception:
+            log.exception("BudgetStore unavailable during orphan sweep")
+            return
+        import json as _json
+        for row in orphans:
+            raw = row.get("metadata")
+            if not raw:
+                continue
+            try:
+                meta = _json.loads(raw)
+            except (ValueError, TypeError):
+                log.warning(
+                    "Orphan task %s: metadata JSON corrupt — "
+                    "reservations may leak", row.get("id"),
+                )
+                continue
+            reservations = meta.get("_budget_reservations") or []
+            if not reservations:
+                continue
+            typed = [(int(bid), float(amt)) for bid, amt in reservations]
+            try:
+                budget_store.release_reservations(typed)
+            except Exception:
+                log.exception(
+                    "Failed to release reservations for orphan %s",
+                    row.get("id"),
+                )
 
     def _write_pid(self) -> None:
         pid_file = self.config.pid_path

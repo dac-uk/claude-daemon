@@ -74,7 +74,10 @@ class ApprovalsStore:
     def approve(self, approval_id: int, approver: str = "local") -> bool:
         """Mark approval as approved, update linked task to 'pending'.
 
-        Uses atomic UPDATE … WHERE status='pending' to prevent TOCTOU races.
+        Both UPDATEs are guarded — approvals must be ``pending`` and the
+        linked task must still be ``pending_approval``.  If the task was
+        cancelled between the two statements, we mark the approval ``stale``
+        and return False so the caller doesn't dispatch a cancelled task.
         """
         now = datetime.now(timezone.utc).isoformat()
         cur = self._db.execute(
@@ -86,17 +89,34 @@ class ApprovalsStore:
             return False
         row = self.get(approval_id)
         if row:
-            self._db.execute(
-                "UPDATE task_queue SET status = 'pending' WHERE id = ?",
+            t = self._db.execute(
+                "UPDATE task_queue SET status = 'pending' "
+                "WHERE id = ? AND status = 'pending_approval'",
                 (row["task_id"],),
             )
+            if t.rowcount == 0:
+                # Task changed state (cancelled/failed) underneath us —
+                # revert the approval to 'stale' so it can't be replayed.
+                self._db.execute(
+                    "UPDATE approvals SET status = 'stale', resolved_at = ? "
+                    "WHERE id = ?",
+                    (now, approval_id),
+                )
+                self._db.commit()
+                log.warning(
+                    "Approval %s: task %s not in pending_approval, "
+                    "marked stale", approval_id, row["task_id"],
+                )
+                return False
         self._db.commit()
         return True
 
     def reject(self, approval_id: int, approver: str = "local") -> bool:
         """Mark approval as rejected, cancel linked task.
 
-        Uses atomic UPDATE … WHERE status='pending' to prevent TOCTOU races.
+        Guards mirror ``approve``: both the approval row and the linked task
+        must be in their expected pre-states.  A missed task_queue update is
+        silently ignored (the task is already terminal — no orphan possible).
         """
         now = datetime.now(timezone.utc).isoformat()
         cur = self._db.execute(
@@ -109,7 +129,8 @@ class ApprovalsStore:
         row = self.get(approval_id)
         if row:
             self._db.execute(
-                "UPDATE task_queue SET status = 'cancelled' WHERE id = ?",
+                "UPDATE task_queue SET status = 'cancelled' "
+                "WHERE id = ? AND status = 'pending_approval'",
                 (row["task_id"],),
             )
         self._db.commit()

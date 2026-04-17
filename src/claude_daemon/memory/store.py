@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import uuid
@@ -527,12 +528,21 @@ class ConversationStore:
         self, task_id: str, agent_name: str, prompt: str,
         task_type: str = "default", platform: str = "spawn", user_id: str = "local",
         metadata: str | None = None, goal_id: int | None = None,
+        initial_status: str = "pending",
     ) -> None:
+        """Insert a new task_queue row with the given initial status.
+
+        ``initial_status`` lets callers create rows directly as
+        ``pending_approval`` without a follow-up UPDATE that would briefly
+        misclassify the row as ``pending``.
+        """
         self._db.execute(
             "INSERT INTO task_queue "
-            "(id, agent_name, prompt, status, task_type, platform, user_id, metadata, goal_id) "
-            "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-            (task_id, agent_name, prompt, task_type, platform, user_id, metadata, goal_id),
+            "(id, agent_name, prompt, status, task_type, platform, user_id, "
+            "metadata, goal_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, agent_name, prompt, initial_status, task_type, platform,
+             user_id, metadata, goal_id),
         )
         self._db.commit()
 
@@ -558,6 +568,56 @@ class ConversationStore:
                 (status, task_id),
             )
         self._db.commit()
+
+    def update_task_metadata(self, task_id: str, patch: dict) -> bool:
+        """Merge ``patch`` into the task's metadata JSON and persist.
+
+        Used by the approval-dispatch path to stash fresh budget reservations
+        onto the existing task row.  Returns True if the row was updated.
+        """
+        row = self._db.execute(
+            "SELECT metadata FROM task_queue WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            meta = json.loads(row["metadata"]) if row["metadata"] else {}
+        except (ValueError, TypeError):
+            log.warning("update_task_metadata: corrupt metadata for %s — overwriting", task_id)
+            meta = {}
+        meta.update(patch)
+        self._db.execute(
+            "UPDATE task_queue SET metadata = ? WHERE id = ?",
+            (json.dumps(meta), task_id),
+        )
+        self._db.commit()
+        return True
+
+    def sweep_orphan_tasks(self, live_ids: set[str]) -> list[dict]:
+        """Mark ``running``/``pending`` rows not in ``live_ids`` as failed orphans.
+
+        Called on daemon startup to clean up tasks whose in-memory state was
+        lost to a crash.  ``pending_approval`` rows are left alone — they are
+        legitimately awaiting a human.  Returns the rows that were swept so
+        the caller can release their metadata reservations.
+        """
+        rows = self._db.execute(
+            "SELECT * FROM task_queue WHERE status IN ('running', 'pending')",
+        ).fetchall()
+        orphans = [dict(r) for r in rows if r["id"] not in live_ids]
+        if not orphans:
+            return []
+        now = datetime.now(timezone.utc).isoformat()
+        for o in orphans:
+            self._db.execute(
+                "UPDATE task_queue SET status = 'failed', error = ?, "
+                "completed_at = ? "
+                "WHERE id = ? AND status IN ('running', 'pending')",
+                ("daemon restarted — orphan task", now, o["id"]),
+            )
+        self._db.commit()
+        log.info("Swept %d orphan task(s) on startup", len(orphans))
+        return orphans
 
     def get_pending_tasks(self) -> list[dict]:
         rows = self._db.execute(

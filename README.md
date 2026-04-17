@@ -29,7 +29,8 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
 - **Inter-Agent Communication** - Five communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, and `[OPTIMIZE:name]` to trigger evo code optimization. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
-- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel. All real-time via WebSocket — no polling.
+- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel, native Operations view (tasks / budgets / goals / approvals). All real-time via WebSocket — no polling.
+- **Native Orchestration** - Built-in task queue, budget caps, goal tracking, and approval workflow — Paperclip-free by default. Atomic budget reservations (race-safe), two-pass enforcement where rejection beats approval threshold, re-enforced approvals that can't resurrect cancelled tasks, orphan task sweep on startup. Exposed via `/api/v1/*` and the Ops dashboard view.
 - **CLI Chat** - `claude-daemon chat` opens an interactive terminal session with the daemon's agents. Route to a specific agent with `--agent albert`. Connects to the running daemon via the HTTP API — no separate process needed.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
 - **Hardened Webhooks** - GitHub and Stripe webhooks verify HMAC-SHA256 signatures. Invalid requests get 403. Handlers run async (202 Accepted) so webhooks never block the HTTP server.
@@ -397,9 +398,134 @@ All commands are available on **both** Telegram and Discord with full feature pa
 
 Send any message to chat with the active agent (Johnny by default). Use `@agent_name` at the start of a message to address a specific agent.
 
+## Native Orchestration
+
+The daemon ships with a built-in orchestration layer — task queue, budget caps, goal tracking, and approval workflow — exposed via `/api/v1/*` and the Command Center's "Operations" view. You don't need Paperclip for any of this; the legacy Paperclip integration below is kept for existing deployments.
+
+### What it covers
+
+| Feature | Where it lives |
+|---------|----------------|
+| Task submission / cancel / inspect | `POST /api/v1/tasks`, `POST /api/v1/tasks/{id}/cancel`, `GET /api/v1/tasks/{id}` |
+| Pending + recent task lists | `GET /api/v1/tasks/pending`, `GET /api/v1/tasks/recent` |
+| Budget caps (global / agent / user / task_type × daily / weekly / monthly / lifetime) | `GET|POST|PUT|DELETE /api/v1/budgets` |
+| Goals with parent / child + progress rollups | `GET|POST|PUT|DELETE /api/v1/goals`, `GET /api/v1/goals/{id}/progress` |
+| Approval inbox | `GET /api/v1/approvals`, `POST /api/v1/approvals/{id}/approve|reject` |
+| Paperclip heartbeat compat | `POST /api/paperclip/heartbeat` — adapts the old payload to `submit_task()` |
+
+All endpoints authenticate with the daemon's Bearer key (`CLAUDE_DAEMON_API_KEY`).
+
+### Task lifecycle
+
+```
+POST /api/v1/tasks
+   │
+   ├─ enforce_budget(): rejection beats approval_required
+   │
+   ├─ outcome == "rejected"           → 400 {status: "rejected", error}
+   ├─ outcome == "approval_required"  → 202 {status: "pending_approval", task_id}
+   │     ├─ task_queue row inserted directly as `pending_approval`
+   │     ├─ approvals row created
+   │     ├─ reservations released (freed during human wait)
+   │     └─ `approval_requested` websocket event fired
+   │
+   └─ outcome == "allowed"            → 201 {status: "pending", task_id}
+         ├─ reservations stashed on task metadata
+         ├─ orchestrator.spawn_task() dispatched
+         └─ on completion: apply_actual_spend() reconciles reserve→actual
+             on cancel/fail: release_reservations() refunds in full
+```
+
+### Budgets
+
+A budget has a scope, a limit, and a period. Multiple budgets stack: a task subject to both a global budget and a per-agent budget must fit inside *both*.
+
+```bash
+# $1.00/day global cap, $0.05 triggers approval
+curl -H "Authorization: Bearer $KEY" -XPOST http://localhost:8080/api/v1/budgets \
+  -d '{"scope":"global","limit_usd":1.00,"period":"daily","approval_threshold_usd":0.05}'
+
+# $0.25/day per-agent cap for Albert
+curl -H "Authorization: Bearer $KEY" -XPOST http://localhost:8080/api/v1/budgets \
+  -d '{"scope":"agent","scope_value":"albert","limit_usd":0.25,"period":"daily"}'
+```
+
+Reservation is atomic: two concurrent submits against a $1 budget with $0.02 left will see exactly one succeed. Actual cost is reconciled after the task completes (delta = `actual_cost - reserved`), so a reservation never double-counts with the post-completion spend.
+
+### Goals
+
+Goals group related tasks. Attach a task to a goal via `goal_id` at submission time. Progress is computed on-demand:
+
+```bash
+curl -H "Authorization: Bearer $KEY" -XPOST http://localhost:8080/api/v1/goals \
+  -d '{"title":"Ship billing v2","owner_agent":"albert","target_date":"2026-05-01"}'
+
+curl -H "Authorization: Bearer $KEY" http://localhost:8080/api/v1/goals/1/progress
+# {"total": 12, "completed": 7, "failed": 1, "running": 2, "pending": 2, "pct": 58.3, "total_cost": 2.14}
+```
+
+Deleting a parent nulls its children's `parent_goal_id` — children survive, just become top-level.
+
+### Approvals
+
+When a budget's `approval_threshold_usd` trips, the task enters `pending_approval` and surfaces in the approval inbox. Approve / reject are atomic and idempotent:
+
+```bash
+# Reviewer sees the queue
+curl -H "Authorization: Bearer $KEY" http://localhost:8080/api/v1/approvals?pending=1
+
+# Approve — re-runs enforcement (skipping the threshold); returns 409 if budget was drained during the wait
+curl -H "Authorization: Bearer $KEY" -XPOST \
+  http://localhost:8080/api/v1/approvals/42/approve \
+  -d '{"approver":"alice"}'
+
+# Reject — marks the task cancelled
+curl -H "Authorization: Bearer $KEY" -XPOST \
+  http://localhost:8080/api/v1/approvals/42/reject
+```
+
+Key semantics:
+
+- **Re-enforcement on approve.** The user's approval isn't a budget bypass — the daemon re-checks every applicable budget before dispatch. If a hard cap was drained during the wait, approve returns 409 and the task stays `pending_approval`.
+- **Atomic state transitions.** Each transition is guarded on the expected prior state (`WHERE status='pending_approval'`). If a task was cancelled between "user clicks approve" and dispatch, approve returns false and the approval is marked `stale` — no ghost revivals.
+- **Cancel resolves the approval.** Cancelling a `pending_approval` task also rejects the linked approval row, so the inbox never orphans.
+- **Rejection always wins.** If one applicable budget is exhausted and another only trips a threshold, the result is `rejected`, not `approval_required`.
+- **Orphan sweep.** On daemon start, any `running` / `pending` task without a live in-memory worker is marked `failed` ("daemon restarted — orphan task") and its reservations are released. `pending_approval` rows are untouched — they're legitimately awaiting a human.
+
+### Operations view
+
+The Command Center's **Ops** tab shows everything above in one screen: task queue with filter chips (including amber `pending_approval`), circular budget gauges, goal progress cards, and the approval inbox. All panels update live over the websocket — no polling.
+
+Events you can subscribe to from `/ws`:
+
+| Event | When it fires |
+|-------|---------------|
+| `task_created` | On every submit (both `pending` and `pending_approval`) |
+| `task_update` | On status transitions and completion |
+| `task_cancelled` | On cancel |
+| `budget_update` | On reservation / release / apply_actual_spend |
+| `budget_exceeded` | When enforce_budget returns `rejected` |
+| `goal_update` | On goal CRUD |
+| `goal_progress` | When a linked task completes |
+| `approval_requested` | `(approval_id, task_id, reason)` — fires on `pending_approval` |
+| `approval_resolved` | `(approval_id, task_id, outcome, approver)` — fires on approve / reject |
+
+### HTTP status codes
+
+| Status | Meaning |
+|--------|---------|
+| 201 | Task accepted, dispatched |
+| 202 | Task accepted, awaiting approval |
+| 400 | Bad request or budget rejected outright |
+| 404 | Task / approval / goal / budget not found |
+| 409 | Approval already resolved, or budget drained during approval wait |
+| 500 | DB persistence or dispatch failure |
+
 ## Paperclip Integration
 
-[Paperclip](https://paperclip.ing/) is an open-source orchestration platform that organises AI agents into an autonomous company with goals, budgets, org charts, and governance. The daemon integrates with Paperclip in two complementary modes:
+[Paperclip](https://paperclip.ing/) is an open-source orchestration platform that organises AI agents into an autonomous company with goals, budgets, org charts, and governance. It is **no longer required** — the native orchestration layer above covers the same surface area and is the default. Paperclip integration is kept for users with existing deployments.
+
+The daemon integrates with Paperclip in two complementary modes:
 
 **Mode 1 — Polling (daemon pulls tasks):** The daemon polls Paperclip's API for pending tasks every N seconds, processes them through the agent team, and returns results with cost data.
 
@@ -913,6 +1039,7 @@ Open `http://<your-ip>:8080/` in any browser. Works on any device on your Tailsc
 | **Overview** | D3 force graph (agent nodes with emoji, glow rings, pulse on busy), live activity feed, agent sidebar, metric cards |
 | **Agents** | Fleet cards with status, model, cost, MCP health, heartbeat count. Click to open streaming output panel |
 | **Tasks** | Active task queue + inter-agent discussion transcripts (bilateral + council). Expandable cards with synthesis |
+| **Ops** | Native orchestration: task queue (filter chips for pending / running / pending_approval / completed / failed / cancelled), budget gauges, goal cards, approval inbox. See [Native Orchestration](#native-orchestration). |
 | **Analytics** | Chart.js visualizations: cost by agent, token usage (input/output), task outcomes, failure categories |
 | **Activity** | Filterable audit log with pagination. Filter by agent, action type. Search details text |
 | **Settings** | MCP server pool table (tier, status, description), system info |
@@ -957,6 +1084,20 @@ POST /api/workflow            — Trigger build quality gate workflow (accepts m
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
 POST /api/webhook/stripe      — Stripe webhook (→ Penny) — 202 Accepted
 POST /api/webhook/{source}    — Generic webhook (→ Johnny) — 202 Accepted
+
+# Native Orchestration (see "Native Orchestration" section for full semantics)
+POST /api/v1/tasks                  — Submit a task (201 pending | 202 pending_approval | 400 rejected)
+GET  /api/v1/tasks/pending          — List pending + running + pending_approval tasks
+GET  /api/v1/tasks/recent           — Most-recent tasks regardless of status
+GET  /api/v1/tasks/{id}             — Inspect a single task (DB + live state)
+POST /api/v1/tasks/{id}/cancel      — Cancel, release reservations, resolve approval
+GET|POST|PUT|DELETE /api/v1/budgets — Budget CRUD
+GET|POST|PUT|DELETE /api/v1/goals   — Goal CRUD
+GET  /api/v1/goals/{id}/progress    — Aggregate progress from linked tasks
+GET  /api/v1/approvals              — Approval inbox (?pending=1 for pending only)
+POST /api/v1/approvals/{id}/approve — Re-enforces budget, dispatches (or 409 if drained)
+POST /api/v1/approvals/{id}/reject  — Cancels linked task
+
 WS   /ws                      — WebSocket event bus (live dashboard)
 ```
 
