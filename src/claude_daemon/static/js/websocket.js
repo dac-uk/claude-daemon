@@ -47,6 +47,7 @@ CC.handleEvent = function(evt) {
         CC.addFeed(evt.agent, 'busy', 'Processing: ' + (evt.prompt || '').substring(0, 80));
       } else {
         ag.cost += evt.cost || 0;
+        ag._wsUpdated = true;
         CC.totalCost += evt.cost || 0;
         document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
         var dur = evt.duration_ms ? (evt.duration_ms / 1000).toFixed(1) + 's' : '';

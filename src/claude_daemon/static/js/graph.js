@@ -48,6 +48,25 @@ CC.updateGraph = function() {
   var agents = Object.values(CC.agents);
   if (agents.length === 0) return;
 
+  // Recalculate container dimensions on every tab switch
+  var container = document.getElementById('graphEl');
+  if (container) {
+    var w = container.clientWidth || 600;
+    var h = container.clientHeight || 400;
+    svg.attr('width', w).attr('height', h);
+    CC.graphSim.force('center', d3.forceCenter(w / 2, h / 2));
+    // Reset nodes that drifted outside the viewport
+    if (CC.graphNodes) {
+      CC.graphNodes.forEach(function(n) {
+        if (n.x < 0 || n.x > w || n.y < 0 || n.y > h) {
+          n.x = w / 2 + (Math.random() - 0.5) * 100;
+          n.y = h / 2 + (Math.random() - 0.5) * 100;
+          n.vx = 0; n.vy = 0;
+        }
+      });
+    }
+  }
+
   // Build nodes & links
   var orch = agents.find(function(a) { return a.is_orchestrator; });
   var orchName = orch ? orch.name : agents[0].name;

@@ -219,6 +219,9 @@ CC.chatSend = async function(prompt) {
     }
   } finally {
     agentMsg.streaming = false;
+    if (!agentMsg.text) {
+      agentMsg.text = '(No response received — the agent may still be processing.)';
+    }
     CC.chat.streaming = false;
     CC.chat.abortCtrl = null;
     CC.renderChatMessages();

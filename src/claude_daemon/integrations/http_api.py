@@ -245,6 +245,20 @@ class HttpApi:
         if not self.daemon.agent_registry:
             return web.json_response({"agents": []})
 
+        agent_costs: dict[str, float] = {}
+        if self.daemon.store:
+            try:
+                rows = self.daemon.store._db.execute(
+                    "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) as cost "
+                    "FROM conversations GROUP BY user_id"
+                ).fetchall()
+                for r in rows:
+                    parts = str(r["user_id"]).rsplit(":", 1)
+                    if len(parts) == 2:
+                        agent_costs[parts[1]] = agent_costs.get(parts[1], 0) + r["cost"]
+            except Exception:
+                pass
+
         agents = []
         for agent in self.daemon.agent_registry:
             agents.append({
@@ -256,6 +270,7 @@ class HttpApi:
                 "has_mcp": agent.mcp_config_path is not None,
                 "mcp_health": agent.check_mcp_health(),
                 "heartbeat_tasks": len(agent.parse_heartbeat_tasks()),
+                "cost": agent_costs.get(agent.name, 0),
             })
         return web.json_response({"agents": agents})
 
@@ -853,6 +868,14 @@ class HttpApi:
         """
         if not self.api_key:
             return self._serve_dashboard_html()
+
+        # Trusted local access: auto-set session cookie for localhost
+        host = request.host.split(":")[0]
+        if host in ("localhost", "127.0.0.1", "::1"):
+            cookie = request.cookies.get("cd_session", "")
+            if cookie and hmac.compare_digest(cookie, self.api_key):
+                return self._serve_dashboard_html()
+            return self._make_session_redirect()
 
         key_param = request.query.get("key")
         if key_param is not None:

@@ -26,3 +26,10 @@ CC.MAX_EVENTS = 100;
 CC.agentColor = function(name) {
   return CC.AGENT_COLORS[name] || '#8b949e';
 };
+
+CC.formatMcpHealth = function(h) {
+  if (!h || typeof h !== 'object') return h || 'n/a';
+  var keys = Object.keys(h);
+  if (keys.length === 0) return 'none';
+  return keys.map(function(k) { return k + ': ' + h[k]; }).join(', ');
+};

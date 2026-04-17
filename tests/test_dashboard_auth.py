@@ -165,6 +165,33 @@ async def test_login_in_no_auth_mode_just_redirects(client_no_auth):
     assert resp.headers["Location"] == "/"
 
 
+# -- localhost auto-login ---------------------------------------------
+
+
+async def test_localhost_auto_sets_cookie(client_with_key):
+    """Accessing / from localhost auto-sets the session cookie."""
+    resp = await client_with_key.get(
+        "/",
+        headers={"Host": "localhost:8080"},
+        allow_redirects=False,
+    )
+    assert resp.status == 302
+    cookie = resp.cookies.get("cd_session")
+    assert cookie is not None
+    assert cookie.value == API_KEY
+
+
+async def test_localhost_with_cookie_serves_dashboard(client_with_key):
+    """Localhost with valid cookie serves dashboard directly (no redirect loop)."""
+    client_with_key.session.cookie_jar.update_cookies({"cd_session": API_KEY})
+    resp = await client_with_key.get(
+        "/",
+        headers={"Host": "localhost:8080"},
+        allow_redirects=False,
+    )
+    assert resp.status == 200
+
+
 # -- / (dashboard) with query param and cookie -----------------------
 
 
@@ -181,17 +208,22 @@ async def test_root_with_correct_query_key_redirects_and_sets_cookie(client_with
 
 
 async def test_root_with_wrong_query_key_returns_403(client_with_key):
+    """From a non-localhost host, wrong ?key= returns 403."""
     resp = await client_with_key.get(
         "/?key=wrong",
+        headers={"Host": "192.168.1.50:8080"},
         allow_redirects=False,
     )
     assert resp.status == 403
 
 
 async def test_root_without_credentials_serves_login_page(client_with_key):
-    resp = await client_with_key.get("/", allow_redirects=False)
-    # Login page returned with 401 so the browser knows not to cache a
-    # "success" response — but the body is the login HTML form.
+    """From a non-localhost host with no cookie, the login page is served."""
+    resp = await client_with_key.get(
+        "/",
+        headers={"Host": "192.168.1.50:8080"},
+        allow_redirects=False,
+    )
     assert resp.status == 401
     body = await resp.text()
     assert "CLAUDE COMMAND CENTER" in body

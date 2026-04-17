@@ -610,56 +610,61 @@ class Orchestrator:
 
         accumulated = ""
         final_response = None
+        resp = ClaudeResponse.error("No response")
 
         model = agent.get_model(task_type)
 
         if self.hub:
             await self.hub.agent_busy(agent.name, prompt)
 
-        mcp_path = agent.mcp_config_path
+        try:
+            mcp_path = agent.mcp_config_path
 
-        await self.pm.ensure_agent_session(
-            agent_name=agent.name,
-            model=model,
-            system_prompt=agent.build_static_context(),
-            mcp_config_path=mcp_path,
-            settings_path=agent.settings_path,
-            agent_workspace=str(agent.workspace),
-        )
+            await self.pm.ensure_agent_session(
+                agent_name=agent.name,
+                model=model,
+                system_prompt=agent.build_static_context(),
+                mcp_config_path=mcp_path,
+                settings_path=agent.settings_path,
+                agent_workspace=str(agent.workspace),
+            )
 
-        sdk_active = (self.pm._sdk_bridge and
-                      self.pm._sdk_bridge.has_session(agent.name, model))
-        if sdk_active:
-            dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
-            effective_context = dynamic_context or None
-        else:
-            effective_context = agent_context
+            sdk_active = (self.pm._sdk_bridge and
+                          self.pm._sdk_bridge.has_session(agent.name, model))
+            if sdk_active:
+                dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+                effective_context = dynamic_context or None
+            else:
+                effective_context = agent_context
 
-        async for chunk in self.pm.stream_message(
-            prompt=prompt,
-            session_id=conv["session_id"],
-            system_context=effective_context,
-            platform=platform,
-            user_id=user_id,
-            model_override=model,
-            mcp_config_path=mcp_path,
-            settings_path=agent.settings_path,
-            effort=agent.get_effort(task_type),
-            task_type=task_type,
-            agent_name=agent.name,
-        ):
-            if isinstance(chunk, str):
-                accumulated += chunk
-                if self.hub:
-                    await self.hub.stream_delta(agent.name, chunk)
-                yield chunk
-            elif isinstance(chunk, ClaudeResponse):
-                final_response = chunk
+            async for chunk in self.pm.stream_message(
+                prompt=prompt,
+                session_id=conv["session_id"],
+                system_context=effective_context,
+                platform=platform,
+                user_id=user_id,
+                model_override=model,
+                mcp_config_path=mcp_path,
+                settings_path=agent.settings_path,
+                effort=agent.get_effort(task_type),
+                task_type=task_type,
+                agent_name=agent.name,
+            ):
+                if isinstance(chunk, str):
+                    accumulated += chunk
+                    if self.hub:
+                        await self.hub.stream_delta(agent.name, chunk)
+                    yield chunk
+                elif isinstance(chunk, ClaudeResponse):
+                    final_response = chunk
 
-        resp = final_response or ClaudeResponse.error("No response")
-
-        if self.hub:
-            await self.hub.agent_idle(agent.name, resp.cost, resp.duration_ms)
+            resp = final_response or ClaudeResponse.error("No response")
+        except Exception:
+            log.exception("stream_to_agent error for %s", agent.name)
+            resp = ClaudeResponse.error("Agent error")
+        finally:
+            if self.hub:
+                await self.hub.agent_idle(agent.name, resp.cost, resp.duration_ms)
 
         self.store.add_message(
             conv["id"], "assistant", accumulated or resp.result,

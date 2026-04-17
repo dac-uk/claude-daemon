@@ -164,8 +164,9 @@ CC.renderSettingsView = async function() {
   // MCP servers
   var mcpData = await CC.api('/api/mcp');
   var body = document.getElementById('mcpBody');
-  if (mcpData && Array.isArray(mcpData)) {
-    body.innerHTML = mcpData.map(function(s) {
+  var servers = mcpData && (Array.isArray(mcpData) ? mcpData : mcpData.servers);
+  if (servers && Array.isArray(servers)) {
+    body.innerHTML = servers.map(function(s) {
       var tierClass = s.tier === 'T1' ? 'tier-t1' : s.tier === 'T2' ? 'tier-t2' : 'tier-t3';
       var statusColor = s.status === 'active' || s.status === 'configured' ? 'var(--green)' : 'var(--text-dim)';
       var isActive = s.status === 'active' || s.status === 'configured';

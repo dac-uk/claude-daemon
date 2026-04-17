@@ -29,13 +29,14 @@ CC.fetchAgents = async function() {
         model: a.model, status: 'idle', color: CC.agentColor(a.name),
         streams: [], is_orchestrator: a.is_orchestrator,
         has_mcp: a.has_mcp, mcp_health: a.mcp_health,
-        heartbeat_tasks: a.heartbeat_tasks, cost: 0
+        heartbeat_tasks: a.heartbeat_tasks, cost: a.cost || 0
       };
     } else {
       var ag = CC.agents[a.name];
       ag.role = a.role; ag.model = a.model; ag.is_orchestrator = a.is_orchestrator;
       ag.has_mcp = a.has_mcp; ag.mcp_health = a.mcp_health;
       ag.heartbeat_tasks = a.heartbeat_tasks;
+      if (!ag._wsUpdated) ag.cost = a.cost || 0;
     }
   });
 };
