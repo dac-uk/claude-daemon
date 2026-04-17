@@ -222,7 +222,7 @@ CC.chatSend = async function(prompt) {
   } finally {
     agentMsg.streaming = false;
     if (!agentMsg.text) {
-      agentMsg.text = '(No response. Check daemon logs for errors: `journalctl --user -u claude-daemon` or ~/.claude-daemon/daemon.log)';
+      agentMsg.text = '(No response. Check daemon log: `tail -50 ~/.config/claude-daemon/logs/daemon.log`)';
     }
     CC.chat.streaming = false;
     CC.chat.abortCtrl = null;
