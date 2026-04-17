@@ -531,13 +531,31 @@ class ProcessManager:
                     final_response.session_id, final_response.cost, final_response.num_turns,
                 )
                 yield final_response
-            else:
-                # Build response from accumulated text
+            elif accumulated_text:
+                # Partial stream without a final `result` event — still usable.
                 yield ClaudeResponse(
                     result=accumulated_text, session_id=tracking_id, cost=0,
                     input_tokens=0, output_tokens=0, num_turns=0, duration_ms=0,
-                    is_error=not accumulated_text,
+                    is_error=False,
                 )
+            else:
+                # No output at all. Capture stderr so the user can see what broke.
+                stderr_text = ""
+                try:
+                    stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
+                    stderr_text = stderr_bytes.decode(errors="replace").strip()
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                exit_code = proc.returncode
+                msg = stderr_text or (
+                    f"Claude CLI exited with code {exit_code} and produced no output. "
+                    "Check that ANTHROPIC_API_KEY is set and that the `claude` binary is installed."
+                )
+                log.error(
+                    "Claude CLI produced no output. exit_code=%s stderr=%r",
+                    exit_code, stderr_text,
+                )
+                yield ClaudeResponse.error(msg)
 
         except FileNotFoundError:
             yield ClaudeResponse.error(
