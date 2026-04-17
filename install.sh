@@ -613,5 +613,19 @@ fi
 # Final convenience: tell users the exact command that works RIGHT NOW
 printf "\n  ${GREEN}${BOLD}Quick start:${NC}  ${CYAN}%s chat${NC}\n" "$SYMLINK"
 
+# Dashboard one-click URL — only if dashboard + api are enabled
+if grep -q "^  dashboard_enabled: true" "$YAML_FILE" 2>/dev/null \
+   && grep -q "^  api_enabled: true" "$YAML_FILE" 2>/dev/null; then
+    DASH_KEY=$(grep "^CLAUDE_DAEMON_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    DASH_PORT=8080
+    if [ -n "$DASH_KEY" ]; then
+        printf "  ${GREEN}${BOLD}Dashboard:${NC}    ${CYAN}http://localhost:%s/?key=%s${NC}\n" \
+            "$DASH_PORT" "$DASH_KEY"
+        printf "                (or run: ${CYAN}%s dashboard-url${NC})\n" "$SYMLINK"
+    else
+        printf "  ${GREEN}${BOLD}Dashboard:${NC}    ${CYAN}http://localhost:%s/${NC}\n" "$DASH_PORT"
+    fi
+fi
+
 # -- Final summary with all warnings/errors --
 _print_summary

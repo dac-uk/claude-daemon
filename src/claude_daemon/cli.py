@@ -731,6 +731,31 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             print(f"\nError: {e}\n")
 
 
+def _cmd_dashboard_url(args: argparse.Namespace) -> None:
+    """Print a one-click URL that authenticates the browser into the dashboard."""
+    from claude_daemon.core.config import DaemonConfig
+
+    DaemonConfig.load()
+    config = DaemonConfig.load()
+
+    if not config.api_enabled:
+        print("HTTP API is disabled — set api_enabled: true in config.yaml.")
+        sys.exit(1)
+    if not config.dashboard_enabled:
+        print("Dashboard is disabled — set dashboard_enabled: true in config.yaml.")
+        sys.exit(1)
+
+    host = getattr(args, "host", None) or "localhost"
+    port = config.api_port
+    if not config.api_key:
+        print(f"http://{host}:{port}/")
+        print("(No api_key set — dashboard requires no login.)")
+        return
+
+    from urllib.parse import quote
+    print(f"http://{host}:{port}/?key={quote(config.api_key)}")
+
+
 def _cmd_agents(args: argparse.Namespace) -> None:
     """Manage agents."""
     from claude_daemon.agents.bootstrap import create_csuite_workspaces, create_shared_workspace
@@ -879,6 +904,16 @@ def main() -> None:
     p_backend.add_argument("action", nargs="?", default="status",
                            choices=["status", "on", "off"], help="Action")
 
+    # dashboard-url
+    p_durl = sub.add_parser(
+        "dashboard-url",
+        help="Print a ?key=<api_key> URL for one-click dashboard login",
+    )
+    p_durl.add_argument(
+        "--host", default=None,
+        help="Override hostname (default: localhost)",
+    )
+
     # agents
     p_agents = sub.add_parser("agents", help="Manage agents")
     p_agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -908,6 +943,7 @@ def main() -> None:
         "thinking": _cmd_thinking,
         "effort": _cmd_effort,
         "backend": _cmd_backend,
+        "dashboard-url": _cmd_dashboard_url,
         "agents": _cmd_agents,
     }
 

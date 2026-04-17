@@ -146,12 +146,19 @@ class HttpApi:
             self._app.router.add_get("/ws", self._handle_ws)
             self._app.router.add_static("/static", STATIC_DIR, show_index=False)
             self._app.router.add_get("/", self._handle_dashboard)
+            self._app.router.add_post(
+                "/dashboard/login", self._handle_dashboard_login,
+            )
             log.info("Dashboard enabled — serving at http://localhost:%d/", self.port)
 
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler):
-        # Public endpoints: health check, dashboard, and static assets
-        if request.path in ("/api/health", "/") or request.path.startswith("/static/"):
+        # Public endpoints: health check, dashboard shell, login form, static assets.
+        # (The dashboard handler does its own auth dance — cookie, ?key=, or login page.)
+        if (
+            request.path in ("/api/health", "/", "/dashboard/login")
+            or request.path.startswith("/static/")
+        ):
             return await handler(request)
 
         # Webhooks use their own signature verification, not bearer tokens
@@ -162,12 +169,16 @@ class HttpApi:
             auth = request.headers.get("Authorization", "")
             # WebSocket: accept token via Sec-WebSocket-Protocol header
             ws_proto = request.headers.get("Sec-WebSocket-Protocol", "")
+            # Browser dashboard: accept cookie set by /dashboard/login
+            cookie_token = request.cookies.get("cd_session", "")
             token = ""
             if auth.startswith("Bearer "):
                 token = auth[7:]
             elif ws_proto:
                 token = ws_proto
-            if token != self.api_key:
+            elif cookie_token:
+                token = cookie_token
+            if not token or not hmac.compare_digest(token, self.api_key):
                 return web.json_response(
                     {"error": "Unauthorized"}, status=401,
                 )
@@ -831,13 +842,65 @@ class HttpApi:
         return await self.hub.ws_handler(request)
 
     async def _handle_dashboard(self, request: web.Request) -> web.Response:
-        """Serve the dashboard HTML."""
-        # Try index.html first, fall back to dashboard.html
+        """Serve the dashboard — with cookie-backed auth when api_key is set.
+
+        Flow:
+        - No api_key configured → serve the dashboard directly (legacy behaviour).
+        - Request has ?key=<k> → validate; on match, set session cookie and 302
+          to `/` (stripping the query); on mismatch, 403.
+        - Request has a valid cd_session cookie → serve the dashboard.
+        - Otherwise → serve the login page.
+        """
+        if not self.api_key:
+            return self._serve_dashboard_html()
+
+        key_param = request.query.get("key")
+        if key_param is not None:
+            if hmac.compare_digest(key_param, self.api_key):
+                return self._make_session_redirect()
+            return web.Response(
+                text="Invalid API key", status=403, content_type="text/html",
+            )
+
+        cookie = request.cookies.get("cd_session", "")
+        if cookie and hmac.compare_digest(cookie, self.api_key):
+            return self._serve_dashboard_html()
+
+        return self._serve_login_html()
+
+    async def _handle_dashboard_login(self, request: web.Request) -> web.Response:
+        """Handle POST from the login form — sets cookie, redirects to /."""
+        if not self.api_key:
+            return web.Response(status=302, headers={"Location": "/"})
+        data = await request.post()
+        key = str(data.get("key", ""))
+        if key and hmac.compare_digest(key, self.api_key):
+            return self._make_session_redirect()
+        return web.Response(
+            text="Invalid API key", status=403, content_type="text/html",
+        )
+
+    def _serve_dashboard_html(self) -> web.Response:
         for name in ("index.html", "dashboard.html"):
             path = STATIC_DIR / name
             if path.exists():
                 return web.FileResponse(path)
         return web.Response(text="Dashboard not found", status=404)
+
+    def _serve_login_html(self) -> web.Response:
+        path = STATIC_DIR / "login.html"
+        if path.exists():
+            return web.FileResponse(path, status=401)
+        return web.Response(text="Login page missing", status=500)
+
+    def _make_session_redirect(self) -> web.Response:
+        resp = web.Response(status=302, headers={"Location": "/"})
+        resp.set_cookie(
+            "cd_session", self.api_key,
+            max_age=30 * 24 * 3600,
+            httponly=True, samesite="Strict", path="/",
+        )
+        return resp
 
     async def _handle_discussions(self, request: web.Request) -> web.Response:
         """GET /api/discussions — list recent inter-agent discussions."""

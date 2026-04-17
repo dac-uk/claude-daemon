@@ -1032,6 +1032,25 @@ daemon:
 
 Open `http://<your-ip>:8080/` in any browser. Works on any device on your Tailscale or ZeroTier network.
 
+### First-time login
+
+When `api_key` is set (the default after `install.sh`), the dashboard is gated. Three
+ways in:
+
+1. **One-click URL** — run `claude-daemon dashboard-url` and paste the
+   `http://localhost:8080/?key=<your-api-key>` link it prints. The daemon sets an
+   HTTP-only `cd_session` cookie that lasts 30 days and redirects to `/`.
+2. **Login form** — visit `/` with no cookie, paste the API key into the form, hit
+   **UNLOCK**. Same cookie is set on success.
+3. **Bearer token** — external API callers keep using
+   `Authorization: Bearer <key>` against `/api/*` as before.
+
+Rotating `CLAUDE_DAEMON_API_KEY` invalidates every existing cookie automatically —
+there is no separate session store.
+
+When `api_key` is empty (no-auth mode), the dashboard loads directly without any
+login flow.
+
 ### Views
 
 | View | What it shows |
