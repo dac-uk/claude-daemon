@@ -118,7 +118,7 @@ class DaemonConfig:
     api_port: int = 8080
     api_bind: str = "0.0.0.0"  # Bind address (0.0.0.0 = all interfaces inc. Tailscale/ZeroTier)
     api_key: str = ""  # Bearer token for API auth (empty = no auth)
-    dashboard_enabled: bool = False  # Serve live agent dashboard at /
+    dashboard_enabled: bool = True  # Serve live agent dashboard at /
     github_webhook_secret: str = ""  # GitHub webhook signing secret
     stripe_webhook_secret: str = ""  # Stripe webhook signing secret
 
@@ -271,7 +271,7 @@ class DaemonConfig:
             api_port=int(daemon_cfg.get("api_port", 8080)),
             api_bind=daemon_cfg.get("api_bind", "0.0.0.0"),
             api_key=os.environ.get("CLAUDE_DAEMON_API_KEY") or daemon_cfg.get("api_key", ""),
-            dashboard_enabled=daemon_cfg.get("dashboard_enabled", False),
+            dashboard_enabled=daemon_cfg.get("dashboard_enabled", True),
             github_webhook_secret=(
                 os.environ.get("GITHUB_WEBHOOK_SECRET")
                 or daemon_cfg.get("github_webhook_secret", "")
