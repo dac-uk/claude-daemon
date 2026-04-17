@@ -29,7 +29,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
 - **Inter-Agent Communication** - Five communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, and `[OPTIMIZE:name]` to trigger evo code optimization. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
-- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel, native Operations view (tasks / budgets / goals / approvals). All real-time via WebSocket — no polling.
+- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, per-agent chat with streaming responses, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel, native Operations view (tasks / budgets / goals / approvals). All real-time via WebSocket — no polling.
 - **Native Orchestration** - Built-in task queue, budget caps, goal tracking, and approval workflow — Paperclip-free by default. Atomic budget reservations (race-safe), two-pass enforcement where rejection beats approval threshold, re-enforced approvals that can't resurrect cancelled tasks, orphan task sweep on startup. Exposed via `/api/v1/*` and the Ops dashboard view.
 - **CLI Chat** - `claude-daemon chat` opens an interactive terminal session with the daemon's agents. Route to a specific agent with `--agent albert`. Connects to the running daemon via the HTTP API — no separate process needed.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
@@ -1038,6 +1038,7 @@ Open `http://<your-ip>:8080/` in any browser. Works on any device on your Tailsc
 |------|---------------|
 | **Overview** | D3 force graph (agent nodes with emoji, glow rings, pulse on busy), live activity feed, agent sidebar, metric cards |
 | **Agents** | Fleet cards with status, model, cost, MCP health, heartbeat count. Click to open streaming output panel |
+| **Chat** | Per-agent chat channels (team + individual agents). Live streaming responses via SSE. Cross-session message history |
 | **Tasks** | Active task queue + inter-agent discussion transcripts (bilateral + council). Expandable cards with synthesis |
 | **Ops** | Native orchestration: task queue (filter chips for pending / running / pending_approval / completed / failed / cancelled), budget gauges, goal cards, approval inbox. See [Native Orchestration](#native-orchestration). |
 | **Analytics** | Chart.js visualizations: cost by agent, token usage (input/output), task outcomes, failure categories |
@@ -1048,8 +1049,19 @@ Open `http://<your-ip>:8080/` in any browser. Works on any device on your Tailsc
 - **Force graph**: 7 agent nodes with colour-coded status, emoji labels, role sublabels, pulsing animation when busy, glow rings on active agents
 - **Click to expand**: Click any agent node or card to see their live thought stream in a slide-in panel
 - **Event log**: Scrolling real-time log of agent status changes, task completions, auto-parallel events, discussions, delegations
-- **WebSocket**: All updates via `/ws` — no polling (30s status refresh only)
+- **WebSocket**: All updates via `/ws` — no polling (30s metrics refresh only)
 - **Stats bar**: Active agents, session count, cost today
+
+### WebSocket events
+
+The `/ws` endpoint streams all dashboard events. Orchestration events are listed in the [Native Orchestration](#native-orchestration) section. General events:
+
+| Event | When it fires |
+|-------|---------------|
+| `agent_status` | Agent goes busy (with prompt) or idle (with cost, duration) |
+| `stream_delta` | Token chunk from agent output (live streaming) |
+| `auto_parallel` | Parallel session auto-spawned for a busy agent |
+| `metrics_tick` | Periodic (30s) per-agent cost/token summary |
 
 ### Architecture
 12 files — CSS design system + 8 JS modules + HTML shell. D3.js and Chart.js loaded from CDN. No build step, no npm, no bundler.
@@ -1079,7 +1091,8 @@ POST /api/settings/backend    — Enable/disable Managed Agents {"enabled": true
 GET  /api/discussions         — Inter-agent discussion history (filter by type, initiator)
 GET  /api/failures            — Failure analyses and patterns (filter by agent)
 GET  /api/evolution           — Self-evolution mutation history (filter by agent)
-POST /api/message             — Send a message to an agent
+POST /api/message             — Send a message to an agent (returns final result)
+POST /api/message/stream      — Stream response token-by-token (Server-Sent Events)
 POST /api/workflow            — Trigger build quality gate workflow (accepts max_cost)
 POST /api/webhook/github      — GitHub webhook (→ Max/Albert/Johnny) — 202 Accepted
 POST /api/webhook/stripe      — Stripe webhook (→ Penny) — 202 Accepted
