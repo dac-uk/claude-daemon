@@ -208,7 +208,9 @@ CC.chatSend = async function(prompt) {
             CC.chatUpdateLast(ch);
           } else if (evt.done) {
             agentMsg.streaming = false;
-            if (evt.error) agentMsg.text = 'Error: ' + evt.error;
+            if (evt.error) {
+              agentMsg.text = (agentMsg.text ? agentMsg.text + '\n\n' : '') + 'Error: ' + evt.error;
+            }
           }
         } catch (_) {}
       }
@@ -220,7 +222,7 @@ CC.chatSend = async function(prompt) {
   } finally {
     agentMsg.streaming = false;
     if (!agentMsg.text) {
-      agentMsg.text = '(No response received — the agent may still be processing.)';
+      agentMsg.text = '(No response. Check daemon logs for errors: `journalctl --user -u claude-daemon` or ~/.claude-daemon/daemon.log)';
     }
     CC.chat.streaming = false;
     CC.chat.abortCtrl = null;

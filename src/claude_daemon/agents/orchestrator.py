@@ -663,6 +663,11 @@ class Orchestrator:
             log.exception("stream_to_agent error for %s", agent.name)
             resp = ClaudeResponse.error("Agent error")
         finally:
+            if resp.is_error or not accumulated:
+                log.warning(
+                    "Agent %s produced no usable response. is_error=%s result=%r",
+                    agent.name, resp.is_error, (resp.result or "")[:200],
+                )
             if self.hub:
                 await self.hub.agent_idle(agent.name, resp.cost, resp.duration_ms)
 

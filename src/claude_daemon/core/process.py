@@ -441,6 +441,7 @@ class ProcessManager:
         sdk_model = model_override or self.config.default_model
         if (agent_name and self._sdk_bridge
                 and self._sdk_bridge.has_session(agent_name, sdk_model)):
+            sdk_ok = False
             try:
                 async for chunk in self._sdk_bridge.stream_message(
                     agent_name=agent_name,
@@ -448,16 +449,27 @@ class ProcessManager:
                     context=system_context,
                     model=sdk_model,
                 ):
-                    if isinstance(chunk, ClaudeResponse) and chunk.session_id:
-                        self._confirmed_sessions.add(chunk.session_id)
+                    if isinstance(chunk, ClaudeResponse):
+                        if chunk.session_id:
+                            self._confirmed_sessions.add(chunk.session_id)
+                        if chunk.is_error:
+                            log.warning(
+                                "SDK bridge error for %s:%s: %s — falling back to CLI",
+                                agent_name, sdk_model, chunk.result[:200],
+                            )
+                            break  # Don't yield the error; fall through to CLI
+                        sdk_ok = True
                     yield chunk
-                return
+                if sdk_ok:
+                    return
             except Exception as e:
                 log.warning("SDK streaming error for %s:%s, falling back: %s",
                             agent_name, sdk_model, e)
-                self._sdk_bridge._sessions.pop(
-                    self._sdk_bridge._key(agent_name, sdk_model), None,
-                )
+            # SDK path failed or errored — invalidate session and fall through to CLI
+            self._sdk_bridge._sessions.pop(
+                self._sdk_bridge._key(agent_name, sdk_model), None,
+            )
+            log.info("Falling back to CLI subprocess for %s", agent_name)
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:
@@ -531,13 +543,31 @@ class ProcessManager:
                     final_response.session_id, final_response.cost, final_response.num_turns,
                 )
                 yield final_response
-            else:
-                # Build response from accumulated text
+            elif accumulated_text:
+                # Partial stream without a final `result` event — still usable.
                 yield ClaudeResponse(
                     result=accumulated_text, session_id=tracking_id, cost=0,
                     input_tokens=0, output_tokens=0, num_turns=0, duration_ms=0,
-                    is_error=not accumulated_text,
+                    is_error=False,
                 )
+            else:
+                # No output at all. Capture stderr so the user can see what broke.
+                stderr_text = ""
+                try:
+                    stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
+                    stderr_text = stderr_bytes.decode(errors="replace").strip()
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                exit_code = proc.returncode
+                msg = stderr_text or (
+                    f"Claude CLI exited with code {exit_code} and produced no output. "
+                    "Check that ANTHROPIC_API_KEY is set and that the `claude` binary is installed."
+                )
+                log.error(
+                    "Claude CLI produced no output. exit_code=%s stderr=%r",
+                    exit_code, stderr_text,
+                )
+                yield ClaudeResponse.error(msg)
 
         except FileNotFoundError:
             yield ClaudeResponse.error(

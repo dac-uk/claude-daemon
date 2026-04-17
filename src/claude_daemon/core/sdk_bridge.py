@@ -356,7 +356,12 @@ class SDKBridgeManager:
                     return
 
                 if event is None:
-                    # Stream ended without a result
+                    # Bridge process died or stream ended without a result — surface it.
+                    self._sessions.pop(session_key, None)
+                    self._first_message.pop(session_key, None)
+                    yield ClaudeResponse.error(
+                        "SDK bridge: stream ended without result (bridge process may have crashed)"
+                    )
                     return
 
                 event_type = event.get("event", "")
