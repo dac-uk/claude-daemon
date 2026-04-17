@@ -87,6 +87,7 @@ class HttpApi:
             registry=self.daemon.agent_registry,
             store=self.daemon.store,
             budget_store=self._get_budget_store(),
+            approvals_store=self._get_approvals_store(),
         )
         return self._task_api
 
@@ -443,8 +444,9 @@ class HttpApi:
             metadata=body.get("metadata") or {},
         )
         result = api.submit_task(req)
-        status = 201 if result.status == "pending" else 400
-        return web.json_response(result.to_dict(), status=status)
+        status_map = {"pending": 201, "pending_approval": 202, "rejected": 400, "error": 500}
+        http_status = status_map.get(result.status, 400)
+        return web.json_response(result.to_dict(), status=http_status)
 
     async def _handle_v1_tasks_pending(self, request: web.Request) -> web.Response:
         api = self._get_task_api()
@@ -701,28 +703,36 @@ class HttpApi:
             pass
         ok = appr.approve(aid, approver=approver)
         if not ok:
-            return web.json_response({"error": "Approval not found or already resolved"}, status=404)
+            return web.json_response(
+                {"error": "Approval not found or already resolved"}, status=409,
+            )
         row = appr.get(aid)
+        if not row:
+            return web.json_response({"error": "Approval row missing"}, status=500)
         try:
             await self.hub.approval_resolved(aid, row["task_id"], "approved", approver)
         except Exception:
             pass
-        # Dispatch the approved task via orchestrator
-        api = self._get_task_api()
-        if api and row:
-            task = api.get_task(row["task_id"])
-            if task and task.get("status") == "pending":
-                agent_name = task.get("agent_name")
-                agent = self.daemon.agent_registry.get(agent_name) if agent_name else None
-                if agent and self.daemon.orchestrator:
-                    try:
-                        self.daemon.orchestrator.spawn_task(
-                            agent=agent,
-                            prompt=task.get("prompt", ""),
-                            task_id=row["task_id"],
-                        )
-                    except Exception:
-                        log.exception("Failed to dispatch approved task %s", row["task_id"])
+        # Dispatch the approved task via orchestrator with full context
+        task = self.daemon.store.get_task(row["task_id"]) if self.daemon.store else None
+        if task and self.daemon.orchestrator and self.daemon.agent_registry:
+            agent_name = task.get("agent_name")
+            agent = self.daemon.agent_registry.get(agent_name) if agent_name else None
+            if agent:
+                try:
+                    self.daemon.orchestrator.spawn_task(
+                        agent=agent,
+                        prompt=task.get("prompt", ""),
+                        platform=task.get("platform", "api"),
+                        user_id=task.get("user_id", "local"),
+                        task_type=task.get("task_type", "default"),
+                        task_id=row["task_id"],
+                    )
+                except Exception:
+                    log.exception("Failed to dispatch approved task %s", row["task_id"])
+                    return web.json_response(
+                        {"error": "Dispatch failed"}, status=500,
+                    )
         return web.json_response({"status": "approved"})
 
     async def _handle_v1_approvals_reject(self, request: web.Request) -> web.Response:
@@ -741,10 +751,13 @@ class HttpApi:
             pass
         ok = appr.reject(aid, approver=approver)
         if not ok:
-            return web.json_response({"error": "Approval not found or already resolved"}, status=404)
+            return web.json_response(
+                {"error": "Approval not found or already resolved"}, status=409,
+            )
         row = appr.get(aid)
         try:
-            await self.hub.approval_resolved(aid, row["task_id"], "rejected", approver)
+            if row:
+                await self.hub.approval_resolved(aid, row["task_id"], "rejected", approver)
         except Exception:
             pass
         return web.json_response({"status": "rejected"})

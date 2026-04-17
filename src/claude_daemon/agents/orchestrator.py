@@ -793,23 +793,34 @@ class Orchestrator:
                 )
             except Exception:
                 pass
-            # Record actual spend against applicable budgets
-            if spawned.cost > 0 and self._budget_store is not None:
+            # Reconcile budget reservations with actual cost
+            if self._budget_store is not None:
                 try:
-                    updated = self._budget_store.record_spend(
-                        agent_name=agent.name,
-                        user_id=user_id,
-                        task_type=task_type,
-                        actual_cost=spawned.cost,
-                    )
-                    if self.hub and updated:
-                        for b in updated:
-                            await self.hub.budget_update(
-                                b["id"], b["scope"], b.get("scope_value"),
-                                b["current_spend"], b["limit_usd"],
+                    import json as _json
+                    task_row = self.store.get_task(task_id)
+                    meta = {}
+                    if task_row and task_row.get("metadata"):
+                        meta = _json.loads(task_row["metadata"])
+                    reservations = [
+                        (int(bid), float(amt))
+                        for bid, amt in meta.get("_budget_reservations", [])
+                    ]
+                    if reservations:
+                        if spawned.status == "completed" and spawned.cost > 0:
+                            updated = self._budget_store.apply_actual_spend(
+                                reservations, spawned.cost,
                             )
+                        else:
+                            self._budget_store.release_reservations(reservations)
+                            updated = []
+                        if self.hub:
+                            for b in updated:
+                                await self.hub.budget_update(
+                                    b["id"], b["scope"], b.get("scope_value"),
+                                    b["current_spend"], b["limit_usd"],
+                                )
                 except Exception:
-                    log.debug("Budget spend recording failed for task %s", task_id)
+                    log.debug("Budget reconciliation failed for task %s", task_id)
             if self.hub:
                 try:
                     await self.hub.task_update(

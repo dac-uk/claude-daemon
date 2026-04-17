@@ -33,6 +33,7 @@ class EnforcementDecision:
     reason: str = ""
     blocked_by: list[dict] = field(default_factory=list)
     reservations: list[tuple[int, float]] = field(default_factory=list)
+    threshold_usd: float | None = None
 
     @property
     def allowed(self) -> bool:
@@ -77,6 +78,7 @@ def enforce_budget(
                 reason=f"Estimated ${amount:.4f} exceeds approval threshold "
                        f"${threshold:.2f} on budget {b['id']}",
                 blocked_by=[b],
+                threshold_usd=threshold,
             )
 
         ok = budget_store.check_and_reserve(b["id"], amount)

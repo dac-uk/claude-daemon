@@ -116,6 +116,10 @@ class GoalsStore:
         return True
 
     def delete(self, goal_id: int) -> bool:
+        self._db.execute(
+            "UPDATE goals SET parent_goal_id = NULL WHERE parent_goal_id = ?",
+            (goal_id,),
+        )
         cur = self._db.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
         self._db.commit()
         return cur.rowcount > 0

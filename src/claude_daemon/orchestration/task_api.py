@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from claude_daemon.agents.orchestrator import Orchestrator, SpawnedTask
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.memory.store import ConversationStore
+    from claude_daemon.orchestration.approvals import ApprovalsStore
     from claude_daemon.orchestration.budgets import BudgetStore
 
 log = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class TaskSubmissionResult:
     """Response shape for TaskAPI.submit_task()."""
 
     task_id: str
-    status: str  # pending | running | rejected | error
+    status: str  # pending | running | rejected | pending_approval | error
     agent: str | None = None
     error: str | None = None
 
@@ -67,11 +68,13 @@ class TaskAPI:
         registry: AgentRegistry,
         store: ConversationStore,
         budget_store: BudgetStore | None = None,
+        approvals_store: ApprovalsStore | None = None,
     ) -> None:
         self._orch = orchestrator
         self._registry = registry
         self._store = store
         self._budget_store = budget_store
+        self._approvals_store = approvals_store
 
     def _resolve_agent(self, name: str | None) -> tuple[str | None, Any]:
         """Resolve an agent name via the registry. Returns (name, agent) or (None, None)."""
@@ -104,6 +107,7 @@ class TaskAPI:
             )
 
         # Budget enforcement (Phase 2)
+        reservations: list[tuple[int, float]] = []
         if self._budget_store is not None:
             from claude_daemon.orchestration.enforcement import enforce_budget
             decision = enforce_budget(
@@ -112,17 +116,25 @@ class TaskAPI:
                 user_id=req.user_id,
                 task_type=req.task_type,
             )
-            if not decision.allowed:
+            if decision.outcome == "rejected":
                 return TaskSubmissionResult(
-                    task_id="", status=decision.outcome,
+                    task_id="", status="rejected",
                     agent=agent_name, error=decision.reason,
                 )
+            if decision.outcome == "approval_required":
+                return self._handle_approval_required(
+                    req, agent_name, decision,
+                )
+            reservations = decision.reservations
 
         # Generate task_id up-front so caller gets it synchronously
         task_id = str(uuid.uuid4())[:12]
 
-        # Persist metadata as JSON string in a dedicated column (added in migration)
-        metadata_json = json.dumps(req.metadata) if req.metadata else None
+        # Stash reservations in metadata so completion/cancel can drain them
+        meta = dict(req.metadata) if req.metadata else {}
+        if reservations:
+            meta["_budget_reservations"] = [[bid, amt] for bid, amt in reservations]
+        metadata_json = json.dumps(meta) if meta else None
 
         try:
             self._store.create_task(
@@ -132,6 +144,8 @@ class TaskAPI:
             )
         except Exception:
             log.exception("Could not persist task %s to DB", task_id)
+            if reservations and self._budget_store:
+                self._budget_store.release_reservations(reservations)
             return TaskSubmissionResult(
                 task_id=task_id, status="error", agent=agent_name,
                 error="DB persistence failed",
@@ -149,6 +163,8 @@ class TaskAPI:
             )
         except Exception:
             log.exception("Failed to spawn task %s", task_id)
+            if reservations and self._budget_store:
+                self._budget_store.release_reservations(reservations)
             try:
                 self._store.update_task_status(
                     task_id, "failed", error="spawn failed",
@@ -162,6 +178,56 @@ class TaskAPI:
 
         return TaskSubmissionResult(
             task_id=task_id, status="pending", agent=agent_name,
+        )
+
+    def _handle_approval_required(
+        self,
+        req: TaskSubmission,
+        agent_name: str,
+        decision,
+    ) -> TaskSubmissionResult:
+        """Create task_queue row + approvals row for tasks needing human review."""
+        task_id = str(uuid.uuid4())[:12]
+
+        meta = dict(req.metadata) if req.metadata else {}
+        metadata_json = json.dumps(meta) if meta else None
+
+        try:
+            self._store.create_task(
+                task_id, agent_name, req.prompt[:2000],
+                task_type=req.task_type, platform=req.platform, user_id=req.user_id,
+                metadata=metadata_json, goal_id=req.goal_id,
+            )
+            self._store.update_task_status(task_id, "pending_approval")
+        except Exception:
+            log.exception("Could not persist approval task %s", task_id)
+            return TaskSubmissionResult(
+                task_id="", status="error", agent=agent_name,
+                error="DB persistence failed",
+            )
+
+        if self._approvals_store:
+            try:
+                self._approvals_store.create(
+                    task_id=task_id,
+                    reason=decision.reason,
+                    threshold_usd=decision.threshold_usd,
+                )
+            except Exception:
+                log.exception("Could not create approval for task %s", task_id)
+
+        hub = getattr(self._orch, "hub", None)
+        if hub:
+            try:
+                import asyncio
+                asyncio.get_event_loop().create_task(
+                    hub.approval_requested(task_id, decision.reason, agent_name),
+                )
+            except Exception:
+                pass
+
+        return TaskSubmissionResult(
+            task_id=task_id, status="pending_approval", agent=agent_name,
         )
 
     def get_task(self, task_id: str) -> dict | None:
@@ -190,12 +256,24 @@ class TaskAPI:
     async def cancel_task(self, task_id: str) -> dict:
         """Cancel a pending or running task.
 
-        Cancels the asyncio future if alive, updates DB row, and broadcasts.
+        Releases any budget reservations, cancels the asyncio future if alive,
+        updates DB row, and broadcasts.
         Returns {"task_id", "status", "cancelled": bool}.
         """
         row = self._store.get_task(task_id)
         if row is None:
             return {"task_id": task_id, "status": "unknown", "cancelled": False}
+
+        # Release budget reservations stored in metadata
+        if self._budget_store and row.get("metadata"):
+            try:
+                meta = json.loads(row["metadata"])
+                reservations = meta.get("_budget_reservations", [])
+                if reservations:
+                    typed = [(int(bid), float(amt)) for bid, amt in reservations]
+                    self._budget_store.release_reservations(typed)
+            except Exception:
+                log.debug("Could not release reservations for task %s", task_id)
 
         spawned = self._orch._spawned_tasks.get(task_id)
         cancelled = False

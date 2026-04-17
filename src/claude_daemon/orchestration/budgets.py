@@ -175,6 +175,49 @@ class BudgetStore:
         )
         self._db.commit()
 
+    def release_reservations(self, reservations: list[tuple[int, float]]) -> None:
+        """Release multiple reservations in a single transaction."""
+        if not reservations:
+            return
+        for bid, amount in reservations:
+            self._db.execute(
+                "UPDATE budgets SET current_spend = MAX(0, current_spend - ?) WHERE id = ?",
+                (amount, bid),
+            )
+        self._db.commit()
+
+    def apply_actual_spend(
+        self,
+        reservations: list[tuple[int, float]],
+        actual_cost: float,
+    ) -> list[dict]:
+        """Replace reservations with actual cost on each applicable budget.
+
+        For each (budget_id, reserved_amount), applies a net delta of
+        (actual_cost - reserved_amount). The delta may be negative (refund)
+        when the task cost less than the reservation.
+
+        Returns updated budget rows for broadcasting.
+        """
+        updated: list[dict] = []
+        for bid, reserved in reservations:
+            delta = actual_cost - reserved
+            if abs(delta) < 1e-10:
+                row = self.get(bid)
+                if row:
+                    updated.append(row)
+                continue
+            self._db.execute(
+                "UPDATE budgets SET current_spend = MAX(0, current_spend + ?) WHERE id = ?",
+                (delta, bid),
+            )
+            row = self.get(bid)
+            if row:
+                updated.append(row)
+        if updated:
+            self._db.commit()
+        return updated
+
     # ── Post-completion spend recording ───────────────────────
 
     def record_spend(

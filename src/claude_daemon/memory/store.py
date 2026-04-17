@@ -561,7 +561,8 @@ class ConversationStore:
 
     def get_pending_tasks(self) -> list[dict]:
         rows = self._db.execute(
-            "SELECT * FROM task_queue WHERE status IN ('pending', 'running') "
+            "SELECT * FROM task_queue "
+            "WHERE status IN ('pending', 'running', 'pending_approval') "
             "ORDER BY created_at",
         ).fetchall()
         return [dict(r) for r in rows]

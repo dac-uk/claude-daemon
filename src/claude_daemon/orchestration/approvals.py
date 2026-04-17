@@ -72,37 +72,45 @@ class ApprovalsStore:
     # ── Resolve ───────────────────────────────────────────────
 
     def approve(self, approval_id: int, approver: str = "local") -> bool:
-        """Mark approval as approved, update linked task to 'pending'."""
-        row = self.get(approval_id)
-        if row is None or row["status"] != "pending":
-            return False
+        """Mark approval as approved, update linked task to 'pending'.
+
+        Uses atomic UPDATE … WHERE status='pending' to prevent TOCTOU races.
+        """
         now = datetime.now(timezone.utc).isoformat()
-        self._db.execute(
+        cur = self._db.execute(
             "UPDATE approvals SET status = 'approved', approver_user = ?, "
-            "resolved_at = ? WHERE id = ?",
+            "resolved_at = ? WHERE id = ? AND status = 'pending'",
             (approver, now, approval_id),
         )
-        self._db.execute(
-            "UPDATE task_queue SET status = 'pending' WHERE id = ?",
-            (row["task_id"],),
-        )
+        if cur.rowcount == 0:
+            return False
+        row = self.get(approval_id)
+        if row:
+            self._db.execute(
+                "UPDATE task_queue SET status = 'pending' WHERE id = ?",
+                (row["task_id"],),
+            )
         self._db.commit()
         return True
 
     def reject(self, approval_id: int, approver: str = "local") -> bool:
-        """Mark approval as rejected, cancel linked task."""
-        row = self.get(approval_id)
-        if row is None or row["status"] != "pending":
-            return False
+        """Mark approval as rejected, cancel linked task.
+
+        Uses atomic UPDATE … WHERE status='pending' to prevent TOCTOU races.
+        """
         now = datetime.now(timezone.utc).isoformat()
-        self._db.execute(
+        cur = self._db.execute(
             "UPDATE approvals SET status = 'rejected', approver_user = ?, "
-            "resolved_at = ? WHERE id = ?",
+            "resolved_at = ? WHERE id = ? AND status = 'pending'",
             (approver, now, approval_id),
         )
-        self._db.execute(
-            "UPDATE task_queue SET status = 'cancelled' WHERE id = ?",
-            (row["task_id"],),
-        )
+        if cur.rowcount == 0:
+            return False
+        row = self.get(approval_id)
+        if row:
+            self._db.execute(
+                "UPDATE task_queue SET status = 'cancelled' WHERE id = ?",
+                (row["task_id"],),
+            )
         self._db.commit()
         return True

@@ -1,7 +1,7 @@
 /* ── Operations view — native task queue + submission ─────── */
 
 CC.opsState = {
-  filter: 'all',       // all | pending | running | completed | failed | cancelled
+  filter: 'all',       // all | pending | running | completed | failed | cancelled | pending_approval
   tasks: [],           // merged recent list
   expandedId: null,
   budgets: [],         // budget gauge data
@@ -77,7 +77,7 @@ CC._opsGoalCards = function() {
         '<span class="goal-card-status">' + g.status + '</span>' +
       '</div>' +
       (g.description
-        ? '<div class="goal-card-desc">' + CC.escHtml(g.description).substring(0, 120) + '</div>'
+        ? '<div class="goal-card-desc">' + CC.escHtml(g.description.substring(0, 120)) + '</div>'
         : '') +
       '<div class="goal-card-bar"><div class="goal-card-fill" id="goalFill' + g.id + '"></div></div>' +
       '<div class="goal-card-meta">' +
@@ -115,7 +115,7 @@ CC._opsApprovalInbox = function() {
     html += '<div class="approval-item" data-approval-id="' + a.id + '">' +
       '<div class="approval-item-info">' +
         '<span class="approval-item-task">Task ' + (a.task_id || '').substring(0, 12) + '</span>' +
-        (a.reason ? '<span class="approval-item-reason">' + CC.escHtml(a.reason).substring(0, 100) + '</span>' : '') +
+        (a.reason ? '<span class="approval-item-reason">' + CC.escHtml(a.reason.substring(0, 100)) + '</span>' : '') +
         (a.threshold_usd ? '<span class="approval-item-threshold">Threshold $' +
           a.threshold_usd.toFixed(2) + '</span>' : '') +
         (created ? '<span class="approval-item-time">' + created + '</span>' : '') +
@@ -136,6 +136,7 @@ CC._opsStatusColor = function(status) {
     case 'completed': return 'var(--green)';
     case 'failed': return 'var(--red)';
     case 'cancelled': return 'var(--text-dim)';
+    case 'pending_approval': return 'var(--neon-pink, #ff0080)';
     default: return 'var(--yellow, #d29922)';
   }
 };
@@ -150,7 +151,7 @@ CC._opsRender = function() {
     return t.status === s.filter;
   });
 
-  var counts = { all: s.tasks.length, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
+  var counts = { all: s.tasks.length, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, pending_approval: 0 };
   s.tasks.forEach(function(t) { counts[t.status] = (counts[t.status] || 0) + 1; });
 
   var html = '' +
@@ -165,6 +166,7 @@ CC._opsRender = function() {
       CC._opsFilterChip('completed', 'Completed (' + (counts.completed || 0) + ')') +
       CC._opsFilterChip('failed', 'Failed (' + (counts.failed || 0) + ')') +
       CC._opsFilterChip('cancelled', 'Cancelled (' + (counts.cancelled || 0) + ')') +
+      CC._opsFilterChip('pending_approval', 'Approval (' + (counts.pending_approval || 0) + ')') +
     '</div>' +
     CC._opsBudgetGauges() +
     CC._opsGoalCards() +
