@@ -23,7 +23,7 @@
       <button class="nav-btn" data-view="chat" title="Chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       </button>
-      <button class="nav-btn" data-view="tasks" title="Tasks & Discussions">
+      <button class="nav-btn" data-view="tasks" title="Discussions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       </button>
       <button class="nav-btn" data-view="operations" title="Operations">
@@ -94,18 +94,14 @@
         </div>
       </div>
 
-      <!-- ═══ TASKS ═══ -->
+      <!-- ═══ DISCUSSIONS (tasks merged into Operations) ═══ -->
       <div class="view" id="view-tasks">
-        <div class="tabs">
-          <button class="tab-btn active" data-tab="tasks-active">Active Tasks</button>
-          <button class="tab-btn" data-tab="tasks-discussions">Discussions</button>
-        </div>
-        <div class="tab-content active" id="tasks-active">
-          <div class="task-list" id="taskList"></div>
-        </div>
-        <div class="tab-content" id="tasks-discussions">
-          <div id="discList"></div>
-        </div>
+        <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Discussions</h2>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px">
+          Multi-agent councils and bilateral discussions.
+          For individual task status, see <strong>Operations</strong>.
+        </p>
+        <div id="discList"></div>
       </div>
 
       <!-- ═══ OPERATIONS ═══ -->

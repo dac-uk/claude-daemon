@@ -2,6 +2,7 @@
 
 CC.opsState = {
   filter: 'all',       // all | pending | running | completed | failed | cancelled | pending_approval
+  agentFilter: '',     // '' = all agents, else a specific agent name
   tasks: [],           // merged recent list
   expandedId: null,
   budgets: [],         // budget gauge data
@@ -146,13 +147,29 @@ CC._opsRender = function() {
   if (!el) return;
 
   var s = CC.opsState;
-  var tasks = s.tasks.filter(function(t) {
+  // Narrow by agent filter first so status counts reflect the visible slice.
+  var agentFiltered = s.agentFilter
+    ? s.tasks.filter(function(t) { return (t.agent_name || t.agent) === s.agentFilter; })
+    : s.tasks;
+  var tasks = agentFiltered.filter(function(t) {
     if (s.filter === 'all') return true;
     return t.status === s.filter;
   });
 
-  var counts = { all: s.tasks.length, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, pending_approval: 0 };
-  s.tasks.forEach(function(t) { counts[t.status] = (counts[t.status] || 0) + 1; });
+  var counts = { all: agentFiltered.length, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, pending_approval: 0 };
+  agentFiltered.forEach(function(t) { counts[t.status] = (counts[t.status] || 0) + 1; });
+
+  // Build the agent filter dropdown from the task stream + known agents.
+  var agentsInTasks = {};
+  s.tasks.forEach(function(t) {
+    var a = t.agent_name || t.agent;
+    if (a) agentsInTasks[a] = true;
+  });
+  Object.keys(CC.agents || {}).forEach(function(a) { agentsInTasks[a] = true; });
+  var agentOpts = Object.keys(agentsInTasks).sort().map(function(a) {
+    var sel = s.agentFilter === a ? ' selected' : '';
+    return '<option value="' + a + '"' + sel + '>' + a + '</option>';
+  }).join('');
 
   var html = '' +
     '<div class="ops-header">' +
@@ -167,6 +184,9 @@ CC._opsRender = function() {
       CC._opsFilterChip('failed', 'Failed (' + (counts.failed || 0) + ')') +
       CC._opsFilterChip('cancelled', 'Cancelled (' + (counts.cancelled || 0) + ')') +
       CC._opsFilterChip('pending_approval', 'Approval (' + (counts.pending_approval || 0) + ')') +
+      '<select id="opsAgentFilter" class="ops-agent-filter">' +
+        '<option value="">All agents</option>' + agentOpts +
+      '</select>' +
     '</div>' +
     CC._opsBudgetGauges() +
     CC._opsGoalCards() +
@@ -287,6 +307,14 @@ CC._opsBindEvents = function() {
       CC._opsRender();
     });
   });
+
+  var agentSel = document.getElementById('opsAgentFilter');
+  if (agentSel) {
+    agentSel.addEventListener('change', function() {
+      CC.opsState.agentFilter = agentSel.value || '';
+      CC._opsRender();
+    });
+  }
 
   el.querySelectorAll('.ops-task-row').forEach(function(row) {
     row.addEventListener('click', function() {

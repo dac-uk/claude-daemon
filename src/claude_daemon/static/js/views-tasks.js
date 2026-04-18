@@ -39,26 +39,7 @@ CC.formatTranscript = function(transcript) {
 
 
 CC.renderTasksView = async function() {
-  await CC._renderTaskList();
   await CC._renderDiscussionList();
-};
-
-CC._renderTaskList = async function() {
-  var el = document.getElementById('taskList');
-  if (!el) return;
-  var data = await CC.api('/api/tasks');
-  if (!data || !data.tasks || data.tasks.length === 0) {
-    el.innerHTML = '<div class="empty"><div class="icon">\u2705</div>No active tasks</div>';
-    return;
-  }
-  el.innerHTML = data.tasks.map(function(t) {
-    var statusClass = t.status === 'running' ? 'status-busy' : t.status === 'failed' ? 'badge-error' : 'status-idle';
-    return '<div class="task-item glass-sm">' +
-      '<span class="task-agent" style="color:' + CC.agentColor(t.agent) + '">' + t.agent + '</span>' +
-      '<span class="task-prompt">' + CC.escHtml((t.prompt || '').substring(0, 120)) + '</span>' +
-      '<span class="task-status ' + statusClass + '">' + t.status + '</span>' +
-      '<span class="task-cost">$' + (t.cost || 0).toFixed(4) + '</span></div>';
-  }).join('');
 };
 
 CC._renderDiscussionList = async function() {
