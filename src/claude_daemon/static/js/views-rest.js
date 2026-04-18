@@ -160,20 +160,28 @@ CC._loadAudit = async function() {
 };
 
 /* ═══ SETTINGS ═══ */
+CC._mcpServers = [];  // cached last response for the config modal
+
 CC.renderSettingsView = async function() {
   // MCP servers
+  CC.cache['/api/mcp'] = null;
   var mcpData = await CC.api('/api/mcp');
   var body = document.getElementById('mcpBody');
   var servers = mcpData && (Array.isArray(mcpData) ? mcpData : mcpData.servers);
+  CC._mcpServers = servers || [];
   if (servers && Array.isArray(servers)) {
     body.innerHTML = servers.map(function(s) {
       var tierClass = s.tier === 'T1' ? 'tier-t1' : s.tier === 'T2' ? 'tier-t2' : 'tier-t3';
       var statusColor = s.status === 'active' || s.status === 'configured' ? 'var(--green)' : 'var(--text-dim)';
       var isActive = s.status === 'active' || s.status === 'configured';
       var isDisabled = s.status === 'disabled';
+      var needsToken = s.tier === 'needs-token' || s.status === 'inactive';
       var btnHtml = '';
       if (isActive) {
         btnHtml = '<button class="mcp-toggle-btn disable" data-server="' + s.name + '">Disable</button>';
+      } else if (needsToken) {
+        // Configured env vars? Already-disabled with no token? Either way, ask.
+        btnHtml = '<button class="mcp-toggle-btn enable" data-server="' + s.name + '" data-configure="1">Enable</button>';
       } else if (isDisabled) {
         btnHtml = '<button class="mcp-toggle-btn enable" data-server="' + s.name + '">Enable</button>';
       }
@@ -186,12 +194,17 @@ CC.renderSettingsView = async function() {
     }).join('');
     body.querySelectorAll('.mcp-toggle-btn').forEach(function(btn) {
       btn.addEventListener('click', async function() {
-        var action = btn.classList.contains('disable') ? 'disable' : 'enable';
+        var isEnable = btn.classList.contains('enable');
         var name = btn.dataset.server;
+        if (isEnable && btn.dataset.configure === '1') {
+          CC.openMcpConfigModal(name);
+          return;
+        }
+        var action = isEnable ? 'enable' : 'disable';
         btn.disabled = true; btn.textContent = '...';
         await fetch('/api/mcp/' + action, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ server_name: name })
+          body: JSON.stringify({ server: name })
         });
         CC.cache = {};
         CC.renderSettingsView();
@@ -210,5 +223,183 @@ CC.renderSettingsView = async function() {
       '<div>Total Messages: <strong>' + status.total_messages + '</strong></div>' +
       '<div>Total Cost: <strong>$' + (status.total_cost || 0).toFixed(2) + '</strong></div>' +
       '<div>Active Sessions: <strong>' + status.active_sessions + '</strong></div></div>';
+  }
+
+  // Render daemon control panel below system info.
+  if (CC.renderDaemonControl) CC.renderDaemonControl();
+};
+
+/* ═══ MCP config modal ═══ */
+CC.openMcpConfigModal = function(name) {
+  var server = (CC._mcpServers || []).find(function(s) { return s.name === name; });
+  if (!server) {
+    alert('Server ' + name + ' not found.');
+    return;
+  }
+  var vars = server.env_vars || [];
+  var envStatus = server.env_status || {};
+  document.getElementById('mcpCfgName').textContent = name;
+  document.getElementById('mcpCfgDesc').textContent = server.description ||
+    'Set the required tokens. Values are saved to your .env file and loaded into the daemon process.';
+
+  var form = document.getElementById('mcpCfgForm');
+  if (vars.length === 0) {
+    form.innerHTML = '<div style="color:var(--text-secondary);font-size:12px">' +
+      'No environment variables required &mdash; just hit Save &amp; Enable.</div>';
+  } else {
+    form.innerHTML = vars.map(function(v) {
+      var st = envStatus[v] || 'unset';
+      var hint = st === 'set' ? ' <span style="color:var(--green);font-size:10px">(currently set &mdash; leave blank to keep)</span>' : '';
+      return '<label style="display:block;margin-bottom:10px;font-size:12px">' +
+        '<span style="display:block;color:var(--text-secondary);margin-bottom:4px">' + v + hint + '</span>' +
+        '<input type="password" name="' + v + '" placeholder="' + (st === 'set' ? '(unchanged)' : 'paste token') + '" ' +
+        'autocomplete="new-password" style="width:100%;padding:7px 10px;border-radius:var(--radius-xs);' +
+        'border:1px solid var(--border);background:rgba(0,0,0,0.3);color:var(--text);font-family:var(--mono);font-size:12px">' +
+        '</label>';
+    }).join('');
+  }
+
+  document.getElementById('mcpCfgStatus').textContent = '';
+  document.getElementById('mcpCfgSave').disabled = false;
+  document.getElementById('mcpCfgOverlay').classList.add('open');
+  document.getElementById('mcpCfgModal').classList.add('open');
+};
+
+CC.closeMcpConfigModal = function() {
+  document.getElementById('mcpCfgOverlay').classList.remove('open');
+  document.getElementById('mcpCfgModal').classList.remove('open');
+};
+
+CC._submitMcpConfig = async function() {
+  var btn = document.getElementById('mcpCfgSave');
+  var status = document.getElementById('mcpCfgStatus');
+  var name = document.getElementById('mcpCfgName').textContent;
+  var form = document.getElementById('mcpCfgForm');
+  btn.disabled = true;
+  status.style.color = 'var(--text-secondary)';
+  status.textContent = 'Saving tokens...';
+
+  // Write each non-empty env var
+  var inputs = form.querySelectorAll('input[type="password"]');
+  for (var i = 0; i < inputs.length; i++) {
+    var inp = inputs[i];
+    var val = (inp.value || '').trim();
+    if (!val) continue;  // Empty = keep existing
+    try {
+      var r = await fetch('/api/config/env', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: inp.name, value: val })
+      });
+      if (!r.ok) {
+        var err = await r.json().catch(function() { return {}; });
+        status.style.color = 'var(--red)';
+        status.textContent = 'Failed to save ' + inp.name + ': ' + (err.error || r.status);
+        btn.disabled = false;
+        return;
+      }
+    } catch (e) {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Network error saving ' + inp.name;
+      btn.disabled = false;
+      return;
+    }
+  }
+
+  status.textContent = 'Enabling ' + name + '...';
+  try {
+    var r2 = await fetch('/api/mcp/enable', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server: name })
+    });
+    var result = await r2.json().catch(function() { return {}; });
+    if (!r2.ok) {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Enable failed: ' + (result.error || r2.status);
+      btn.disabled = false;
+      return;
+    }
+    status.style.color = 'var(--green)';
+    status.textContent = 'Enabled. New MCP tools will appear after the next daemon restart.';
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Network error enabling server';
+    btn.disabled = false;
+    return;
+  }
+
+  CC.cache = {};
+  setTimeout(function() {
+    CC.closeMcpConfigModal();
+    CC.renderSettingsView();
+  }, 1200);
+};
+
+CC._bindMcpConfig = function() {
+  document.getElementById('mcpCfgClose').addEventListener('click', CC.closeMcpConfigModal);
+  document.getElementById('mcpCfgCancel').addEventListener('click', CC.closeMcpConfigModal);
+  document.getElementById('mcpCfgOverlay').addEventListener('click', CC.closeMcpConfigModal);
+  document.getElementById('mcpCfgSave').addEventListener('click', CC._submitMcpConfig);
+};
+if (typeof document !== 'undefined' && document.readyState !== 'loading') CC._bindMcpConfig();
+else if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', CC._bindMcpConfig);
+
+/* ═══ Daemon control panel ═══ */
+CC.renderDaemonControl = async function() {
+  var el = document.getElementById('daemonControl');
+  if (!el) return;
+  var info = await CC.api('/api/daemon/status');
+  var stat = info || {};
+  var uptime = stat.uptime_seconds != null ? CC._fmtUptime(stat.uptime_seconds) : '?';
+  el.innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;font-size:12px;margin-bottom:12px">' +
+      '<div>PID: <strong>' + (stat.pid || '?') + '</strong></div>' +
+      '<div>Uptime: <strong>' + uptime + '</strong></div>' +
+      '<div>Version: <strong>' + (stat.version || '?') + '</strong></div>' +
+      '<div>Host: <strong>' + (stat.host || '?') + '</strong></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      '<button class="page-btn" id="daemonBtnStatus">Refresh</button>' +
+      '<button class="page-btn primary" id="daemonBtnRestart">Restart daemon</button>' +
+      '<button class="page-btn" id="daemonBtnStop" style="color:var(--red);border-color:var(--red)">Stop</button>' +
+    '</div>' +
+    '<div id="daemonCtlOut" style="margin-top:12px;font-family:var(--mono);font-size:11px;color:var(--text-secondary);' +
+    'background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px;min-height:40px;max-height:200px;overflow:auto">' +
+    (stat._error ? ('Error: ' + stat._error) : 'Ready.') + '</div>';
+
+  document.getElementById('daemonBtnStatus').addEventListener('click', CC.renderDaemonControl);
+  document.getElementById('daemonBtnRestart').addEventListener('click', function() { CC._daemonAction('restart'); });
+  document.getElementById('daemonBtnStop').addEventListener('click', function() { CC._daemonAction('stop'); });
+};
+
+CC._fmtUptime = function(s) {
+  s = Math.floor(s);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
+};
+
+CC._daemonAction = async function(action) {
+  var out = document.getElementById('daemonCtlOut');
+  var msg = 'Requesting ' + action + '...';
+  if (!confirm('Confirm daemon ' + action + '? This will interrupt any running agents.')) return;
+  out.style.color = 'var(--text-secondary)';
+  out.textContent = msg;
+  try {
+    var r = await fetch('/api/daemon/' + action, { method: 'POST' });
+    var body = await r.json().catch(function() { return {}; });
+    if (!r.ok) {
+      out.style.color = 'var(--red)';
+      out.textContent = (body.error || ('HTTP ' + r.status));
+      return;
+    }
+    out.style.color = 'var(--green)';
+    out.textContent = body.message || (action + ' requested.');
+    if (action === 'restart') {
+      out.textContent += '\nThe daemon will be unreachable for a few seconds. The dashboard will reconnect automatically.';
+    }
+  } catch (e) {
+    out.style.color = 'var(--red)';
+    out.textContent = 'Network error: ' + e.message;
   }
 };

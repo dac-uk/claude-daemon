@@ -143,6 +143,9 @@ class HttpApi:
         self._app.router.add_get("/api/discussions", self._handle_discussions)
         self._app.router.add_get("/api/failures", self._handle_failures)
         self._app.router.add_get("/api/evolution", self._handle_evolution)
+        self._app.router.add_get("/api/daemon/status", self._handle_daemon_status)
+        self._app.router.add_post("/api/daemon/restart", self._handle_daemon_restart)
+        self._app.router.add_post("/api/daemon/stop", self._handle_daemon_stop)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -1061,6 +1064,59 @@ class HttpApi:
         limit = min(int(request.query.get("limit", "20")), 100)
         history = self.daemon.store.get_evolution_history(agent_name=agent, limit=limit)
         return web.json_response({"evolution": history})
+
+    # -- Daemon control --
+
+    async def _handle_daemon_status(self, request: web.Request) -> web.Response:
+        """GET /api/daemon/status — pid, uptime, version, host."""
+        import os
+        import socket
+        import time as _time
+        from claude_daemon import __version__
+        started = getattr(self.daemon, "started_at", None)
+        uptime = (_time.time() - started) if started else None
+        return web.json_response({
+            "pid": os.getpid(),
+            "uptime_seconds": uptime,
+            "version": __version__,
+            "host": socket.gethostname(),
+        })
+
+    async def _handle_daemon_restart(self, request: web.Request) -> web.Response:
+        """POST /api/daemon/restart — request a graceful restart.
+
+        Emits an audit record and triggers daemon shutdown. The process
+        supervisor (systemd / install.sh wrapper) is expected to restart it.
+        """
+        if self.daemon.store:
+            self.daemon.store.record_audit(action="daemon_restart", details="requested via dashboard")
+        log.warning("Daemon restart requested via /api/daemon/restart")
+
+        async def _shutdown_soon():
+            await asyncio.sleep(0.5)
+            self.daemon.request_shutdown()
+
+        asyncio.create_task(_shutdown_soon())
+        return web.json_response({
+            "status": "ok",
+            "message": "Restart requested. Daemon is shutting down; the supervisor will relaunch it.",
+        })
+
+    async def _handle_daemon_stop(self, request: web.Request) -> web.Response:
+        """POST /api/daemon/stop — request a graceful shutdown."""
+        if self.daemon.store:
+            self.daemon.store.record_audit(action="daemon_stop", details="requested via dashboard")
+        log.warning("Daemon stop requested via /api/daemon/stop")
+
+        async def _shutdown_soon():
+            await asyncio.sleep(0.5)
+            self.daemon.request_shutdown()
+
+        asyncio.create_task(_shutdown_soon())
+        return web.json_response({
+            "status": "ok",
+            "message": "Stop requested. Daemon is shutting down.",
+        })
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Receive external webhooks and route to appropriate agent.

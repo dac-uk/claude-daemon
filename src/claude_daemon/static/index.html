@@ -96,11 +96,29 @@
 
       <!-- ═══ DISCUSSIONS (tasks merged into Operations) ═══ -->
       <div class="view" id="view-tasks">
-        <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Discussions</h2>
+        <h2 style="font-size:18px;font-weight:700;margin-bottom:12px">Discussions</h2>
         <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px">
-          Multi-agent councils and bilateral discussions.
+          Council &amp; bilateral discussions &mdash; stored, searchable, reviewable.
           For individual task status, see <strong>Operations</strong>.
         </p>
+        <div class="filters-bar" id="discFilters">
+          <select class="filter-select" id="discFilterType">
+            <option value="">All types</option>
+            <option value="council">Council</option>
+            <option value="bilateral">Bilateral</option>
+          </select>
+          <select class="filter-select" id="discFilterOutcome">
+            <option value="">All outcomes</option>
+            <option value="converged">Converged</option>
+            <option value="stalled">Stalled</option>
+            <option value="error">Error</option>
+          </select>
+          <select class="filter-select" id="discFilterAgent">
+            <option value="">Any agent</option>
+          </select>
+          <input class="filter-input" id="discFilterSearch" placeholder="Search topic, synthesis, transcript..." style="flex:1;min-width:200px">
+          <span id="discCount" style="font-size:12px;color:var(--text-secondary)"></span>
+        </div>
         <div id="discList"></div>
       </div>
 
@@ -146,6 +164,10 @@
           <h3>System</h3>
           <div id="systemInfo" class="glass-sm" style="padding:16px"></div>
         </div>
+        <div class="settings-section">
+          <h3>Daemon Control</h3>
+          <div id="daemonControl" class="glass-sm" style="padding:16px">Loading...</div>
+        </div>
       </div>
     </div>
   </div>
@@ -170,6 +192,24 @@
     <button class="sess-close" id="sessClose">&times;</button>
   </div>
   <div class="sess-body" id="sessBody"></div>
+</div>
+
+<!-- ═══ MCP config modal ═══ -->
+<div class="sess-overlay" id="mcpCfgOverlay"></div>
+<div class="sess-modal glass" id="mcpCfgModal">
+  <div class="sess-header">
+    <h3>Configure <span id="mcpCfgName"></span></h3>
+    <button class="sess-close" id="mcpCfgClose">&times;</button>
+  </div>
+  <div class="sess-body">
+    <p id="mcpCfgDesc" style="color:var(--text-secondary);font-size:12px;margin-bottom:14px"></p>
+    <form id="mcpCfgForm" autocomplete="off"></form>
+    <div id="mcpCfgStatus" style="font-size:12px;margin-top:10px;min-height:16px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="page-btn" id="mcpCfgCancel">Cancel</button>
+      <button class="page-btn primary" id="mcpCfgSave">Save &amp; Enable</button>
+    </div>
+  </div>
 </div>
 
 <script src="/static/js/state.js"></script>

@@ -358,6 +358,8 @@ html, body {
 }
 .page-btn:hover { border-color: var(--accent); color: var(--text); }
 .page-btn:disabled { opacity: 0.4; cursor: default; }
+.page-btn.primary { background: rgba(0,240,255,0.12); border-color: var(--border-accent); color: var(--accent); }
+.page-btn.primary:hover { background: rgba(0,240,255,0.2); color: var(--text); }
 
 /* ── Settings ───────────────────────────────────────────────── */
 .settings-section { margin-bottom: 24px; }

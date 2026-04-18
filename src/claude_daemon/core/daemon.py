@@ -44,6 +44,7 @@ class ClaudeDaemon:
         self.config = config
         self._shutdown_event = asyncio.Event()
         self._shutting_down = False
+        self.started_at: float | None = None  # set in start()
 
         # Subsystems (initialized in start())
         self.store: ConversationStore | None = None
@@ -297,6 +298,8 @@ class ClaudeDaemon:
         pathutil.ensure_dirs()
         setup_logging(self.config.log_level, self.config.log_dir)
 
+        import time as _time
+        self.started_at = _time.time()
         from claude_daemon import __version__
         log.info("Claude Daemon v%s starting...", __version__)
         self._write_pid()
