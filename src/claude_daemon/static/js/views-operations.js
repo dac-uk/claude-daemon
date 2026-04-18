@@ -3,11 +3,23 @@
 CC.opsState = {
   filter: 'all',       // all | pending | running | completed | failed | cancelled | pending_approval
   agentFilter: '',     // '' = all agents, else a specific agent name
+  sourceFilter: '',    // '' = all sources, else chat | spawn | api | heartbeat
   tasks: [],           // merged recent list
   expandedId: null,
   budgets: [],         // budget gauge data
   goals: [],           // active goals
   approvals: [],       // pending approvals
+};
+
+CC._opsSourceLabel = function(src) {
+  return { chat: 'Chat', spawn: 'Spawn', api: 'API', heartbeat: 'Heartbeat' }[src] || src;
+};
+
+CC._opsSourceChip = function(key, label, count) {
+  var active = (CC.opsState.sourceFilter || '') === key;
+  var badge = (typeof count === 'number') ? ' (' + count + ')' : '';
+  return '<button class="ops-chip ops-src-chip' + (active ? ' active' : '') +
+    '" data-source="' + key + '">' + label + badge + '</button>';
 };
 
 CC.renderOperationsView = async function() {
@@ -147,10 +159,21 @@ CC._opsRender = function() {
   if (!el) return;
 
   var s = CC.opsState;
-  // Narrow by agent filter first so status counts reflect the visible slice.
-  var agentFiltered = s.agentFilter
-    ? s.tasks.filter(function(t) { return (t.agent_name || t.agent) === s.agentFilter; })
+  // Source counts are computed over the unfiltered list so the source chips
+  // always show totals regardless of the current status/agent filters.
+  var sourceCounts = { all: s.tasks.length, chat: 0, spawn: 0, api: 0, heartbeat: 0 };
+  s.tasks.forEach(function(t) {
+    var src = t.source || 'api';
+    sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+  });
+
+  // Narrow by source first, then by agent, then by status.
+  var sourceFiltered = s.sourceFilter
+    ? s.tasks.filter(function(t) { return (t.source || 'api') === s.sourceFilter; })
     : s.tasks;
+  var agentFiltered = s.agentFilter
+    ? sourceFiltered.filter(function(t) { return (t.agent_name || t.agent) === s.agentFilter; })
+    : sourceFiltered;
   var tasks = agentFiltered.filter(function(t) {
     if (s.filter === 'all') return true;
     return t.status === s.filter;
@@ -176,6 +199,13 @@ CC._opsRender = function() {
       '<h2>Operations</h2>' +
       '<button class="ops-submit-btn" id="opsSubmitBtn">+ New Task</button>' +
     '</div>' +
+    '<div class="ops-filters ops-filters-sources">' +
+      CC._opsSourceChip('', 'All sources', sourceCounts.all) +
+      CC._opsSourceChip('chat', 'Chat', sourceCounts.chat) +
+      CC._opsSourceChip('spawn', 'Spawn', sourceCounts.spawn) +
+      CC._opsSourceChip('api', 'API', sourceCounts.api) +
+      CC._opsSourceChip('heartbeat', 'Heartbeat', sourceCounts.heartbeat) +
+    '</div>' +
     '<div class="ops-filters">' +
       CC._opsFilterChip('all', 'All (' + counts.all + ')') +
       CC._opsFilterChip('pending', 'Pending (' + (counts.pending || 0) + ')') +
@@ -199,7 +229,7 @@ CC._opsRender = function() {
     html += '<div class="ops-task-list">' +
       '<div class="ops-task-head">' +
         '<span>ID</span><span>Title</span><span>Progress</span>' +
-        '<span>Status</span><span>Owner</span><span>When</span>' +
+        '<span>Status</span><span>Source</span><span>Owner</span><span>When</span>' +
       '</div>';
     tasks.forEach(function(t) {
       var tid = t.id || t.task_id || '';
@@ -232,6 +262,7 @@ CC._opsRender = function() {
       var whenAbs = t.created_at ? new Date(t.created_at).toLocaleString() : '';
       var statusCol = CC._opsStatusColor(t.status);
       var expanded = s.expandedId === tid;
+      var src = t.source || 'api';
       html += '<div class="ops-task glass-sm ' + (expanded ? 'expanded' : '') +
               '" data-task-id="' + tid + '">' +
         '<div class="ops-task-row">' +
@@ -241,6 +272,11 @@ CC._opsRender = function() {
           '<span class="ops-task-progress">' + CC.escHtml(progress) + '</span>' +
           '<span class="ops-task-status" style="color:' + statusCol + '">' +
             t.status + '</span>' +
+          '<span class="ops-task-source">' +
+            '<span class="source-pill source-pill-' + src + '" title="Origin: ' + src + '">' +
+              CC._opsSourceLabel(src) +
+            '</span>' +
+          '</span>' +
           '<span class="ops-task-owner" data-agent="' + agent +
             '" style="color:' + agentColor + '" title="Open ' + agent + ' detail">' +
             (CC.AGENT_EMOJI[agent] || '') + ' ' + agent +
@@ -304,7 +340,11 @@ CC._opsBindEvents = function() {
 
   el.querySelectorAll('.ops-chip').forEach(function(btn) {
     btn.addEventListener('click', function() {
-      CC.opsState.filter = btn.dataset.filter;
+      if (btn.classList.contains('ops-src-chip')) {
+        CC.opsState.sourceFilter = btn.dataset.source || '';
+      } else {
+        CC.opsState.filter = btn.dataset.filter;
+      }
       CC._opsRender();
     });
   });

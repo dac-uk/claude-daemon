@@ -49,7 +49,6 @@ CC._renderAgentCardHtml = function(a) {
       '<dl class="meta">' +
         '<dt>Model</dt><dd>' + (a.model || 'default') + '</dd>' +
         '<dt>Cost</dt><dd>$' + (a.cost || 0).toFixed(4) + '</dd>' +
-        '<dt>MCP</dt><dd>' + CC.formatMcpHealth(a.mcp_health) + '</dd>' +
         '<dt>Heartbeats</dt><dd>' + (a.heartbeat_tasks || 0) + '</dd>' +
       '</dl></div>';
 };

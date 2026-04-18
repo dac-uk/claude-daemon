@@ -322,6 +322,15 @@ class HttpApi:
             ])
         except Exception:
             log.exception("alert_count compute failed in /api/status")
+
+        # Fallback diagnostics — always-available pid + version so the dashboard
+        # topbar and Daemon Control panel can show something even if the newer
+        # /api/daemon/status endpoint isn't reachable.
+        import os as _os
+        try:
+            from claude_daemon import __version__ as _version
+        except Exception:
+            _version = "unknown"
         return web.json_response({
             "status": "running",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -334,6 +343,8 @@ class HttpApi:
             "total_messages": stats.get("total_messages", 0),
             "total_cost": cost_total,
             "alert_count": alert_count,
+            "version": _version,
+            "pid": _os.getpid(),
         })
 
     async def _handle_costs(self, request: web.Request) -> web.Response:
@@ -552,11 +563,17 @@ class HttpApi:
         return web.json_response({"sessions": sessions, "count": len(sessions)})
 
     async def _handle_tasks(self, request: web.Request) -> web.Response:
-        """GET /api/tasks — merged view of live spawned + recent persisted tasks."""
+        """GET /api/tasks — merged view of live spawned + recent persisted tasks.
+
+        Optional ?source=chat|spawn|api|heartbeat filter narrows to that origin.
+        Live spawned tasks without a persisted row are assumed source='spawn'.
+        """
         if not self.daemon.orchestrator:
             return web.json_response({"tasks": []})
 
-        # Collect live tasks from orchestrator
+        source_filter = request.query.get("source")
+
+        # Collect live tasks from orchestrator (default source='spawn')
         live: dict[str, dict] = {}
         for t in self.daemon.orchestrator.list_tasks():
             live[t.task_id] = {
@@ -565,23 +582,31 @@ class HttpApi:
                 "status": t.status,
                 "prompt": t.prompt[:200],
                 "cost": t.cost,
+                "source": "spawn",
             }
 
-        # Merge in recent persisted rows (DB truth)
-        tasks = list(live.values())
+        # Merge in recent persisted rows (DB truth). If the DB has a row for a
+        # live task, prefer its source — the orchestrator doesn't know the
+        # origin tag.
         if self.daemon.store:
-            seen = set(live.keys())
             for row in self.daemon.store.get_recent_tasks(limit=100):
                 tid = row.get("id")
-                if tid in seen:
+                src = row.get("source") or "api"
+                if tid in live:
+                    live[tid]["source"] = src
                     continue
-                tasks.append({
+                live[tid] = {
                     "task_id": tid,
                     "agent": row.get("agent_name"),
                     "status": row.get("status"),
                     "prompt": (row.get("prompt") or "")[:200],
                     "cost": row.get("cost_usd") or 0.0,
-                })
+                    "source": src,
+                }
+
+        tasks = list(live.values())
+        if source_filter:
+            tasks = [t for t in tasks if t.get("source") == source_filter]
         return web.json_response({"tasks": tasks})
 
     # -- /api/v1/tasks — native orchestration API --
@@ -607,6 +632,7 @@ class HttpApi:
             platform=body.get("platform", "api"),
             goal_id=body.get("goal_id"),
             metadata=body.get("metadata") or {},
+            source=body.get("source", "api"),
         )
         result = api.submit_task(req)
         status_map = {"pending": 201, "pending_approval": 202, "rejected": 400, "error": 500}
@@ -618,15 +644,23 @@ class HttpApi:
         if api is None:
             return web.json_response({"tasks": []})
         agent = request.query.get("agent")
+        source = request.query.get("source")
         limit = self._qint(request, "limit", 50, maximum=200)
-        return web.json_response({"tasks": api.list_pending(agent=agent, limit=limit)})
+        tasks = api.list_pending(agent=agent, limit=limit)
+        if source:
+            tasks = [t for t in tasks if (t.get("source") or "api") == source]
+        return web.json_response({"tasks": tasks})
 
     async def _handle_v1_tasks_recent(self, request: web.Request) -> web.Response:
         api = self._get_task_api()
         if api is None:
             return web.json_response({"tasks": []})
         limit = self._qint(request, "limit", 50, maximum=200)
-        return web.json_response({"tasks": api.list_recent(limit=limit)})
+        source = request.query.get("source")
+        tasks = api.list_recent(limit=limit)
+        if source:
+            tasks = [t for t in tasks if (t.get("source") or "api") == source]
+        return web.json_response({"tasks": tasks})
 
     async def _handle_v1_tasks_get(self, request: web.Request) -> web.Response:
         api = self._get_task_api()
@@ -1492,6 +1526,7 @@ class HttpApi:
             task_type=task.get("task_type", "default"),
             platform="paperclip",
             metadata={"paperclip_task_id": external_id, "heartbeat": True},
+            source="heartbeat",
         )
         result = api.submit_task(req)
         if result.status == "pending":

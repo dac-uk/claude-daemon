@@ -375,6 +375,47 @@ CC.renderDaemonControl = async function() {
   var el = document.getElementById('daemonControl');
   if (!el) return;
   var info = await CC.api('/api/daemon/status');
+
+  // When /api/daemon/status is unreachable (auth, 500, stale daemon predating
+  // the endpoint), fall back to the diagnostic fields now exposed on
+  // /api/status so the user never stares at four literal "?" placeholders.
+  if (info === null) {
+    var fallback = await CC.api('/api/status');
+    if (fallback && (fallback.pid || fallback.version)) {
+      el.innerHTML =
+        '<div class="sess-empty-state" style="margin-bottom:12px">' +
+          '<div class="sess-empty-icon">\u26a0\ufe0f</div>' +
+          '<div class="sess-empty-title">Daemon status endpoint unavailable</div>' +
+          '<div class="sess-empty-sub">Showing fallback diagnostics from /api/status. ' +
+          'Restart the daemon to pick up the newer /api/daemon/status endpoint.</div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;font-size:12px;margin-bottom:12px">' +
+          '<div>PID: <strong>' + (fallback.pid || '?') + '</strong></div>' +
+          '<div>Uptime: <strong>?</strong></div>' +
+          '<div>Version: <strong>' + (fallback.version || '?') + '</strong></div>' +
+          '<div>Host: <strong>?</strong></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button class="page-btn" id="daemonBtnStatus">Retry</button>' +
+        '</div>';
+      document.getElementById('daemonBtnStatus').addEventListener('click', CC.renderDaemonControl);
+      return;
+    }
+    el.innerHTML =
+      '<div class="sess-empty-state">' +
+        '<div class="sess-empty-icon">\u26a0\ufe0f</div>' +
+        '<div class="sess-empty-title">Daemon status unavailable</div>' +
+        '<div class="sess-empty-sub">The running daemon may predate this feature, ' +
+        'or the endpoint returned an error. Restart the daemon to refresh.</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">' +
+        '<button class="page-btn" id="daemonBtnStatus">Retry</button>' +
+      '</div>';
+    var retry = document.getElementById('daemonBtnStatus');
+    if (retry) retry.addEventListener('click', CC.renderDaemonControl);
+    return;
+  }
+
   var stat = info || {};
   var uptime = stat.uptime_seconds != null ? CC._fmtUptime(stat.uptime_seconds) : '?';
   el.innerHTML =
