@@ -12,6 +12,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Fuzzy Agent Matching** - Type `@jony` and it routes to `johnny`. Close-enough name typos resolved automatically with no error or fallback to the wrong agent.
 - **Per-Agent Channels** - Bind Telegram groups or Discord channels to specific agents. Dedicated channels for Albert, Luna, etc.
 - **Cross-Platform Sessions** - Start a conversation on Telegram, continue on Discord, pick up from CLI. Sessions follow the user, not the platform.
+- **Shared Brain for Claude Code CLI + macOS** - Single markdown digest at `~/.config/claude-daemon/shared-brain.md` exposing every daemon agent's identity, personality, recent memory, reflections, and MCP skills — plus shared directive, user context, recent events, team learnings, and active improvement plan. Claude Code CLI and the macOS app import it via a sentinel-wrapped `@`-line added to `~/.claude/CLAUDE.md` by `claude-daemon shared-brain install`. Daemon regenerates the file on every heartbeat tick (atomic write + advisory flock). Opt-in, cleanly uninstallable.
 - **Mandatory Planning (Research→Plan→Execute→Verify→Report)** - For complex tasks, agents research context, plan with Opus, publish immediately, execute autonomously, verify output works, and report results. Critical instructions wrapped in `<important>` tags for reliable adherence.
 - **Per-Agent Settings.json** - Autonomy-first permissions (all tools allowed) with deterministic deny rules blocking dangerous operations (`rm -rf`, `sudo`, force-push) at the CLI level. Extended thinking enabled by default. Configurable via `/thinking` and `/effort` commands.
 - **Effort Level Control** - Two-dimensional control: model routing (Opus/Sonnet/Haiku) PLUS reasoning depth (low/medium/high/max). Scheduled tasks use low effort for speed; planning uses high effort for quality. Adjustable via `/effort` command.
@@ -369,6 +370,64 @@ This means you can:
 - Ask Albert a question on Telegram, get the answer on Discord
 - Start a task via the HTTP API, monitor progress on Telegram
 - Use whichever platform is most convenient — the agents don't care where you are
+
+## Shared Brain (Claude Code CLI + macOS app)
+
+By default, Claude Code CLI and the Claude Code macOS app share one brain
+(`~/.claude/CLAUDE.md`); the daemon has its own separate per-agent files.
+The shared brain feature fuses the two: a single daemon-maintained markdown
+digest that CLI and macOS sessions import and read automatically.
+
+**What it exposes:**
+- Roster table of every agent (emoji, name, role, one-line purpose)
+- Per agent: condensed SOUL, role, models, recent MEMORY entries, latest
+  REFLECTIONS, and list of MCP skills from `tools.json`
+- Shared context: `shared/DIRECTIVE.md`, `shared/USER.md`, last 10 lines of
+  `shared/events.md`, `shared/learnings.md` excerpt
+- Top 3 items from the active improvement plan
+
+**Where it lives:** `~/.config/claude-daemon/shared-brain.md`, imported from
+`~/.claude/CLAUDE.md` via a sentinel-wrapped `@`-line:
+
+```
+<!-- BEGIN claude-daemon shared-brain (managed, do not edit) -->
+@~/.config/claude-daemon/shared-brain.md
+<!-- END claude-daemon shared-brain -->
+```
+
+**Commands:**
+
+```bash
+claude-daemon shared-brain sync       # regenerate now
+claude-daemon shared-brain show       # print current content
+claude-daemon shared-brain install    # add @-import to ~/.claude/CLAUDE.md
+claude-daemon shared-brain uninstall  # remove the @-import cleanly
+claude-daemon shared-brain status     # installed? last sync? size?
+```
+
+After `install`, restart Claude Code CLI and the macOS app to pick up the
+brain. The daemon regenerates the file every heartbeat tick (30 min default)
+with atomic write + advisory flock, so concurrent regens can't corrupt it.
+
+**Configuration** (under `shared_brain:` in `config.yaml`):
+
+```yaml
+shared_brain:
+  enabled: true                            # disable to skip regen
+  path: ~/.config/claude-daemon/shared-brain.md
+  max_chars: 30000                         # size budget
+  refresh_interval_s: 1800                 # reserved for future standalone job
+```
+
+**Sizing:** fixed sections (header, roster, shared context, improvement plan,
+footer) are never truncated. Per-agent blocks scale down progressively
+(150/5/3 → 100/3/2 → 60/2/1 → 30/1/0 → name+role only) until the total fits
+`max_chars`.
+
+**Safety:** install is idempotent — running it twice doesn't duplicate the
+block. Uninstall removes exactly the sentinel block, preserving any other
+content in `~/.claude/CLAUDE.md`. The daemon never writes outside its
+sentinel block.
 
 ## Commands (Telegram + Discord)
 
