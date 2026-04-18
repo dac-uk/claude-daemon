@@ -642,3 +642,90 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* ── Mobile / iOS (≤ 768px) ─────────────────────────────────── */
+@media (max-width: 768px) {
+  html, body { overflow: auto; -webkit-text-size-adjust: 100%; }
+  .app { flex-direction: column; height: auto; min-height: 100vh; }
+
+  /* Sidebar becomes a bottom nav bar */
+  .sidebar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    width: 100%; min-width: 0; height: 56px; order: 2;
+    flex-direction: row; justify-content: space-around;
+    padding: 4px 8px; border-right: none; border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .sidebar-logo { display: none; }
+  .sidebar-nav { flex-direction: row; gap: 4px; flex: 1;
+    justify-content: space-around; }
+  .sidebar-spacer { display: none; }
+  .ws-indicator { position: absolute; top: -6px; right: 8px; }
+
+  /* Touch targets: at least 44x44 */
+  .nav-btn { width: 44px; height: 44px; }
+
+  /* Main column */
+  .main { order: 1; padding-bottom: 72px; /* clear the bottom nav */ }
+  .content { padding: 12px; }
+
+  /* Topbar: let stats wrap, shrink title */
+  .topbar { padding: 12px; flex-wrap: wrap; gap: 8px; height: auto; }
+  .topbar-title { font-size: 14px; }
+  .topbar-stats { flex-wrap: wrap; gap: 8px; width: 100%; }
+  .stat { font-size: 11px; }
+
+  /* Overview: stack the 3-column grid */
+  .overview-grid { grid-template-columns: 1fr !important; gap: 12px; }
+  .overview-graph { height: 320px; }
+  .overview-agents, .overview-feed { height: auto; max-height: 400px; }
+
+  /* Agent Fleet: single column */
+  .agents-grid { grid-template-columns: 1fr; gap: 12px; }
+
+  /* Analytics charts: stack */
+  .charts-grid { grid-template-columns: 1fr; }
+
+  /* Chat layout: channels collapse above messages */
+  .chat-layout { flex-direction: column; height: calc(100vh - 180px); }
+  .chat-channels { width: 100%; height: auto; max-height: 140px;
+    overflow-y: auto; }
+  .chat-input-area textarea { font-size: 16px; /* prevents iOS zoom on focus */ }
+
+  /* Operations task grid: hide the ID + progress columns, keep the rest */
+  .ops-task-head, .ops-task-row {
+    grid-template-columns: 1fr 90px 90px 70px;
+    gap: 8px; padding: 10px 12px; font-size: 12px;
+  }
+  .ops-task-head span:nth-child(1),   /* ID */
+  .ops-task-row  .ops-task-id,
+  .ops-task-head span:nth-child(3),   /* Progress */
+  .ops-task-row  .ops-task-progress { display: none; }
+
+  /* Stream slide-in goes full-width on mobile */
+  .stream-panel { width: 100%; right: -100%; }
+
+  /* Audit table: allow horizontal scroll rather than squish */
+  .audit-table { display: block; overflow-x: auto; white-space: nowrap; }
+  .filters-bar { flex-direction: column; align-items: stretch; }
+  .filter-select, .filter-input { width: 100%; font-size: 16px; }
+
+  /* Settings: MCP table scrolls horizontally */
+  .mcp-table { display: block; overflow-x: auto; }
+
+  /* Modals: fit viewport */
+  .ops-modal { width: calc(100vw - 32px); max-width: 480px;
+    left: 50% !important; transform: translateX(-50%) !important; }
+  .ops-modal textarea { font-size: 16px; }
+
+  /* Form inputs everywhere: keep iOS from zooming */
+  input, select, textarea { font-size: 16px; }
+}
+
+/* Tap target hygiene on touch devices regardless of width */
+@media (hover: none) and (pointer: coarse) {
+  .nav-btn, .ops-chip, .ops-cancel-btn, .approval-btn,
+  .chat-send-btn, .ops-submit-btn, .page-btn {
+    min-height: 44px;
+  }
+}
