@@ -176,6 +176,18 @@ class ConversationStore:
             """)
             self._db.commit()
 
+        # conversations: ensure status column exists (added after initial schema)
+        try:
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(conversations)").fetchall()}
+            if "status" not in cols:
+                log.info("Migrating schema: adding conversations.status column")
+                self._db.execute(
+                    "ALTER TABLE conversations ADD COLUMN status TEXT DEFAULT 'active'"
+                )
+                self._db.commit()
+        except sqlite3.OperationalError:
+            pass
+
         # task_queue: add metadata (JSON) and goal_id columns for native orchestration
         try:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(task_queue)").fetchall()}

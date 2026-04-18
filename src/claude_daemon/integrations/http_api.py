@@ -528,7 +528,9 @@ class HttpApi:
         except Exception:
             log.exception("list_sessions failed")
             return web.json_response({"error": "list failed"}, status=500)
-        if agent:
+        if agent == "__unattributed__":
+            sessions = [s for s in sessions if not s.get("agent")]
+        elif agent:
             sessions = [s for s in sessions if s.get("agent") == agent]
         # Fold in the linked task row for spawn sessions in a single round-trip.
         task_ids = [s["task_id"] for s in sessions if s.get("task_id")]

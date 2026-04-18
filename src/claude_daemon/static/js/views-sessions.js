@@ -22,7 +22,7 @@ CC.openSessionsDrilldown = async function() {
   var modal = document.getElementById('sessModal');
   var overlay = document.getElementById('sessOverlay');
   modal.classList.add('open'); overlay.classList.add('open');
-  CC.cache['/api/sessions/summary'] = null;
+  CC.cache['/api/sessions/summary' + JSON.stringify({})] = null;
   CC.sessState.summary = await CC.api('/api/sessions/summary');
   CC._sessRender();
 };
@@ -33,7 +33,7 @@ CC.openAgentDetail = async function(name) {
   var overlay = document.getElementById('sessOverlay');
   modal.classList.add('open'); overlay.classList.add('open');
   if (!CC.sessState.summary) {
-    CC.cache['/api/sessions/summary'] = null;
+    CC.cache['/api/sessions/summary' + JSON.stringify({})] = null;
     CC.sessState.summary = await CC.api('/api/sessions/summary');
   }
   await CC._sessOpenAgent(name);
@@ -54,9 +54,13 @@ CC._sessRender = function() {
   if (s.view === 'agents') {
     title.textContent = 'Sessions by agent';
     back.style.display = 'none';
-    var sm = s.summary || { by_agent: {}, unattributed: 0, total: 0 };
+    if (!s.summary) {
+      body.innerHTML = '<div class="empty">Could not load sessions. Check daemon logs.</div>';
+      return;
+    }
+    var sm = s.summary;
     var names = Object.keys(sm.by_agent || {}).sort();
-    if (names.length === 0 && !sm.unattributed) {
+    if (names.length === 0 && !(sm.unattributed || 0)) {
       body.innerHTML = '<div class="empty">No sessions recorded yet.</div>';
       return;
     }
@@ -78,6 +82,14 @@ CC._sessRender = function() {
         '</span>' +
       '</button>';
     });
+    if (sm.unattributed) {
+      html += '<button class="sess-agent-row" data-agent="__unattributed__">' +
+        '<span class="sess-agent-name" style="color:#888">Unattributed</span>' +
+        '<span class="sess-agent-counts">' +
+          '<span class="sess-agent-total">' + sm.unattributed + ' sessions</span>' +
+        '</span>' +
+      '</button>';
+    }
     html += '</div>';
     body.innerHTML = html;
     body.querySelectorAll('.sess-agent-row').forEach(function(btn) {
