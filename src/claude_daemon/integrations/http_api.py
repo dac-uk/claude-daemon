@@ -96,11 +96,14 @@ class HttpApi:
         self._app.router.add_get("/api/agents", self._handle_agents)
         self._app.router.add_get("/api/status", self._handle_status)
         self._app.router.add_get("/api/sessions", self._handle_sessions)
+        self._app.router.add_get("/api/sessions/summary", self._handle_sessions_summary)
+        self._app.router.add_get("/api/sessions/history", self._handle_sessions_history)
         self._app.router.add_get("/api/tasks", self._handle_tasks)
         self._app.router.add_post("/api/message", self._handle_message)
         self._app.router.add_post("/api/message/stream", self._handle_message_stream)
         self._app.router.add_post("/api/workflow", self._handle_workflow)
         self._app.router.add_get("/api/metrics", self._handle_metrics)
+        self._app.router.add_get("/api/costs", self._handle_costs)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
         self._app.router.add_get("/api/audit", self._handle_audit)
         self._app.router.add_get("/api/config/env", self._handle_env_list)
@@ -140,6 +143,9 @@ class HttpApi:
         self._app.router.add_get("/api/discussions", self._handle_discussions)
         self._app.router.add_get("/api/failures", self._handle_failures)
         self._app.router.add_get("/api/evolution", self._handle_evolution)
+        self._app.router.add_get("/api/daemon/status", self._handle_daemon_status)
+        self._app.router.add_post("/api/daemon/restart", self._handle_daemon_restart)
+        self._app.router.add_post("/api/daemon/stop", self._handle_daemon_stop)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -198,6 +204,23 @@ class HttpApi:
             await self._runner.cleanup()
             log.info("HTTP API stopped")
 
+    @staticmethod
+    def _qint(request: web.Request, key: str, default: int, *, maximum: int | None = None) -> int:
+        """Parse an integer query parameter, clamped to [1, maximum], with a default."""
+        raw = request.query.get(key)
+        if raw is None or raw == "":
+            val = default
+        else:
+            try:
+                val = int(raw)
+            except (TypeError, ValueError):
+                val = default
+        if maximum is not None and val > maximum:
+            val = maximum
+        if val < 0:
+            val = default
+        return val
+
     # -- Webhook signature verification --
 
     def _verify_github_signature(self, request: web.Request, body: bytes) -> bool:
@@ -248,19 +271,21 @@ class HttpApi:
         agent_costs: dict[str, float] = {}
         if self.daemon.store:
             try:
-                rows = self.daemon.store._db.execute(
-                    "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) as cost "
-                    "FROM conversations GROUP BY user_id"
-                ).fetchall()
-                for r in rows:
-                    parts = str(r["user_id"]).rsplit(":", 1)
-                    if len(parts) == 2:
-                        agent_costs[parts[1]] = agent_costs.get(parts[1], 0) + r["cost"]
+                agent_costs = self.daemon.store.get_cost_snapshot()["by_agent"]
             except Exception:
-                pass
+                log.exception("cost snapshot failed in /api/agents")
 
         agents = []
         for agent in self.daemon.agent_registry:
+            # Coerce mcp_health values to strings so the dashboard never
+            # renders "[object Object]" when a future backend returns a
+            # nested dict.
+            health = agent.check_mcp_health() or {}
+            if isinstance(health, dict):
+                health = {
+                    k: (v if isinstance(v, str) else str(v))
+                    for k, v in health.items()
+                }
             agents.append({
                 "name": agent.name,
                 "role": agent.identity.role,
@@ -268,7 +293,7 @@ class HttpApi:
                 "model": agent.identity.default_model,
                 "is_orchestrator": agent.is_orchestrator,
                 "has_mcp": agent.mcp_config_path is not None,
-                "mcp_health": agent.check_mcp_health(),
+                "mcp_health": health,
                 "heartbeat_tasks": len(agent.parse_heartbeat_tasks()),
                 "cost": agent_costs.get(agent.name, 0),
             })
@@ -276,6 +301,17 @@ class HttpApi:
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         stats = self.daemon.store.get_stats() if self.daemon.store else {}
+        cost_total = stats.get("total_cost", 0)
+        chatted = 0
+        total_sessions = stats.get("total", 0)
+        if self.daemon.store:
+            try:
+                snapshot = self.daemon.store.get_cost_snapshot()
+                cost_total = snapshot["total_usd"]
+                chatted = self.daemon.store.count_agents_with_conversations()
+                total_sessions = self.daemon.store.session_summary()["total"]
+            except Exception:
+                log.exception("cost snapshot / session summary failed in /api/status")
         return web.json_response({
             "status": "running",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -283,10 +319,25 @@ class HttpApi:
                 self.daemon.process_manager.active_count
                 if self.daemon.process_manager else 0
             ),
-            "total_sessions": stats.get("total", 0),
+            "chatted_agents": chatted,
+            "total_sessions": total_sessions,
             "total_messages": stats.get("total_messages", 0),
-            "total_cost": stats.get("total_cost", 0),
+            "total_cost": cost_total,
         })
+
+    async def _handle_costs(self, request: web.Request) -> web.Response:
+        """GET /api/costs - single source of truth for dashboard cost display."""
+        if not self.daemon.store:
+            return web.json_response({
+                "total_usd": 0,
+                "by_agent": {},
+                "by_source": {"conversations": 0, "agent_metrics": 0, "deduped_total": 0},
+            })
+        try:
+            return web.json_response(self.daemon.store.get_cost_snapshot())
+        except Exception:
+            log.exception("get_cost_snapshot failed")
+            return web.json_response({"error": "cost snapshot failed"}, status=500)
 
     async def _handle_message(self, request: web.Request) -> web.Response:
         """POST /api/message — Send a message to an agent."""
@@ -394,7 +445,7 @@ class HttpApi:
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """GET /api/metrics?agent=albert&days=7"""
         agent = request.query.get("agent")
-        days = int(request.query.get("days", "7"))
+        days = self._qint(request, "days", 7, maximum=365)
 
         if not self.daemon.store:
             return web.json_response({"metrics": []})
@@ -415,6 +466,79 @@ class HttpApi:
                 "started_at": active.started_at.isoformat(),
             })
         return web.json_response({"sessions": sessions})
+
+    async def _handle_sessions_summary(
+        self, request: web.Request,
+    ) -> web.Response:
+        """GET /api/sessions/summary — per-agent breakdown of historical sessions.
+
+        Backs the topbar "Sessions N" click-through: total count plus
+        {agent: {chat, spawn, total}} for the drill-down modal.
+        """
+        if not self.daemon.store:
+            return web.json_response({
+                "total": 0, "by_agent": {}, "unattributed": 0,
+            })
+        try:
+            return web.json_response(self.daemon.store.session_summary())
+        except Exception:
+            log.exception("session_summary failed")
+            return web.json_response(
+                {"error": "session summary failed"}, status=500,
+            )
+
+    async def _handle_sessions_history(
+        self, request: web.Request,
+    ) -> web.Response:
+        """GET /api/sessions/history?agent=<name>&limit=<n> — flat list
+        of historical conversation sessions, optionally filtered by agent.
+
+        For each session we attach the linked task_queue row when one exists
+        (spawn sessions) so the dashboard can drill straight through to
+        "what was this agent working on".
+        """
+        if not self.daemon.store:
+            return web.json_response({"sessions": []})
+        agent = request.query.get("agent")
+        limit = self._qint(request, "limit", 200, maximum=1000)
+        try:
+            sessions = self.daemon.store.list_sessions(limit=limit)
+        except Exception:
+            log.exception("list_sessions failed")
+            return web.json_response({"error": "list failed"}, status=500)
+        if agent:
+            sessions = [s for s in sessions if s.get("agent") == agent]
+        # Fold in the linked task row for spawn sessions in a single round-trip.
+        task_ids = [s["task_id"] for s in sessions if s.get("task_id")]
+        task_rows: dict[str, dict] = {}
+        if task_ids:
+            placeholders = ",".join("?" * len(task_ids))
+            try:
+                rows = self.daemon.store._db.execute(
+                    f"SELECT id, agent_name, prompt, status, task_type, "
+                    f"created_at, cost_usd, result, error "
+                    f"FROM task_queue WHERE id IN ({placeholders})",
+                    task_ids,
+                ).fetchall()
+                for row in rows:
+                    task_rows[row["id"]] = {
+                        "id": row["id"],
+                        "agent_name": row["agent_name"],
+                        "prompt": row["prompt"],
+                        "status": row["status"],
+                        "task_type": row["task_type"],
+                        "created_at": row["created_at"],
+                        "cost_usd": row["cost_usd"],
+                        "result": row["result"],
+                        "error": row["error"],
+                    }
+            except Exception:
+                log.exception("Bulk task_queue lookup for sessions failed")
+        for s in sessions:
+            tid = s.get("task_id")
+            if tid and tid in task_rows:
+                s["task"] = task_rows[tid]
+        return web.json_response({"sessions": sessions, "count": len(sessions)})
 
     async def _handle_tasks(self, request: web.Request) -> web.Response:
         """GET /api/tasks — merged view of live spawned + recent persisted tasks."""
@@ -483,14 +607,14 @@ class HttpApi:
         if api is None:
             return web.json_response({"tasks": []})
         agent = request.query.get("agent")
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = self._qint(request, "limit", 50, maximum=200)
         return web.json_response({"tasks": api.list_pending(agent=agent, limit=limit)})
 
     async def _handle_v1_tasks_recent(self, request: web.Request) -> web.Response:
         api = self._get_task_api()
         if api is None:
             return web.json_response({"tasks": []})
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = self._qint(request, "limit", 50, maximum=200)
         return web.json_response({"tasks": api.list_recent(limit=limit)})
 
     async def _handle_v1_tasks_get(self, request: web.Request) -> web.Response:
@@ -714,7 +838,7 @@ class HttpApi:
         pending_only = request.query.get("pending") == "1"
         if pending_only:
             return web.json_response({"approvals": appr.list_pending()})
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = self._qint(request, "limit", 50, maximum=200)
         return web.json_response({"approvals": appr.list_all(limit=limit)})
 
     async def _handle_v1_approvals_approve(self, request: web.Request) -> web.Response:
@@ -934,7 +1058,7 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"discussions": [], "stats": {}})
         dtype = request.query.get("type")
-        limit = min(int(request.query.get("limit", "20")), 100)
+        limit = self._qint(request, "limit", 20, maximum=100)
         discussions = self.daemon.store.get_recent_discussions(discussion_type=dtype, limit=limit)
         stats = self.daemon.store.get_discussion_stats(days=7)
         return web.json_response({"discussions": discussions, "stats": stats})
@@ -944,7 +1068,7 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"failures": [], "patterns": []})
         agent = request.query.get("agent")
-        limit = min(int(request.query.get("limit", "20")), 100)
+        limit = self._qint(request, "limit", 20, maximum=100)
         failures = self.daemon.store.get_recent_failures(agent_name=agent, limit=limit)
         patterns = self.daemon.store.get_failure_patterns(days=7)
         return web.json_response({"failures": failures, "patterns": patterns})
@@ -954,9 +1078,62 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"evolution": []})
         agent = request.query.get("agent")
-        limit = min(int(request.query.get("limit", "20")), 100)
+        limit = self._qint(request, "limit", 20, maximum=100)
         history = self.daemon.store.get_evolution_history(agent_name=agent, limit=limit)
         return web.json_response({"evolution": history})
+
+    # -- Daemon control --
+
+    async def _handle_daemon_status(self, request: web.Request) -> web.Response:
+        """GET /api/daemon/status — pid, uptime, version, host."""
+        import os
+        import socket
+        import time as _time
+        from claude_daemon import __version__
+        started = getattr(self.daemon, "started_at", None)
+        uptime = (_time.time() - started) if started else None
+        return web.json_response({
+            "pid": os.getpid(),
+            "uptime_seconds": uptime,
+            "version": __version__,
+            "host": socket.gethostname(),
+        })
+
+    async def _handle_daemon_restart(self, request: web.Request) -> web.Response:
+        """POST /api/daemon/restart — request a graceful restart.
+
+        Emits an audit record and triggers daemon shutdown. The process
+        supervisor (systemd / install.sh wrapper) is expected to restart it.
+        """
+        if self.daemon.store:
+            self.daemon.store.record_audit(action="daemon_restart", details="requested via dashboard")
+        log.warning("Daemon restart requested via /api/daemon/restart")
+
+        async def _shutdown_soon():
+            await asyncio.sleep(0.5)
+            self.daemon.request_shutdown()
+
+        asyncio.create_task(_shutdown_soon())
+        return web.json_response({
+            "status": "ok",
+            "message": "Restart requested. Daemon is shutting down; the supervisor will relaunch it.",
+        })
+
+    async def _handle_daemon_stop(self, request: web.Request) -> web.Response:
+        """POST /api/daemon/stop — request a graceful shutdown."""
+        if self.daemon.store:
+            self.daemon.store.record_audit(action="daemon_stop", details="requested via dashboard")
+        log.warning("Daemon stop requested via /api/daemon/stop")
+
+        async def _shutdown_soon():
+            await asyncio.sleep(0.5)
+            self.daemon.request_shutdown()
+
+        asyncio.create_task(_shutdown_soon())
+        return web.json_response({
+            "status": "ok",
+            "message": "Stop requested. Daemon is shutting down.",
+        })
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Receive external webhooks and route to appropriate agent.
@@ -1105,8 +1282,8 @@ class HttpApi:
             return web.json_response({"audit": []})
         action = request.query.get("action")
         agent = request.query.get("agent")
-        limit = int(request.query.get("limit", "100"))
-        offset = int(request.query.get("offset", "0"))
+        limit = self._qint(request, "limit", 100, maximum=1000)
+        offset = self._qint(request, "offset", 0)
         entries = self.daemon.store.get_audit_log(
             action=action, agent_name=agent, limit=limit, offset=offset,
         )

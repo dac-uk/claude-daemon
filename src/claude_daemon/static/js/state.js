@@ -31,5 +31,24 @@ CC.formatMcpHealth = function(h) {
   if (!h || typeof h !== 'object') return h || 'n/a';
   var keys = Object.keys(h);
   if (keys.length === 0) return 'none';
-  return keys.map(function(k) { return k + ': ' + h[k]; }).join(', ');
+  return keys.map(function(k) {
+    var v = h[k];
+    if (v == null) return k + ': ?';
+    if (typeof v === 'object') {
+      var inner = v.status || v.state || JSON.stringify(v);
+      return k + ': ' + String(inner).slice(0, 40);
+    }
+    return k + ': ' + v;
+  }).join(', ');
+};
+
+CC.formatRelativeTime = function(iso) {
+  if (!iso) return '';
+  var then = new Date(iso).getTime();
+  if (!then) return '';
+  var s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
 };

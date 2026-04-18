@@ -294,16 +294,77 @@ async def _run_dream(daemon) -> None:
 
 
 def _cmd_update(args: argparse.Namespace) -> None:
-    """Check for and apply updates."""
-    from claude_daemon.core.config import DaemonConfig
-    from claude_daemon.core.process import ProcessManager
-    from claude_daemon.updater.updater import Updater
+    """Check for and apply updates.
 
-    config = DaemonConfig.load()
-    pm = ProcessManager(config)
-    updater = Updater(config, pm)
-    result = asyncio.run(updater.check_and_update(check_only=args.check_only))
-    print(result)
+    With no flags (or --full), delegates to install.sh --update so the full
+    idempotent installer runs: git pull, pip install, service re-patch, and
+    all the "never overwrite .env / config.yaml / memory" protections.
+    With --check-only, only reports whether the repo has upstream changes
+    without applying them. With --fast, uses the in-process Updater (git
+    pull + pip install, no service re-patch) — handy when the daemon is
+    self-updating on a schedule.
+    """
+    import subprocess as sp
+    from pathlib import Path
+
+    # Locate the editable install root (contains install.sh)
+    package_dir = Path(__file__).resolve().parent.parent.parent
+    install_script = package_dir / "install.sh"
+    git_dir = package_dir / ".git"
+
+    if args.check_only:
+        if not git_dir.is_dir():
+            print("Not a git checkout; cannot check for updates.")
+            return
+        # Fetch then compare HEAD to upstream
+        try:
+            sp.run(["git", "-C", str(package_dir), "fetch", "--quiet"], check=True, timeout=30)
+            local = sp.check_output(
+                ["git", "-C", str(package_dir), "rev-parse", "HEAD"],
+                text=True, timeout=10,
+            ).strip()
+            remote = sp.check_output(
+                ["git", "-C", str(package_dir), "rev-parse", "@{u}"],
+                text=True, timeout=10,
+            ).strip()
+            if local == remote:
+                print("Up to date.")
+            else:
+                behind = sp.check_output(
+                    ["git", "-C", str(package_dir), "rev-list", "--count", "HEAD..@{u}"],
+                    text=True, timeout=10,
+                ).strip()
+                print(f"{behind} new commit(s) available. Run `claude-daemon update` to apply.")
+        except (sp.CalledProcessError, sp.TimeoutExpired, FileNotFoundError) as e:
+            print(f"Could not check upstream: {e}")
+        return
+
+    if args.fast or not install_script.exists():
+        # Fast path: git pull + pip install only, no service re-patch
+        from claude_daemon.core.config import DaemonConfig
+        from claude_daemon.core.process import ProcessManager
+        from claude_daemon.updater.updater import Updater
+
+        config = DaemonConfig.load()
+        pm = ProcessManager(config)
+        updater = Updater(config, pm)
+        result = asyncio.run(updater.check_and_update(check_only=False))
+        print(result)
+        return
+
+    # Full path: run install.sh --update. Preserves every .env / config.yaml /
+    # ~/.config/claude-daemon/agents/*/MEMORY.md entry.
+    print(f"Running {install_script} --update ...")
+    print("This will pull latest, reinstall the package, and re-patch the")
+    print("system service without touching your .env, config.yaml, or memories.\n")
+    try:
+        sp.run(["bash", str(install_script), "--update"], check=True)
+    except sp.CalledProcessError as e:
+        print(f"\nUpdate failed with exit code {e.returncode}.")
+        sys.exit(e.returncode)
+    except FileNotFoundError:
+        print("bash is not available on this system; cannot run install.sh.")
+        sys.exit(1)
 
 
 def _cmd_install_service(args: argparse.Namespace) -> None:
@@ -863,8 +924,14 @@ def main() -> None:
     p_mem.add_argument("action", choices=["show", "compact", "dream"], default="show", nargs="?")
 
     # update
-    p_update = sub.add_parser("update", help="Check for updates")
-    p_update.add_argument("--check-only", action="store_true")
+    p_update = sub.add_parser(
+        "update",
+        help="Pull latest and re-run the installer (preserves .env, config, memories)",
+    )
+    p_update.add_argument("--check-only", action="store_true",
+                          help="Only report whether updates are available; do not apply")
+    p_update.add_argument("--fast", action="store_true",
+                          help="Skip install.sh; just git pull + pip install in-process")
 
     # install-service
     p_svc = sub.add_parser("install-service", help="Install OS service files")

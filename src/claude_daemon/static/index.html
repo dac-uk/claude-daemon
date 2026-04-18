@@ -23,7 +23,7 @@
       <button class="nav-btn" data-view="chat" title="Chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       </button>
-      <button class="nav-btn" data-view="tasks" title="Tasks & Discussions">
+      <button class="nav-btn" data-view="tasks" title="Discussions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       </button>
       <button class="nav-btn" data-view="operations" title="Operations">
@@ -50,7 +50,7 @@
       <div class="topbar-stats">
         <div class="stat">Agents <span class="stat-val" id="statAgents">0</span></div>
         <div class="stat">Active <span class="stat-val" id="statActive">0</span></div>
-        <div class="stat">Sessions <span class="stat-val" id="statSessions">0</span></div>
+        <div class="stat stat-clickable" id="statSessionsWrap" title="Click to see per-agent sessions">Sessions <span class="stat-val" id="statSessions">0</span></div>
         <div class="stat">Cost <span class="stat-val" id="statCost">$0.00</span></div>
       </div>
     </header>
@@ -94,18 +94,32 @@
         </div>
       </div>
 
-      <!-- ═══ TASKS ═══ -->
+      <!-- ═══ DISCUSSIONS (tasks merged into Operations) ═══ -->
       <div class="view" id="view-tasks">
-        <div class="tabs">
-          <button class="tab-btn active" data-tab="tasks-active">Active Tasks</button>
-          <button class="tab-btn" data-tab="tasks-discussions">Discussions</button>
+        <h2 style="font-size:18px;font-weight:700;margin-bottom:12px">Discussions</h2>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px">
+          Council &amp; bilateral discussions &mdash; stored, searchable, reviewable.
+          For individual task status, see <strong>Operations</strong>.
+        </p>
+        <div class="filters-bar" id="discFilters">
+          <select class="filter-select" id="discFilterType">
+            <option value="">All types</option>
+            <option value="council">Council</option>
+            <option value="bilateral">Bilateral</option>
+          </select>
+          <select class="filter-select" id="discFilterOutcome">
+            <option value="">All outcomes</option>
+            <option value="converged">Converged</option>
+            <option value="stalled">Stalled</option>
+            <option value="error">Error</option>
+          </select>
+          <select class="filter-select" id="discFilterAgent">
+            <option value="">Any agent</option>
+          </select>
+          <input class="filter-input" id="discFilterSearch" placeholder="Search topic, synthesis, transcript..." style="flex:1;min-width:200px">
+          <span id="discCount" style="font-size:12px;color:var(--text-secondary)"></span>
         </div>
-        <div class="tab-content active" id="tasks-active">
-          <div class="task-list" id="taskList"></div>
-        </div>
-        <div class="tab-content" id="tasks-discussions">
-          <div id="discList"></div>
-        </div>
+        <div id="discList"></div>
       </div>
 
       <!-- ═══ OPERATIONS ═══ -->
@@ -150,6 +164,10 @@
           <h3>System</h3>
           <div id="systemInfo" class="glass-sm" style="padding:16px"></div>
         </div>
+        <div class="settings-section">
+          <h3>Daemon Control</h3>
+          <div id="daemonControl" class="glass-sm" style="padding:16px">Loading...</div>
+        </div>
       </div>
     </div>
   </div>
@@ -165,6 +183,35 @@
   <div class="stream-body" id="streamBody"></div>
 </div>
 
+<!-- ═══ Sessions drill-down modal ═══ -->
+<div class="sess-overlay" id="sessOverlay"></div>
+<div class="sess-modal glass" id="sessModal">
+  <div class="sess-header">
+    <h3 id="sessTitle">Sessions</h3>
+    <button class="sess-back" id="sessBack" style="display:none">&larr; Back</button>
+    <button class="sess-close" id="sessClose">&times;</button>
+  </div>
+  <div class="sess-body" id="sessBody"></div>
+</div>
+
+<!-- ═══ MCP config modal ═══ -->
+<div class="sess-overlay" id="mcpCfgOverlay"></div>
+<div class="sess-modal glass" id="mcpCfgModal">
+  <div class="sess-header">
+    <h3>Configure <span id="mcpCfgName"></span></h3>
+    <button class="sess-close" id="mcpCfgClose">&times;</button>
+  </div>
+  <div class="sess-body">
+    <p id="mcpCfgDesc" style="color:var(--text-secondary);font-size:12px;margin-bottom:14px"></p>
+    <form id="mcpCfgForm" autocomplete="off"></form>
+    <div id="mcpCfgStatus" style="font-size:12px;margin-top:10px;min-height:16px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="page-btn" id="mcpCfgCancel">Cancel</button>
+      <button class="page-btn primary" id="mcpCfgSave">Save &amp; Enable</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/state.js"></script>
 <script src="/static/js/api.js"></script>
 <script src="/static/js/websocket.js"></script>
@@ -175,6 +222,7 @@
 <script src="/static/js/views-chat.js"></script>
 <script src="/static/js/views-operations.js"></script>
 <script src="/static/js/views-rest.js"></script>
+<script src="/static/js/views-sessions.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import TYPE_CHECKING, Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -295,6 +296,20 @@ class SchedulerEngine:
             return
 
         log.info("Heartbeat: running '%s' task (model=%s)", agent_name, model)
+
+        # Create task_queue row so heartbeat work appears on the Operations
+        # audit trail (autonomous agent actions need to be visible).
+        task_id = uuid.uuid4().hex
+        if self.daemon.store:
+            try:
+                self.daemon.store.create_task(
+                    task_id=task_id, agent_name=agent_name, prompt=prompt,
+                    task_type="heartbeat", platform="heartbeat",
+                    user_id="scheduler", initial_status="running",
+                )
+            except Exception:
+                log.exception("Failed to create heartbeat task_queue row for %s", agent_name)
+
         try:
             response = await self.daemon.orchestrator.send_to_agent(
                 agent=agent,
@@ -309,6 +324,14 @@ class SchedulerEngine:
                 log.error("Heartbeat %s failed (%d/%d): %s", agent_name, self._failure_counts[job_key], self._max_failures, response.result[:200])
                 if self._failure_counts[job_key] >= self._max_failures:
                     self._alert_failure(f"Heartbeat for {agent_name} circuit-broken after {self._max_failures} consecutive failures")
+                if self.daemon.store:
+                    try:
+                        self.daemon.store.update_task_status(
+                            task_id, "failed",
+                            error=response.result[:500], cost_usd=response.cost,
+                        )
+                    except Exception:
+                        log.exception("Failed to mark heartbeat task failed")
                 return
 
             # Reset failure counter on success
@@ -355,8 +378,25 @@ class SchedulerEngine:
                         except Exception:
                             log.warning("Failed to deliver heartbeat result for %s via %s:%s", agent_name, platform_name, chat_id)
 
-        except Exception:
+            # Mark task_queue row completed so Operations shows the audit trail
+            if self.daemon.store:
+                try:
+                    self.daemon.store.update_task_status(
+                        task_id, "completed",
+                        result=response.result[:2000], cost_usd=response.cost,
+                    )
+                except Exception:
+                    log.exception("Failed to mark heartbeat task completed")
+
+        except Exception as exc:
             log.exception("Heartbeat task failed for %s", agent_name)
+            if self.daemon.store:
+                try:
+                    self.daemon.store.update_task_status(
+                        task_id, "failed", error=f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    log.exception("Failed to mark heartbeat task failed after exception")
 
     async def _job_log_retention(self) -> None:
         """Delete daily log files older than log_retention_days."""

@@ -38,12 +38,17 @@ CC.renderAgentSidebar = function() {
   el.innerHTML = '<div class="feed-title">Agents</div>' + agents.map(function(a) {
     var dotClass = a.status === 'busy' ? 'busy' : '';
     var bg = a.color + '18';
-    return '<div class="agent-mini" onclick="CC.openStream(\'' + a.name + '\')">' +
+    return '<div class="agent-mini" data-agent="' + a.name + '">' +
       '<div class="avatar" style="background:' + bg + '">' + (a.emoji || CC.AGENT_EMOJI[a.name] || '') + '</div>' +
       '<div class="info"><div class="name">' + a.name.charAt(0).toUpperCase() + a.name.slice(1) + '</div>' +
       '<div class="role">' + (a.status === 'busy' ? (a.currentPrompt || 'Working...').substring(0, 40) : a.role) + '</div></div>' +
       '<div class="status-dot ' + dotClass + '"></div></div>';
   }).join('');
+  el.querySelectorAll('.agent-mini').forEach(function(row) {
+    row.addEventListener('click', function() {
+      if (CC.openAgentDetail) CC.openAgentDetail(row.dataset.agent);
+    });
+  });
 };
 
 /* ── Feed / Event log ─────────────────────────────────────── */

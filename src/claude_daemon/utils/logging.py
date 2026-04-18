@@ -35,4 +35,8 @@ def setup_logging(level: str = "INFO", log_dir: Path | None = None) -> logging.L
         file_handler.setFormatter(fmt)
         logger.addHandler(file_handler)
 
+    # Prevent double-emission when the root logger also has a handler
+    # (e.g. pytest, foreground entry path).
+    logger.propagate = False
+
     return logger

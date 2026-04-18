@@ -383,6 +383,159 @@ class ConversationStore:
         ).fetchone()
         return dict(row) if row else {}
 
+    def get_cost_snapshot(self) -> dict:
+        """Return a unified cost view across conversations + agent_metrics.
+
+        The dashboard displays cost in three places (topbar, Agent Fleet cards,
+        Cost tab). Historically each read a different source and showed a
+        different number. This snapshot is the single source of truth.
+
+        The by_agent map is built primarily from agent_metrics (which records
+        every completed agent action including heartbeats and spawn tasks),
+        then folded in with conversations-only agents that have no metrics
+        row yet. user_id format is either "<user>:<agent>" or
+        "<user>:spawn:<task_id>" — the spawn form is already covered via
+        agent_metrics, so we skip it when parsing conversations.
+        """
+        conv_total_row = self._db.execute(
+            "SELECT COALESCE(SUM(total_cost_usd), 0) AS t FROM conversations",
+        ).fetchone()
+        conv_total = float(conv_total_row["t"] if conv_total_row else 0)
+
+        metrics_total_row = self._db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS t FROM agent_metrics",
+        ).fetchone()
+        metrics_total = float(metrics_total_row["t"] if metrics_total_row else 0)
+
+        by_agent: dict[str, float] = {}
+        for r in self._db.execute(
+            "SELECT agent_name, COALESCE(SUM(cost_usd), 0) AS cost "
+            "FROM agent_metrics GROUP BY agent_name",
+        ).fetchall():
+            name = r["agent_name"]
+            if name:
+                by_agent[name] = float(r["cost"])
+
+        for r in self._db.execute(
+            "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) AS cost "
+            "FROM conversations GROUP BY user_id",
+        ).fetchall():
+            uid = str(r["user_id"] or "")
+            parts = uid.split(":")
+            if len(parts) >= 3 and parts[1] == "spawn":
+                continue
+            if len(parts) < 2:
+                continue
+            name = parts[-1]
+            if name and name not in by_agent:
+                by_agent[name] = float(r["cost"])
+
+        deduped_total = max(conv_total, metrics_total)
+        return {
+            "total_usd": deduped_total,
+            "by_agent": by_agent,
+            "by_source": {
+                "conversations": conv_total,
+                "agent_metrics": metrics_total,
+                "deduped_total": deduped_total,
+            },
+        }
+
+    def count_agents_with_conversations(self) -> int:
+        """Number of distinct agents that appear in the conversations table.
+
+        Used by the dashboard topbar to distinguish "agents configured" from
+        "agents that have actually talked". The 7-vs-6 mismatch the user
+        reported was this: 7 agents exist, 6 have a conversation row.
+        """
+        row = self._db.execute(
+            "SELECT COUNT(DISTINCT user_id) AS n FROM conversations "
+            "WHERE user_id LIKE '%:%' AND user_id NOT LIKE '%:spawn:%'",
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    @staticmethod
+    def _attribute_session(uid: str) -> tuple[str | None, str | None]:
+        """Parse a conversations.user_id into (agent_name, task_id).
+
+        user_id shapes we recognise:
+          "<user>:<agent>"          -> (agent, None)
+          "<user>:spawn:<task_id>"  -> (None, task_id)  # caller joins task_queue
+          "<plain>"                 -> (None, None)
+        """
+        if ":spawn:" in uid:
+            _, _, tid = uid.partition(":spawn:")
+            return None, (tid or None)
+        if ":" in uid:
+            agent = uid.rsplit(":", 1)[1]
+            return (agent or None), None
+        return None, None
+
+    def list_sessions(self, limit: int = 500) -> list[dict]:
+        """All sessions (chatted + spawned) with agent attribution.
+
+        For spawn sessions, the agent name is resolved by joining the
+        embedded task_id against task_queue.agent_name. Ordered newest-first
+        by last_active so the dashboard can show "what's live right now".
+        """
+        rows = self._db.execute(
+            "SELECT session_id, user_id, started_at, last_active, "
+            "total_cost_usd, message_count, platform, status "
+            "FROM conversations "
+            "ORDER BY last_active DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            uid = str(r["user_id"] or "")
+            agent, task_id = self._attribute_session(uid)
+            if task_id and not agent:
+                tr = self._db.execute(
+                    "SELECT agent_name FROM task_queue WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                if tr:
+                    agent = tr["agent_name"]
+            out.append({
+                "session_id": r["session_id"],
+                "user_id": uid,
+                "agent": agent,
+                "task_id": task_id,
+                "started_at": r["started_at"],
+                "last_active": r["last_active"],
+                "cost_usd": float(r["total_cost_usd"] or 0),
+                "message_count": int(r["message_count"] or 0),
+                "platform": r["platform"],
+                "status": r["status"],
+                "kind": "spawn" if task_id else ("chat" if agent else "unknown"),
+            })
+        return out
+
+    def session_summary(self) -> dict:
+        """Aggregate session counts for the topbar Sessions stat.
+
+        Returns {total, by_agent: {name: {chat, spawn, total}}, unattributed}.
+        Unattributed covers legacy conversations with no colon in user_id
+        and spawn rows whose task_id no longer resolves.
+        """
+        sessions = self.list_sessions(limit=10000)
+        by_agent: dict[str, dict[str, int]] = {}
+        unattributed = 0
+        for s in sessions:
+            a = s["agent"]
+            if not a:
+                unattributed += 1
+                continue
+            bucket = by_agent.setdefault(a, {"chat": 0, "spawn": 0, "total": 0})
+            bucket[s["kind"] if s["kind"] in ("chat", "spawn") else "chat"] += 1
+            bucket["total"] += 1
+        return {
+            "total": len(sessions),
+            "by_agent": by_agent,
+            "unattributed": unattributed,
+        }
+
     def get_user_stats(self, user_id: str, platform: str | None = None) -> dict:
         """Get per-user statistics. If platform is None, aggregates across all platforms."""
         if platform:

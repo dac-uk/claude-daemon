@@ -2,6 +2,7 @@
 
 CC.opsState = {
   filter: 'all',       // all | pending | running | completed | failed | cancelled | pending_approval
+  agentFilter: '',     // '' = all agents, else a specific agent name
   tasks: [],           // merged recent list
   expandedId: null,
   budgets: [],         // budget gauge data
@@ -146,13 +147,29 @@ CC._opsRender = function() {
   if (!el) return;
 
   var s = CC.opsState;
-  var tasks = s.tasks.filter(function(t) {
+  // Narrow by agent filter first so status counts reflect the visible slice.
+  var agentFiltered = s.agentFilter
+    ? s.tasks.filter(function(t) { return (t.agent_name || t.agent) === s.agentFilter; })
+    : s.tasks;
+  var tasks = agentFiltered.filter(function(t) {
     if (s.filter === 'all') return true;
     return t.status === s.filter;
   });
 
-  var counts = { all: s.tasks.length, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, pending_approval: 0 };
-  s.tasks.forEach(function(t) { counts[t.status] = (counts[t.status] || 0) + 1; });
+  var counts = { all: agentFiltered.length, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, pending_approval: 0 };
+  agentFiltered.forEach(function(t) { counts[t.status] = (counts[t.status] || 0) + 1; });
+
+  // Build the agent filter dropdown from the task stream + known agents.
+  var agentsInTasks = {};
+  s.tasks.forEach(function(t) {
+    var a = t.agent_name || t.agent;
+    if (a) agentsInTasks[a] = true;
+  });
+  Object.keys(CC.agents || {}).forEach(function(a) { agentsInTasks[a] = true; });
+  var agentOpts = Object.keys(agentsInTasks).sort().map(function(a) {
+    var sel = s.agentFilter === a ? ' selected' : '';
+    return '<option value="' + a + '"' + sel + '>' + a + '</option>';
+  }).join('');
 
   var html = '' +
     '<div class="ops-header">' +
@@ -167,6 +184,9 @@ CC._opsRender = function() {
       CC._opsFilterChip('failed', 'Failed (' + (counts.failed || 0) + ')') +
       CC._opsFilterChip('cancelled', 'Cancelled (' + (counts.cancelled || 0) + ')') +
       CC._opsFilterChip('pending_approval', 'Approval (' + (counts.pending_approval || 0) + ')') +
+      '<select id="opsAgentFilter" class="ops-agent-filter">' +
+        '<option value="">All agents</option>' + agentOpts +
+      '</select>' +
     '</div>' +
     CC._opsBudgetGauges() +
     CC._opsGoalCards() +
@@ -176,36 +196,70 @@ CC._opsRender = function() {
     html += '<div class="empty glass"><div class="icon">\u26A1</div>' +
             'No tasks match this filter. Submit one above.</div>';
   } else {
-    html += '<div class="ops-task-list">';
+    html += '<div class="ops-task-list">' +
+      '<div class="ops-task-head">' +
+        '<span>ID</span><span>Title</span><span>Progress</span>' +
+        '<span>Status</span><span>Owner</span><span>When</span>' +
+      '</div>';
     tasks.forEach(function(t) {
-      var tid = t.id || t.task_id;
+      var tid = t.id || t.task_id || '';
+      var tidShort = tid.substring(0, 8);
       var agent = t.agent_name || t.agent || '?';
       var agentColor = CC.agentColor(agent);
-      var prompt = (t.prompt || '').substring(0, 140);
+      var fullPrompt = t.prompt || '';
+      // Title = first line, truncated. Description = remainder.
+      var firstNewline = fullPrompt.indexOf('\n');
+      var title = firstNewline >= 0 ? fullPrompt.substring(0, firstNewline) : fullPrompt;
+      title = title.substring(0, 80) || '(no title)';
+      var description = firstNewline >= 0 ? fullPrompt.substring(firstNewline + 1) : '';
+      // Progress/outcome column: result (completed), error (failed), or status-specific hint.
+      var progress;
+      if (t.status === 'completed' && t.result) {
+        progress = String(t.result).split('\n')[0].substring(0, 60);
+      } else if (t.status === 'failed' && t.error) {
+        progress = String(t.error).substring(0, 60);
+      } else if (t.status === 'running') {
+        progress = 'in flight\u2026';
+      } else if (t.status === 'pending_approval') {
+        progress = 'awaiting approval';
+      } else if (t.status === 'cancelled') {
+        progress = 'cancelled by user';
+      } else {
+        progress = '\u2014';
+      }
       var cost = (t.cost_usd != null ? t.cost_usd : (t.cost || 0)).toFixed(4);
-      var created = t.created_at ? new Date(t.created_at).toLocaleString() : '';
+      var when = CC.formatRelativeTime ? CC.formatRelativeTime(t.created_at) : '';
+      var whenAbs = t.created_at ? new Date(t.created_at).toLocaleString() : '';
       var statusCol = CC._opsStatusColor(t.status);
       var expanded = s.expandedId === tid;
       html += '<div class="ops-task glass-sm ' + (expanded ? 'expanded' : '') +
               '" data-task-id="' + tid + '">' +
         '<div class="ops-task-row">' +
-          '<span class="ops-task-agent" style="color:' + agentColor + '">' +
-            (CC.AGENT_EMOJI[agent] || '') + ' ' + agent +
-          '</span>' +
-          '<span class="ops-task-prompt">' + CC.escHtml(prompt) + '</span>' +
+          '<span class="ops-task-id" title="' + CC.escHtml(tid) + '"><code>' +
+            CC.escHtml(tidShort) + '</code></span>' +
+          '<span class="ops-task-title">' + CC.escHtml(title) + '</span>' +
+          '<span class="ops-task-progress">' + CC.escHtml(progress) + '</span>' +
           '<span class="ops-task-status" style="color:' + statusCol + '">' +
             t.status + '</span>' +
-          '<span class="ops-task-cost">$' + cost + '</span>' +
+          '<span class="ops-task-owner" data-agent="' + agent +
+            '" style="color:' + agentColor + '" title="Open ' + agent + ' detail">' +
+            (CC.AGENT_EMOJI[agent] || '') + ' ' + agent +
+          '</span>' +
+          '<span class="ops-task-when" title="' + CC.escHtml(whenAbs) + '">' +
+            CC.escHtml(when) + '</span>' +
         '</div>';
       if (expanded) {
         html += '<div class="ops-task-detail">' +
-          '<div><strong>ID:</strong> <code>' + tid + '</code></div>' +
-          (created ? '<div><strong>Created:</strong> ' + created + '</div>' : '') +
+          '<div><strong>ID:</strong> <code>' + CC.escHtml(tid) + '</code></div>' +
+          (whenAbs ? '<div><strong>Created:</strong> ' + CC.escHtml(whenAbs) + '</div>' : '') +
           (t.user_id ? '<div><strong>User:</strong> ' + CC.escHtml(t.user_id) + '</div>' : '') +
           (t.platform ? '<div><strong>Platform:</strong> ' + CC.escHtml(t.platform) + '</div>' : '') +
           (t.task_type ? '<div><strong>Type:</strong> ' + CC.escHtml(t.task_type) + '</div>' : '') +
-          '<div class="ops-task-full-prompt"><strong>Prompt:</strong><br>' +
-            CC.escHtml(t.prompt || '') + '</div>' +
+          '<div><strong>Cost:</strong> $' + cost + '</div>' +
+          (description
+            ? '<div class="ops-task-full-prompt"><strong>Description:</strong><br>' +
+              CC.escHtml(description).replace(/\n/g, '<br>') + '</div>'
+            : '') +
           (t.result ? '<div class="ops-task-result"><strong>Result:</strong><br>' +
             CC.escHtml(t.result).replace(/\n/g, '<br>') + '</div>' : '') +
           (t.error ? '<div class="ops-task-error"><strong>Error:</strong> ' +
@@ -255,8 +309,23 @@ CC._opsBindEvents = function() {
     });
   });
 
+  var agentSel = document.getElementById('opsAgentFilter');
+  if (agentSel) {
+    agentSel.addEventListener('change', function() {
+      CC.opsState.agentFilter = agentSel.value || '';
+      CC._opsRender();
+    });
+  }
+
   el.querySelectorAll('.ops-task-row').forEach(function(row) {
-    row.addEventListener('click', function() {
+    row.addEventListener('click', function(ev) {
+      // Owner-span click opens the agent detail panel instead of expanding.
+      var ownerEl = ev.target.closest('.ops-task-owner');
+      if (ownerEl && ownerEl.dataset.agent && CC.openAgentDetail) {
+        ev.stopPropagation();
+        CC.openAgentDetail(ownerEl.dataset.agent);
+        return;
+      }
       var tid = row.parentElement.dataset.taskId;
       CC.opsState.expandedId = CC.opsState.expandedId === tid ? null : tid;
       CC._opsRender();

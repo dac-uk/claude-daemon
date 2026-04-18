@@ -38,38 +38,89 @@ CC.formatTranscript = function(transcript) {
 };
 
 
+CC._discussionsCache = [];
+CC._discFilters = { type: '', outcome: '', agent: '', search: '' };
+
 CC.renderTasksView = async function() {
-  await CC._renderTaskList();
-  await CC._renderDiscussionList();
+  await CC._loadDiscussions();
+  CC._wireDiscussionFilters();
+  CC._renderDiscussionList();
 };
 
-CC._renderTaskList = async function() {
-  var el = document.getElementById('taskList');
-  if (!el) return;
-  var data = await CC.api('/api/tasks');
-  if (!data || !data.tasks || data.tasks.length === 0) {
-    el.innerHTML = '<div class="empty"><div class="icon">\u2705</div>No active tasks</div>';
-    return;
-  }
-  el.innerHTML = data.tasks.map(function(t) {
-    var statusClass = t.status === 'running' ? 'status-busy' : t.status === 'failed' ? 'badge-error' : 'status-idle';
-    return '<div class="task-item glass-sm">' +
-      '<span class="task-agent" style="color:' + CC.agentColor(t.agent) + '">' + t.agent + '</span>' +
-      '<span class="task-prompt">' + CC.escHtml((t.prompt || '').substring(0, 120)) + '</span>' +
-      '<span class="task-status ' + statusClass + '">' + t.status + '</span>' +
-      '<span class="task-cost">$' + (t.cost || 0).toFixed(4) + '</span></div>';
-  }).join('');
-};
-
-CC._renderDiscussionList = async function() {
-  var el = document.getElementById('discList');
-  if (!el) return;
+CC._loadDiscussions = async function() {
   var data = await CC.api('/api/discussions');
-  if (!data || !data.discussions || data.discussions.length === 0) {
+  CC._discussionsCache = (data && data.discussions) || [];
+
+  // Populate agent filter from participants seen across all discussions
+  var agentSel = document.getElementById('discFilterAgent');
+  if (agentSel && agentSel.options.length <= 1) {
+    var names = {};
+    CC._discussionsCache.forEach(function(d) {
+      try { JSON.parse(d.participants).forEach(function(p) { names[p] = 1; }); } catch(e) {}
+      if (d.initiator) names[d.initiator] = 1;
+    });
+    Object.keys(names).sort().forEach(function(n) {
+      var opt = document.createElement('option');
+      opt.value = n; opt.textContent = n;
+      agentSel.appendChild(opt);
+    });
+  }
+};
+
+CC._wireDiscussionFilters = function() {
+  if (CC._discFiltersWired) return;
+  CC._discFiltersWired = true;
+  var inputs = ['discFilterType', 'discFilterOutcome', 'discFilterAgent', 'discFilterSearch'];
+  inputs.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var evt = (id === 'discFilterSearch') ? 'input' : 'change';
+    el.addEventListener(evt, function() {
+      CC._discFilters.type = document.getElementById('discFilterType').value;
+      CC._discFilters.outcome = document.getElementById('discFilterOutcome').value;
+      CC._discFilters.agent = document.getElementById('discFilterAgent').value;
+      CC._discFilters.search = document.getElementById('discFilterSearch').value.toLowerCase();
+      CC._renderDiscussionList();
+    });
+  });
+};
+
+CC._discussionMatches = function(d, f) {
+  if (f.type && d.discussion_type !== f.type) return false;
+  if (f.outcome && d.outcome !== f.outcome) return false;
+  if (f.agent) {
+    var participants = [];
+    try { participants = JSON.parse(d.participants); } catch(e) {}
+    if (participants.indexOf(f.agent) === -1 && d.initiator !== f.agent) return false;
+  }
+  if (f.search) {
+    var hay = ((d.topic || '') + ' ' + (d.synthesis || '') + ' ' + (d.transcript || '') +
+               ' ' + (d.initiator || '') + ' ' + (d.participants || '')).toLowerCase();
+    if (hay.indexOf(f.search) === -1) return false;
+  }
+  return true;
+};
+
+CC._renderDiscussionList = function() {
+  var el = document.getElementById('discList');
+  var countEl = document.getElementById('discCount');
+  if (!el) return;
+  var all = CC._discussionsCache || [];
+  var filtered = all.filter(function(d) { return CC._discussionMatches(d, CC._discFilters); });
+  if (countEl) {
+    countEl.textContent = filtered.length === all.length
+      ? (all.length + ' discussion' + (all.length === 1 ? '' : 's'))
+      : (filtered.length + ' of ' + all.length);
+  }
+  if (all.length === 0) {
     el.innerHTML = '<div class="empty"><div class="icon">\u{1f4ac}</div>No discussions yet</div>';
     return;
   }
-  el.innerHTML = data.discussions.map(function(d) {
+  if (filtered.length === 0) {
+    el.innerHTML = '<div class="empty"><div class="icon">\u{1f50d}</div>No discussions match the current filters</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(function(d) {
     var typeClass = d.discussion_type === 'council' ? 'badge-council' : 'badge-discuss';
     var typeLabel = d.discussion_type === 'council' ? 'COUNCIL' : 'BILATERAL';
     var outcomeColor = d.outcome === 'converged' ? 'var(--green)' : d.outcome === 'error' ? 'var(--red)' : 'var(--text-secondary)';
