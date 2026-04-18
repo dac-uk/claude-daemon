@@ -548,6 +548,76 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
         print(f"MCP configs refreshed: {sample} servers active across {len(counts)} agents.")
 
 
+def _cmd_shared_brain(args: argparse.Namespace) -> None:
+    """Manage the shared brain digest file."""
+    from claude_daemon.agents.registry import AgentRegistry
+    from claude_daemon.agents.shared_brain import (
+        DEFAULT_CLAUDE_MD,
+        SharedBrainBuilder,
+        brain_status,
+        install_into_claude_md,
+        uninstall_from_claude_md,
+    )
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+    action = getattr(args, "sb_action", None) or "status"
+
+    registry = AgentRegistry(
+        agents_dir=config.data_dir / "agents",
+        shared_dir=config.data_dir / "shared",
+    )
+    registry.load_all()
+    builder = SharedBrainBuilder(
+        registry=registry,
+        shared_dir=config.data_dir / "shared",
+        output_path=config.shared_brain_path,
+        max_chars=config.shared_brain_max_chars,
+    )
+
+    if action == "sync":
+        try:
+            path = builder.write()
+        except PermissionError as e:
+            print(f"Error: cannot write {config.shared_brain_path}: {e}")
+            sys.exit(1)
+        size = path.stat().st_size if path.exists() else 0
+        print(f"Wrote {path} ({size} bytes, {len(registry)} agents)")
+
+    elif action == "show":
+        if not config.shared_brain_path.exists():
+            print(f"Not yet generated. Run: claude-daemon shared-brain sync")
+            sys.exit(1)
+        print(config.shared_brain_path.read_text(encoding="utf-8"))
+
+    elif action == "install":
+        try:
+            builder.write()
+            changed = install_into_claude_md(config.shared_brain_path)
+        except PermissionError as e:
+            print(f"Error: cannot write ~/.claude/CLAUDE.md: {e}")
+            sys.exit(1)
+        if changed:
+            print(f"Installed @-import into {DEFAULT_CLAUDE_MD}")
+        else:
+            print(f"Already installed in {DEFAULT_CLAUDE_MD}")
+        print(
+            "Restart Claude Code CLI and the macOS app to pick up the brain."
+        )
+
+    elif action == "uninstall":
+        changed = uninstall_from_claude_md()
+        if changed:
+            print(f"Removed shared-brain block from {DEFAULT_CLAUDE_MD}")
+        else:
+            print(f"No shared-brain block found in {DEFAULT_CLAUDE_MD}")
+
+    elif action == "status":
+        info = brain_status(config.shared_brain_path)
+        for key, val in info.items():
+            print(f"{key}: {val}")
+
+
 def _cmd_thinking(args: argparse.Namespace) -> None:
     """Toggle extended thinking for all agents."""
     from claude_daemon.core.config import DaemonConfig
@@ -981,6 +1051,25 @@ def main() -> None:
     p_mcp_dis.add_argument("server", help="Server name")
     p_mcp_sub.add_parser("refresh", help="Regenerate tools.json from current env")
 
+    # shared-brain
+    p_sb = sub.add_parser(
+        "shared-brain",
+        help="Manage the shared brain digest (exposes daemon agents to Claude Code CLI/macOS)",
+    )
+    p_sb_sub = p_sb.add_subparsers(dest="sb_action")
+    p_sb_sub.add_parser("sync", help="Regenerate shared-brain.md now")
+    p_sb_sub.add_parser("show", help="Print current shared-brain.md")
+    p_sb_sub.add_parser(
+        "install",
+        help="Add @import to ~/.claude/CLAUDE.md so Claude Code CLI + macOS pick it up",
+    )
+    p_sb_sub.add_parser(
+        "uninstall", help="Remove the @import block from ~/.claude/CLAUDE.md"
+    )
+    p_sb_sub.add_parser(
+        "status", help="Show install state, last sync, file size",
+    )
+
     # thinking
     p_thinking = sub.add_parser("thinking", help="Toggle extended thinking for all agents")
     p_thinking.add_argument("toggle", choices=["on", "off"], help="on or off")
@@ -1030,6 +1119,7 @@ def main() -> None:
         "jobs": _cmd_jobs,
         "env": _cmd_env,
         "mcp": _cmd_mcp,
+        "shared-brain": _cmd_shared_brain,
         "thinking": _cmd_thinking,
         "effort": _cmd_effort,
         "backend": _cmd_backend,

@@ -107,6 +107,14 @@ class DaemonConfig:
     heartbeat_interval: int = 1800
     custom_jobs: list[dict] = field(default_factory=list)
 
+    # Shared brain — single markdown digest for Claude Code CLI / macOS app
+    shared_brain_enabled: bool = True
+    shared_brain_path: Path = field(
+        default_factory=lambda: paths.config_dir() / "shared-brain.md"
+    )
+    shared_brain_max_chars: int = 30_000
+    shared_brain_refresh_interval_s: int = 1800
+
     # MCP server pool
     disabled_mcp_servers: list[str] = field(default_factory=list)  # Explicitly disabled servers
 
@@ -198,6 +206,7 @@ class DaemonConfig:
         claude_cfg = yaml_data.get("claude", {})
         memory_cfg = yaml_data.get("memory", {})
         sched_cfg = yaml_data.get("scheduler", {})
+        sb_cfg = yaml_data.get("shared_brain", {})
         integ_cfg = yaml_data.get("integrations", {})
         tg_cfg = integ_cfg.get("telegram", {})
         dc_cfg = integ_cfg.get("discord", {})
@@ -269,6 +278,14 @@ class DaemonConfig:
             dream_cron=sched_cfg.get("dream_cron", "0 5 * * 0"),
             heartbeat_interval=int(sched_cfg.get("heartbeat_interval", 1800)),
             custom_jobs=sched_cfg.get("custom_jobs", []),
+            shared_brain_enabled=sb_cfg.get("enabled", True),
+            shared_brain_path=Path(os.path.expanduser(
+                sb_cfg.get("path", str(paths.config_dir() / "shared-brain.md"))
+            )),
+            shared_brain_max_chars=int(sb_cfg.get("max_chars", 30_000)),
+            shared_brain_refresh_interval_s=int(
+                sb_cfg.get("refresh_interval_s", 1800)
+            ),
             api_enabled=daemon_cfg.get("api_enabled", False),
             api_port=int(daemon_cfg.get("api_port", 8080)),
             api_bind=daemon_cfg.get("api_bind", "0.0.0.0"),

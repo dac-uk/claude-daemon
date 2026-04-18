@@ -276,6 +276,17 @@ class SchedulerEngine:
 
     async def _job_heartbeat(self) -> None:
         await self.daemon.heartbeat()
+        if self.config.shared_brain_enabled and self.daemon.agent_registry:
+            try:
+                from claude_daemon.agents.shared_brain import SharedBrainBuilder
+                SharedBrainBuilder(
+                    registry=self.daemon.agent_registry,
+                    shared_dir=self.config.data_dir / "shared",
+                    output_path=self.config.shared_brain_path,
+                    max_chars=self.config.shared_brain_max_chars,
+                ).write()
+            except Exception:
+                log.exception("Shared brain regen failed")
 
     async def _job_agent_heartbeat(
         self, agent_name: str, prompt: str, model: str,
