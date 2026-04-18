@@ -29,6 +29,7 @@ CC.connectWS = function() {
     try {
       var evt = JSON.parse(e.data);
       CC.handleEvent(evt);
+      if (CC.alertsHandleEvent) CC.alertsHandleEvent(evt);
     } catch (err) {
       console.error('[WS] Parse error', err);
     }

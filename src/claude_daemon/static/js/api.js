@@ -52,6 +52,9 @@ CC.fetchStatus = async function() {
     ? data.total_sessions : (data.active_sessions || 0);
   document.getElementById('statSessions').textContent = total;
   document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
+  if (typeof CC.setAlertsBadge === 'function') {
+    CC.setAlertsBadge(data.alert_count || 0);
+  }
   return data;
 };
 
