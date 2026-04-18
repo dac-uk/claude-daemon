@@ -293,30 +293,33 @@ async def _run_dream(daemon) -> None:
     print("Auto-dream complete.")
 
 
-def _cmd_update(args: argparse.Namespace) -> None:
-    """Check for and apply updates.
+INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/dac-uk/claude-daemon/main/install.sh"
 
-    With no flags (or --full), delegates to install.sh --update so the full
-    idempotent installer runs: git pull, pip install, service re-patch, and
-    all the "never overwrite .env / config.yaml / memory" protections.
-    With --check-only, only reports whether the repo has upstream changes
-    without applying them. With --fast, uses the in-process Updater (git
-    pull + pip install, no service re-patch) — handy when the daemon is
-    self-updating on a schedule.
+
+def _cmd_update(args: argparse.Namespace) -> None:
+    """Shorthand for:
+
+        curl -sSL https://raw.githubusercontent.com/dac-uk/claude-daemon/main/install.sh | bash -s -- --update
+
+    Fetches the latest install.sh from GitHub and pipes it into bash with --update.
+    The installer preserves .env, config.yaml, and agent memories.
+
+    With --local, uses the install.sh already on disk (next to the package).
+    With --check-only, reports whether the local checkout has upstream commits
+    but does not apply anything.
     """
     import subprocess as sp
     from pathlib import Path
 
-    # Locate the editable install root (contains install.sh)
     package_dir = Path(__file__).resolve().parent.parent.parent
-    install_script = package_dir / "install.sh"
+    local_script = package_dir / "install.sh"
     git_dir = package_dir / ".git"
 
     if args.check_only:
         if not git_dir.is_dir():
-            print("Not a git checkout; cannot check for updates.")
+            print("Not a git checkout; cannot check for updates without fetching.")
+            print(f"Run `claude-daemon update` to fetch the latest installer from {INSTALL_SCRIPT_URL}")
             return
-        # Fetch then compare HEAD to upstream
         try:
             sp.run(["git", "-C", str(package_dir), "fetch", "--quiet"], check=True, timeout=30)
             local = sp.check_output(
@@ -339,31 +342,50 @@ def _cmd_update(args: argparse.Namespace) -> None:
             print(f"Could not check upstream: {e}")
         return
 
-    if args.fast or not install_script.exists():
-        # Fast path: git pull + pip install only, no service re-patch
-        from claude_daemon.core.config import DaemonConfig
-        from claude_daemon.core.process import ProcessManager
-        from claude_daemon.updater.updater import Updater
-
-        config = DaemonConfig.load()
-        pm = ProcessManager(config)
-        updater = Updater(config, pm)
-        result = asyncio.run(updater.check_and_update(check_only=False))
-        print(result)
+    if args.local:
+        if not local_script.exists():
+            print(f"--local specified but install.sh not found at {local_script}.")
+            sys.exit(1)
+        print(f"Running local {local_script} --update ...\n")
+        try:
+            sp.run(["bash", str(local_script), "--update"], check=True)
+        except sp.CalledProcessError as e:
+            print(f"\nUpdate failed with exit code {e.returncode}.")
+            sys.exit(e.returncode)
+        except FileNotFoundError:
+            print("bash is not available on this system.")
+            sys.exit(1)
         return
 
-    # Full path: run install.sh --update. Preserves every .env / config.yaml /
-    # ~/.config/claude-daemon/agents/*/MEMORY.md entry.
-    print(f"Running {install_script} --update ...")
-    print("This will pull latest, reinstall the package, and re-patch the")
-    print("system service without touching your .env, config.yaml, or memories.\n")
+    # Default: curl latest install.sh and pipe to bash --update
+    print(f"Fetching latest installer from {INSTALL_SCRIPT_URL} ...")
+    print("(Preserves your .env, config.yaml, and agent memories.)\n")
     try:
-        sp.run(["bash", str(install_script), "--update"], check=True)
-    except sp.CalledProcessError as e:
-        print(f"\nUpdate failed with exit code {e.returncode}.")
-        sys.exit(e.returncode)
-    except FileNotFoundError:
-        print("bash is not available on this system; cannot run install.sh.")
+        curl = sp.Popen(
+            ["curl", "-fsSL", INSTALL_SCRIPT_URL],
+            stdout=sp.PIPE,
+        )
+        bash = sp.Popen(
+            ["bash", "-s", "--", "--update"],
+            stdin=curl.stdout,
+        )
+        if curl.stdout is not None:
+            curl.stdout.close()
+        bash.wait()
+        curl.wait()
+        if curl.returncode != 0:
+            print(f"\nFailed to download installer (curl exit {curl.returncode}).")
+            if local_script.exists():
+                print(f"Falling back to local {local_script} ...\n")
+                sp.run(["bash", str(local_script), "--update"], check=True)
+            else:
+                sys.exit(curl.returncode)
+        elif bash.returncode != 0:
+            print(f"\nUpdate failed with exit code {bash.returncode}.")
+            sys.exit(bash.returncode)
+    except FileNotFoundError as e:
+        missing = "curl" if "curl" in str(e) else "bash"
+        print(f"{missing} is not available on this system; cannot run update.")
         sys.exit(1)
 
 
@@ -926,12 +948,13 @@ def main() -> None:
     # update
     p_update = sub.add_parser(
         "update",
-        help="Pull latest and re-run the installer (preserves .env, config, memories)",
+        help="Fetch latest install.sh from GitHub and run it with --update "
+             "(preserves .env, config, memories)",
     )
     p_update.add_argument("--check-only", action="store_true",
-                          help="Only report whether updates are available; do not apply")
-    p_update.add_argument("--fast", action="store_true",
-                          help="Skip install.sh; just git pull + pip install in-process")
+                          help="Only report whether the local checkout is behind; do not apply")
+    p_update.add_argument("--local", action="store_true",
+                          help="Use the install.sh already on disk instead of fetching from GitHub")
 
     # install-service
     p_svc = sub.add_parser("install-service", help="Install OS service files")
