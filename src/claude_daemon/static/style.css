@@ -16,7 +16,7 @@
   --border-accent: rgba(0,240,255,0.25);
   --text: #e0e8f0;
   --text-secondary: #6a7a8e;
-  --text-dim: #3a4456;
+  --text-dim: #7a8699;
   --accent: #00f0ff;
   --green: #00ff88;
   --red: #ff2266;
@@ -484,14 +484,24 @@ html, body {
   transition: all 0.2s; }
 .ops-task:hover { border-color: var(--border-accent); }
 .ops-task.expanded { box-shadow: var(--glow-accent); }
-.ops-task-row { display: grid; grid-template-columns: 180px 1fr 110px 90px;
-  gap: 12px; padding: 12px 16px; cursor: pointer; align-items: center; }
-.ops-task-agent { font-weight: 600; font-size: 13px; }
-.ops-task-prompt { color: var(--text-secondary); font-size: 13px;
+.ops-task-head, .ops-task-row {
+  display: grid;
+  grid-template-columns: 80px minmax(180px, 1fr) minmax(140px, 1.3fr) 110px 140px 90px;
+  gap: 12px; padding: 10px 16px; align-items: center; }
+.ops-task-head { font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-secondary);
+  border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.ops-task-row { cursor: pointer; }
+.ops-task-id code { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.ops-task-title { font-weight: 600; font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-task-progress { color: var(--text-secondary); font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ops-task-status { text-transform: uppercase; font-size: 11px; font-weight: 700;
   letter-spacing: 0.5px; text-align: center; }
-.ops-task-cost { font-family: var(--mono); font-size: 12px; text-align: right;
+.ops-task-owner { font-weight: 600; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-task-when { font-family: var(--mono); font-size: 11px; text-align: right;
   color: var(--text-secondary); }
 
 .ops-task-detail { padding: 14px 16px; border-top: 1px solid var(--border);
