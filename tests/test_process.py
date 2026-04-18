@@ -147,6 +147,49 @@ async def test_auto_parallel_stream_replaces_active_session():
     # New sessions don't pass --session-id either — Claude Code generates its own
 
 
+# -- CLI arg construction --
+
+
+def test_build_args_stream_json_includes_verbose():
+    """Recent Claude CLI requires --verbose when --print + --output-format=stream-json.
+    Regression for the 2026-04-18 'SDK bridge stream timeout → CLI fallback fails' bug.
+    """
+    config = MagicMock()
+    config.max_concurrent_sessions = 5
+    config.max_budget_per_message = 0.5
+    config.claude_binary = "claude"
+    config.permission_mode = "auto"
+    config.default_model = None
+    config.mcp_config = None
+    pm = ProcessManager(config)
+
+    args, _ = pm._build_args(
+        prompt="hi", session_id=None, system_context=None,
+        max_budget=0.5, output_format="stream-json",
+    )
+    assert "--verbose" in args
+    # Order: --verbose must come with --print + --output-format, not after session args
+    assert args.index("--verbose") < args.index("--permission-mode") + 3
+
+
+def test_build_args_json_does_not_include_verbose():
+    """Buffered --output-format=json does not need --verbose; keep args minimal."""
+    config = MagicMock()
+    config.max_concurrent_sessions = 5
+    config.max_budget_per_message = 0.5
+    config.claude_binary = "claude"
+    config.permission_mode = "auto"
+    config.default_model = None
+    config.mcp_config = None
+    pm = ProcessManager(config)
+
+    args, _ = pm._build_args(
+        prompt="hi", session_id=None, system_context=None,
+        max_budget=0.5, output_format="json",
+    )
+    assert "--verbose" not in args
+
+
 # -- Model fallback / rate limit detection --
 
 

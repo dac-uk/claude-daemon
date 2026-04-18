@@ -343,15 +343,17 @@ class SDKBridgeManager:
             "context": effective_context or None,
         })
 
+        idle_timeout = self.config.sdk_bridge_idle_timeout_ms / 1000.0
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(
-                        queue.get(), timeout=self.config.process_timeout,
-                    )
+                    # Per-event idle timeout: any event (text delta, tool, result) resets the
+                    # clock, so long Opus replies complete as long as *something* is streaming.
+                    # A fully silent bridge fails over to CLI after idle_timeout seconds.
+                    event = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
                 except asyncio.TimeoutError:
                     yield ClaudeResponse.error(
-                        f"SDK bridge stream timeout ({self.config.process_timeout}s)"
+                        f"SDK bridge idle timeout ({idle_timeout:.0f}s without any event)"
                     )
                     return
 
