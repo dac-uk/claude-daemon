@@ -90,6 +90,14 @@ claude setup-token
 ~/.local/bin/claude-daemon chat
 ```
 
+### Step 4: Dashboard
+
+Open `http://localhost:8080/` in any browser. Localhost requests auto-set a 30-day session cookie — no login screen, no `?key=` dance. For remote access (LAN IP, Tailscale, etc.) either visit `http://<host>:8080/?key=<your_api_key>` once (same 30-day cookie) or use the login page that appears. The cookie is `HttpOnly` + `SameSite=Strict`; rotating `CLAUDE_DAEMON_API_KEY` invalidates every session.
+
+The dashboard is a single-page app: **Overview** (force graph), **Agents** (fleet cards), **Chat**, **Sessions**, **Operations** (tasks / budgets / goals / approvals), **Alerts** (unified triage), **Analytics**, and **Settings**. All views update live over WebSocket.
+
+External API callers continue to use `Authorization: Bearer $CLAUDE_DAEMON_API_KEY` — cookie auth is additive, not replacing.
+
 ### Updating
 
 ```bash
