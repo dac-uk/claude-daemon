@@ -614,6 +614,28 @@ class Orchestrator:
 
         model = agent.get_model(task_type)
 
+        # Persist a task_queue row tagged source='chat' so the Operations tab
+        # sees chat-initiated work, not just /spawn or /api/v1/tasks submissions.
+        chat_task_id: str | None = None
+        if self.store is not None:
+            try:
+                chat_task_id = uuid.uuid4().hex[:12]
+                self.store.create_task(
+                    chat_task_id, agent.name, prompt[:2000],
+                    task_type=task_type, platform=platform, user_id=user_id,
+                    source="chat", initial_status="running",
+                )
+                if self.hub:
+                    try:
+                        asyncio.create_task(
+                            self.hub.task_created(chat_task_id, agent.name, prompt[:200]),
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                log.debug("Could not persist chat task row")
+                chat_task_id = None
+
         if self.hub:
             await self.hub.agent_busy(agent.name, prompt)
 
@@ -668,6 +690,33 @@ class Orchestrator:
                     "Agent %s produced no usable response. is_error=%s result=%r",
                     agent.name, resp.is_error, (resp.result or "")[:200],
                 )
+            if chat_task_id and self.store is not None:
+                try:
+                    if resp.is_error:
+                        self.store.update_task_status(
+                            chat_task_id, "failed",
+                            error=resp.result or "Agent error",
+                            cost_usd=resp.cost or 0.0,
+                        )
+                    else:
+                        self.store.update_task_status(
+                            chat_task_id, "completed",
+                            result=(accumulated or resp.result or "")[:4000],
+                            cost_usd=resp.cost or 0.0,
+                        )
+                    if self.hub:
+                        try:
+                            asyncio.create_task(
+                                self.hub.task_update(
+                                    chat_task_id, agent.name,
+                                    "failed" if resp.is_error else "completed",
+                                    cost=resp.cost or 0.0,
+                                ),
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    log.debug("Could not update chat task row %s", chat_task_id)
             if self.hub:
                 await self.hub.agent_idle(agent.name, resp.cost, resp.duration_ms)
 
@@ -758,6 +807,7 @@ class Orchestrator:
                 self.store.create_task(
                     task_id, agent.name, prompt[:2000],
                     task_type=task_type, platform=platform, user_id=user_id,
+                    source="spawn",
                 )
             except Exception:
                 log.debug("Could not persist task %s to DB", task_id)

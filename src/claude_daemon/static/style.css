@@ -501,7 +501,7 @@ html, body {
 .ops-task.expanded { box-shadow: var(--glow-accent); }
 .ops-task-head, .ops-task-row {
   display: grid;
-  grid-template-columns: 80px minmax(180px, 1fr) minmax(140px, 1.3fr) 110px 140px 90px;
+  grid-template-columns: 80px minmax(180px, 1fr) minmax(140px, 1.3fr) 110px 90px 140px 90px;
   gap: 12px; padding: 10px 16px; align-items: center; }
 .ops-task-head { font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--text-secondary);
@@ -539,6 +539,22 @@ html, body {
 .ops-cancel-btn:hover { background: rgba(255,34,102,0.25);
   box-shadow: 0 0 12px rgba(255,34,102,0.25); }
 .ops-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Per-row source origin pill */
+.ops-task-source { display: flex; justify-content: flex-start; }
+.source-pill { font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid currentColor; background: rgba(0,0,0,0.25); }
+.source-pill-chat { color: var(--neon-cyan, #00e5ff); }
+.source-pill-spawn { color: var(--neon-purple, #b388ff); }
+.source-pill-api { color: var(--green, #6eff8a); }
+.source-pill-heartbeat { color: var(--orange, #ffa640); }
+
+/* Source filter chip row sits above the status chip row. Gives a clear
+   "origin" axis separate from the status axis. */
+.ops-filters-sources { margin-bottom: 6px; }
+.ops-src-chip.active { border-color: var(--accent); color: var(--accent);
+  background: rgba(0, 229, 255, 0.08); }
 
 .ops-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7);
   backdrop-filter: blur(4px); opacity: 0; pointer-events: none;
@@ -846,7 +862,7 @@ html, body {
     overflow-y: auto; }
   .chat-input-area textarea { font-size: 16px; /* prevents iOS zoom on focus */ }
 
-  /* Operations task grid: hide the ID + progress columns, keep the rest */
+  /* Operations task grid: hide the ID + progress + source columns, keep the rest */
   .ops-task-head, .ops-task-row {
     grid-template-columns: 1fr 90px 90px 70px;
     gap: 8px; padding: 10px 12px; font-size: 12px;
@@ -854,7 +870,9 @@ html, body {
   .ops-task-head span:nth-child(1),   /* ID */
   .ops-task-row  .ops-task-id,
   .ops-task-head span:nth-child(3),   /* Progress */
-  .ops-task-row  .ops-task-progress { display: none; }
+  .ops-task-row  .ops-task-progress,
+  .ops-task-head span:nth-child(5),   /* Source */
+  .ops-task-row  .ops-task-source { display: none; }
 
   /* Stream slide-in goes full-width on mobile */
   .stream-panel { width: 100%; right: -100%; }

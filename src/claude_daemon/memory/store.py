@@ -187,6 +187,12 @@ class ConversationStore:
                 log.info("Migrating schema: adding task_queue.goal_id column")
                 self._db.execute("ALTER TABLE task_queue ADD COLUMN goal_id INTEGER")
                 self._db.commit()
+            if "source" not in cols:
+                log.info("Migrating schema: adding task_queue.source column")
+                self._db.execute(
+                    "ALTER TABLE task_queue ADD COLUMN source TEXT NOT NULL DEFAULT 'api'"
+                )
+                self._db.commit()
         except sqlite3.OperationalError:
             # task_queue doesn't exist yet — schema.sql will create it on next startup
             pass
@@ -681,21 +687,23 @@ class ConversationStore:
         self, task_id: str, agent_name: str, prompt: str,
         task_type: str = "default", platform: str = "spawn", user_id: str = "local",
         metadata: str | None = None, goal_id: int | None = None,
-        initial_status: str = "pending",
+        initial_status: str = "pending", source: str = "api",
     ) -> None:
         """Insert a new task_queue row with the given initial status.
 
         ``initial_status`` lets callers create rows directly as
         ``pending_approval`` without a follow-up UPDATE that would briefly
         misclassify the row as ``pending``.
+        ``source`` tags the origin (api|chat|spawn|heartbeat) for Operations
+        filtering.
         """
         self._db.execute(
             "INSERT INTO task_queue "
             "(id, agent_name, prompt, status, task_type, platform, user_id, "
-            "metadata, goal_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "metadata, goal_id, source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task_id, agent_name, prompt, initial_status, task_type, platform,
-             user_id, metadata, goal_id),
+             user_id, metadata, goal_id, source),
         )
         self._db.commit()
 

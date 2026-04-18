@@ -36,6 +36,7 @@ class TaskSubmission:
     platform: str = "api"
     goal_id: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    source: str = "api"  # api | chat | spawn | heartbeat
 
 
 @dataclass
@@ -142,6 +143,7 @@ class TaskAPI:
                 task_id, agent_name, req.prompt[:2000],
                 task_type=req.task_type, platform=req.platform, user_id=req.user_id,
                 metadata=metadata_json, goal_id=req.goal_id,
+                source=req.source,
             )
         except Exception:
             log.exception("Could not persist task %s to DB", task_id)
@@ -205,6 +207,7 @@ class TaskAPI:
                 task_type=req.task_type, platform=req.platform,
                 user_id=req.user_id, metadata=metadata_json,
                 goal_id=req.goal_id, initial_status="pending_approval",
+                source=req.source,
             )
         except Exception:
             log.exception("Could not persist approval task %s", task_id)
