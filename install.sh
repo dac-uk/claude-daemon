@@ -164,25 +164,28 @@ elif [ -f "$INSTALL_DIR/pyproject.toml" ] && grep -q 'claude-daemon' "$INSTALL_D
     else
         if grep -q "would be overwritten" /tmp/cd-pull-err; then
             dirty=$(git -C "$REPO_DIR" diff --name-only 2>/dev/null | paste -sd ", " -)
-            warn "Local changes conflict with update: ${dirty:-unknown files}"
+            # Print the conflict as a transient notice (not via warn) — the
+            # final classification (warn vs info) depends on the outcome below.
+            printf "${YELLOW}[warn]${NC}  Local changes conflict with update: %s\n" "${dirty:-unknown files}"
             # Use /dev/tty directly so this works even when the script is
             # piped to bash via `curl | bash -s --` (stdin is the pipe, not
-            # the terminal). Fall back to [ -t 0 ] if /dev/tty is unavailable.
+            # the terminal).
             if [ -r /dev/tty ] && [ -w /dev/tty ]; then
                 printf "  Overwrite local code changes with repository code? (Y/N) " > /dev/tty
                 read -r answer < /dev/tty
                 if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
                     git -C "$REPO_DIR" checkout -- . 2>/dev/null
                     if git -C "$REPO_DIR" pull --ff-only; then
+                        info "Overwrote local changes: ${dirty:-unknown files}"
                         ok "Source updated to $(git -C "$REPO_DIR" rev-parse --short HEAD)"
                     else
-                        warn "git pull still failed after reset — using existing code"
+                        warn "git pull still failed after reset — using existing code (conflicting: ${dirty:-unknown files})"
                     fi
                 else
-                    warn "Skipped update — local changes preserved"
+                    warn "Skipped update — local changes preserved: ${dirty:-unknown files}"
                 fi
             else
-                warn "Non-interactive mode — skipping update (run install.sh manually to resolve)"
+                warn "Non-interactive mode — skipping update (local changes: ${dirty:-unknown files}; run install.sh manually to resolve)"
             fi
         else
             warn "git pull failed:"
