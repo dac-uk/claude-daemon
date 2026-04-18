@@ -241,7 +241,8 @@ CC._opsRender = function() {
           '<span class="ops-task-progress">' + CC.escHtml(progress) + '</span>' +
           '<span class="ops-task-status" style="color:' + statusCol + '">' +
             t.status + '</span>' +
-          '<span class="ops-task-owner" style="color:' + agentColor + '">' +
+          '<span class="ops-task-owner" data-agent="' + agent +
+            '" style="color:' + agentColor + '" title="Open ' + agent + ' detail">' +
             (CC.AGENT_EMOJI[agent] || '') + ' ' + agent +
           '</span>' +
           '<span class="ops-task-when" title="' + CC.escHtml(whenAbs) + '">' +
@@ -317,7 +318,14 @@ CC._opsBindEvents = function() {
   }
 
   el.querySelectorAll('.ops-task-row').forEach(function(row) {
-    row.addEventListener('click', function() {
+    row.addEventListener('click', function(ev) {
+      // Owner-span click opens the agent detail panel instead of expanding.
+      var ownerEl = ev.target.closest('.ops-task-owner');
+      if (ownerEl && ownerEl.dataset.agent && CC.openAgentDetail) {
+        ev.stopPropagation();
+        CC.openAgentDetail(ownerEl.dataset.agent);
+        return;
+      }
       var tid = row.parentElement.dataset.taskId;
       CC.opsState.expandedId = CC.opsState.expandedId === tid ? null : tid;
       CC._opsRender();

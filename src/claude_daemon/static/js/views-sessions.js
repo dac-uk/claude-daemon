@@ -26,6 +26,21 @@ CC.openSessionsDrilldown = async function() {
   CC._sessRender();
 };
 
+/* Short-circuit entry used by click-handlers on agent names anywhere
+ * in the dashboard: open the modal pre-loaded with that agent's
+ * session list (chat history + spawned tasks). */
+CC.openAgentDetail = async function(name) {
+  if (!name) return;
+  var modal = document.getElementById('sessModal');
+  var overlay = document.getElementById('sessOverlay');
+  modal.classList.add('open'); overlay.classList.add('open');
+  if (!CC.sessState.summary) {
+    CC.cache['/api/sessions/summary'] = null;
+    CC.sessState.summary = await CC.api('/api/sessions/summary');
+  }
+  await CC._sessOpenAgent(name);
+};
+
 CC.closeSessionsDrilldown = function() {
   document.getElementById('sessModal').classList.remove('open');
   document.getElementById('sessOverlay').classList.remove('open');

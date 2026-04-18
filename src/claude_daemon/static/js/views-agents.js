@@ -11,18 +11,37 @@ CC.renderAgentsView = function() {
     return a.name.localeCompare(b.name);
   });
 
-  el.innerHTML = agents.map(function(a) {
+  el.innerHTML = agents.map(CC._renderAgentCardHtml || function(){return '';}).join('');
+
+  // Re-bind click handlers after re-render.
+  el.querySelectorAll('.agent-card').forEach(function(card) {
+    card.addEventListener('click', function(ev) {
+      // Ignore clicks on the explicit "Live" button which has its own handler.
+      if (ev.target.closest('.agent-card-live')) return;
+      if (CC.openAgentDetail) CC.openAgentDetail(card.dataset.agent);
+    });
+  });
+  el.querySelectorAll('.agent-card-live').forEach(function(btn) {
+    btn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      if (CC.openStream) CC.openStream(btn.dataset.stream);
+    });
+  });
+};
+
+CC._renderAgentCardHtml = function(a) {
     var statusClass = a.status === 'busy' ? 'status-busy' : 'status-idle';
     var statusLabel = a.status === 'busy' ? 'BUSY' : 'IDLE';
     var bg = a.color + '18';
     var orchBadge = a.is_orchestrator ? ' <span style="font-size:9px;color:var(--orange);font-weight:600">ORCHESTRATOR</span>' : '';
 
-    return '<div class="agent-card glass" onclick="CC.openStream(\'' + a.name + '\')" style="cursor:pointer">' +
+    return '<div class="agent-card glass" data-agent="' + a.name + '" style="cursor:pointer">' +
       '<div class="accent-bar" style="background:' + a.color + '"></div>' +
       '<div class="agent-card-header">' +
         '<div class="avatar" style="background:' + bg + '">' + (a.emoji || '') + '</div>' +
         '<div class="info"><h3>' + a.name.charAt(0).toUpperCase() + a.name.slice(1) + orchBadge + '</h3>' +
         '<p>' + (a.role || 'Agent') + '</p></div>' +
+        '<button class="agent-card-live" data-stream="' + a.name + '" title="Live output stream">Live</button>' +
       '</div>' +
       '<div class="status-line"><span class="status-badge ' + statusClass + '">' + statusLabel + '</span>' +
         (a.status === 'busy' ? '<span style="font-size:11px;color:var(--text-secondary);margin-left:4px">' + CC.escHtml((a.currentPrompt || '').substring(0, 50)) + '</span>' : '') +
@@ -33,5 +52,4 @@ CC.renderAgentsView = function() {
         '<dt>MCP</dt><dd>' + CC.formatMcpHealth(a.mcp_health) + '</dd>' +
         '<dt>Heartbeats</dt><dd>' + (a.heartbeat_tasks || 0) + '</dd>' +
       '</dl></div>';
-  }).join('');
 };

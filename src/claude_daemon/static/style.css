@@ -246,6 +246,14 @@ html, body {
 .agent-card-header .avatar { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
 .agent-card-header .info h3 { font-size: 15px; font-weight: 600; }
 .agent-card-header .info p { font-size: 12px; color: var(--text-secondary); }
+.agent-card-header .info { flex: 1; }
+.agent-card-live { background: rgba(0,240,255,0.08); color: var(--accent);
+  border: 1px solid var(--border-accent); border-radius: 999px;
+  padding: 3px 10px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
+  transition: all 0.15s; }
+.agent-card-live:hover { background: rgba(0,240,255,0.2);
+  box-shadow: 0 0 10px rgba(0,240,255,0.3); }
 .agent-card .status-line { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 8px; }
 .agent-card .status-badge {
   font-size: 10px; font-weight: 600; padding: 2px 8px;
@@ -505,7 +513,10 @@ html, body {
 .ops-task-status { text-transform: uppercase; font-size: 11px; font-weight: 700;
   letter-spacing: 0.5px; text-align: center; }
 .ops-task-owner { font-weight: 600; font-size: 12px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; text-decoration: underline dotted transparent;
+  transition: text-decoration-color 0.15s; }
+.ops-task-owner:hover { text-decoration-color: currentColor; }
 .ops-task-when { font-family: var(--mono); font-size: 11px; text-align: right;
   color: var(--text-secondary); }
 
