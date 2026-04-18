@@ -296,6 +296,82 @@ async def _run_dream(daemon) -> None:
 INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/dac-uk/claude-daemon/main/install.sh"
 
 
+def _stop_daemon_for_update() -> None:
+    """Gracefully stop a running daemon before an update.
+
+    Best-effort: tries launchd (macOS), systemd (Linux), then SIGTERM via
+    PID file. Waits briefly for the process to exit so files aren't held
+    open during `pip install`. Never raises — the update proceeds either
+    way, but with clear status messages.
+    """
+    import platform
+    import subprocess as sp
+    import time
+
+    from claude_daemon.utils.paths import pid_path
+
+    system = platform.system()
+    stopped = False
+
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.claude-daemon.plist"
+        if plist.exists():
+            listing = sp.run(
+                ["launchctl", "list"], capture_output=True, text=True,
+            )
+            if listing.returncode == 0 and "com.claude-daemon" in listing.stdout:
+                print("Stopping Claude Daemon (launchctl unload) ...")
+                result = sp.run(
+                    ["launchctl", "unload", str(plist)],
+                    capture_output=True, text=True,
+                )
+                if result.returncode == 0:
+                    print("  Unloaded.")
+                    stopped = True
+                else:
+                    print(f"  launchctl unload failed: {result.stderr.strip()}")
+    elif system == "Linux":
+        check = sp.run(
+            ["systemctl", "--user", "is-active", "claude-daemon"],
+            capture_output=True, text=True,
+        )
+        if check.returncode == 0 and check.stdout.strip() == "active":
+            print("Stopping Claude Daemon (systemctl --user stop) ...")
+            result = sp.run(
+                ["systemctl", "--user", "stop", "claude-daemon"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print("  Stopped.")
+                stopped = True
+            else:
+                print(f"  systemctl stop failed: {result.stderr.strip()}")
+
+    # Fallback: SIGTERM via PID file (covers --foreground or non-service setups)
+    pf = pid_path()
+    if pf.exists():
+        try:
+            pid = int(pf.read_text().strip())
+            os.kill(pid, 0)  # probe
+            if not stopped:
+                print(f"Stopping Claude Daemon (SIGTERM to PID {pid}) ...")
+                os.kill(pid, signal.SIGTERM)
+            # Wait up to 10s for graceful exit
+            for _ in range(20):
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.5)
+                except ProcessLookupError:
+                    print("  Daemon process exited.")
+                    pf.unlink(missing_ok=True)
+                    return
+            print(f"  Daemon PID {pid} still running after 10s; continuing anyway.")
+        except ProcessLookupError:
+            pf.unlink(missing_ok=True)
+        except (ValueError, PermissionError):
+            pass
+
+
 def _cmd_update(args: argparse.Namespace) -> None:
     """Shorthand for:
 
@@ -346,7 +422,8 @@ def _cmd_update(args: argparse.Namespace) -> None:
         if not local_script.exists():
             print(f"--local specified but install.sh not found at {local_script}.")
             sys.exit(1)
-        print(f"Running local {local_script} --update ...\n")
+        _stop_daemon_for_update()
+        print(f"\nRunning local {local_script} --update ...\n")
         try:
             sp.run(["bash", str(local_script), "--update"], check=True)
         except sp.CalledProcessError as e:
@@ -360,6 +437,7 @@ def _cmd_update(args: argparse.Namespace) -> None:
     # Default: curl latest install.sh and pipe to bash --update
     print(f"Fetching latest installer from {INSTALL_SCRIPT_URL} ...")
     print("(Preserves your .env, config.yaml, and agent memories.)\n")
+    _stop_daemon_for_update()
     try:
         curl = sp.Popen(
             ["curl", "-fsSL", INSTALL_SCRIPT_URL],
