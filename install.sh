@@ -165,9 +165,12 @@ elif [ -f "$INSTALL_DIR/pyproject.toml" ] && grep -q 'claude-daemon' "$INSTALL_D
         if grep -q "would be overwritten" /tmp/cd-pull-err; then
             dirty=$(git -C "$REPO_DIR" diff --name-only 2>/dev/null | paste -sd ", " -)
             warn "Local changes conflict with update: ${dirty:-unknown files}"
-            if [ -t 0 ]; then
-                printf "  Overwrite local code changes with repository code? (Y/N) "
-                read -r answer
+            # Use /dev/tty directly so this works even when the script is
+            # piped to bash via `curl | bash -s --` (stdin is the pipe, not
+            # the terminal). Fall back to [ -t 0 ] if /dev/tty is unavailable.
+            if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+                printf "  Overwrite local code changes with repository code? (Y/N) " > /dev/tty
+                read -r answer < /dev/tty
                 if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
                     git -C "$REPO_DIR" checkout -- . 2>/dev/null
                     if git -C "$REPO_DIR" pull --ff-only; then
