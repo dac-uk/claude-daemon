@@ -820,7 +820,7 @@ class ConversationStore:
         rows = self._db.execute(
             "SELECT category, root_cause, lesson, severity, COUNT(*) as occurrences "
             "FROM failure_analyses "
-            "WHERE timestamp >= datetime('now', ?)"
+            "WHERE timestamp >= datetime('now', ?) "
             "GROUP BY error_hash ORDER BY occurrences DESC LIMIT 20",
             (f"-{days} days",),
         ).fetchall()

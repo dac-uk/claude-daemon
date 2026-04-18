@@ -196,7 +196,7 @@ class Orchestrator:
 
         return None, message
 
-    async def auto_route(self, message: str) -> Agent:
+    async def auto_route(self, message: str) -> Agent | None:
         """Use the orchestrator agent to decide which agent handles a message.
 
         Falls back to orchestrator itself if routing fails.
