@@ -699,12 +699,6 @@ html, body {
   color: var(--text-secondary); }
 .sess-agent-counts .sess-agent-total { color: var(--accent); font-weight: 600; }
 .sess-list { display: flex; flex-direction: column; gap: 6px; }
-.sess-row { display: grid; gap: 10px; align-items: center;
-  grid-template-columns: 60px 1fr 70px 80px 90px;
-  padding: 10px 14px; background: rgba(255,255,255,0.02);
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  color: var(--text); cursor: pointer; font-size: 12px;
-  text-align: left; transition: all 0.15s; }
 .sess-row:hover { background: rgba(0,240,255,0.05);
   border-color: var(--border-accent); }
 .sess-kind-badge { padding: 2px 6px; border-radius: 999px;
@@ -731,6 +725,77 @@ html, body {
   background: rgba(0,0,0,0.3); font-size: 12px; color: var(--text);
   max-height: 200px; overflow-y: auto; word-break: break-word; }
 .sess-task-error { color: var(--red); border: 1px solid rgba(255,34,102,0.3); }
+
+/* Session panel: agent header */
+.sess-agent-header { margin-bottom: 18px; }
+.sess-agent-info { display: flex; gap: 12px; align-items: center;
+  margin-bottom: 12px; font-size: 13px; color: var(--text-secondary); }
+.sess-agent-role { font-weight: 600; color: var(--text); }
+.sess-agent-model { font-family: var(--mono); font-size: 11px;
+  padding: 2px 8px; background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border); border-radius: 999px; }
+.sess-agent-stats { display: flex; gap: 20px; }
+.sess-stat { display: flex; flex-direction: column; align-items: center;
+  padding: 10px 16px; background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); flex: 1; }
+.sess-stat-val { font-size: 18px; font-weight: 700; font-family: 'Orbitron', var(--font);
+  color: var(--accent); }
+.sess-stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-top: 2px; }
+
+/* Session panel: categories */
+.sess-category { margin-bottom: 16px; }
+.sess-category-header { display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border); }
+.sess-category-label { font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
+.sess-category-count { font-size: 11px; font-family: var(--mono);
+  padding: 1px 6px; border-radius: 999px;
+  background: rgba(0,240,255,0.1); color: var(--accent); }
+.sess-category-empty { font-size: 12px; color: var(--text-dim);
+  padding: 8px 14px; font-style: italic; }
+
+/* Session panel: empty state */
+.sess-empty-state { text-align: center; padding: 32px 20px; }
+.sess-empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.6; }
+.sess-empty-title { font-size: 15px; font-weight: 700; color: var(--text);
+  margin-bottom: 6px; }
+.sess-empty-sub { font-size: 12px; color: var(--text-secondary);
+  max-width: 320px; margin: 0 auto; line-height: 1.5; }
+
+/* Session panel: loading spinner */
+.sess-loading { display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 40px 20px; gap: 12px;
+  color: var(--text-secondary); font-size: 13px; }
+.sess-spinner { width: 24px; height: 24px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: sess-spin 0.8s linear infinite; }
+@keyframes sess-spin { to { transform: rotate(360deg); } }
+
+/* Session panel: active dot + status pills */
+.sess-active-dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green); box-shadow: 0 0 6px var(--green);
+  display: inline-block; flex-shrink: 0; }
+.sess-status-pill { font-size: 10px; padding: 2px 8px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+  background: rgba(138,148,158,0.15); color: var(--text-secondary); }
+.sess-status-active { background: rgba(63,185,80,0.15); color: var(--green); }
+.sess-detail-header { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+.sess-task-pill { font-size: 10px; padding: 2px 8px; border-radius: 999px;
+  font-weight: 600; text-transform: uppercase; }
+.sess-task-status-completed { background: rgba(63,185,80,0.15); color: var(--green); }
+.sess-task-status-failed { background: rgba(255,34,102,0.15); color: var(--red); }
+.sess-task-status-running { background: rgba(0,240,255,0.15); color: var(--accent); }
+.sess-task-status-pending { background: rgba(210,153,34,0.15); color: var(--orange); }
+
+/* Session row: accommodate active dot */
+.sess-row { display: grid; gap: 10px; align-items: center;
+  grid-template-columns: auto 60px 1fr 70px 80px 90px;
+  padding: 10px 14px; background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); cursor: pointer; font-size: 12px;
+  text-align: left; transition: all 0.15s; }
 
 /* ── Mobile / iOS (≤ 768px) ─────────────────────────────────── */
 @media (max-width: 768px) {
