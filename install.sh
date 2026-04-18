@@ -159,8 +159,35 @@ if [ -f "$SCRIPT_DIR/pyproject.toml" ] && grep -q 'claude-daemon' "$SCRIPT_DIR/p
 elif [ -f "$INSTALL_DIR/pyproject.toml" ] && grep -q 'claude-daemon' "$INSTALL_DIR/pyproject.toml" 2>/dev/null; then
     REPO_DIR="$INSTALL_DIR"
     info "Updating existing clone at $REPO_DIR"
-    git -C "$REPO_DIR" pull --ff-only || warn "git pull failed — using existing code"
-    ok "Source updated"
+    if git -C "$REPO_DIR" pull --ff-only 2>/tmp/cd-pull-err; then
+        ok "Source updated to $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+    else
+        if grep -q "would be overwritten" /tmp/cd-pull-err; then
+            dirty=$(git -C "$REPO_DIR" diff --name-only 2>/dev/null | paste -sd ", " -)
+            warn "Local changes conflict with update: ${dirty:-unknown files}"
+            if [ -t 0 ]; then
+                printf "  Overwrite local code changes with repository code? (Y/N) "
+                read -r answer
+                if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+                    git -C "$REPO_DIR" checkout -- . 2>/dev/null
+                    if git -C "$REPO_DIR" pull --ff-only; then
+                        ok "Source updated to $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+                    else
+                        warn "git pull still failed after reset — using existing code"
+                    fi
+                else
+                    warn "Skipped update — local changes preserved"
+                fi
+            else
+                warn "Non-interactive mode — skipping update (run install.sh manually to resolve)"
+            fi
+        else
+            warn "git pull failed:"
+            sed 's/^/  /' /tmp/cd-pull-err >&2
+            warn "Using existing code"
+        fi
+    fi
+    rm -f /tmp/cd-pull-err
 else
     info "Cloning to $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
