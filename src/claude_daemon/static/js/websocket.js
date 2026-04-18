@@ -49,8 +49,7 @@ CC.handleEvent = function(evt) {
       } else {
         ag.cost += evt.cost || 0;
         ag._wsUpdated = true;
-        CC.totalCost += evt.cost || 0;
-        document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
+        CC.fetchCosts();
         var dur = evt.duration_ms ? (evt.duration_ms / 1000).toFixed(1) + 's' : '';
         var cost = evt.cost ? ' $' + evt.cost.toFixed(4) : '';
         CC.addFeed(evt.agent, 'idle', 'Done ' + dur + cost);

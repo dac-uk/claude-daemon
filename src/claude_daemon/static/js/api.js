@@ -59,15 +59,18 @@ CC.fetchStatus = async function() {
 };
 
 CC.fetchCosts = async function() {
+  CC.cache['/api/costs' + JSON.stringify({})] = null;
   var data = await CC.api('/api/costs');
   if (!data) return;
   CC.totalCost = data.total_usd || 0;
   document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
-  // Update per-agent cost (unless WS has already pushed a live value).
   if (data.by_agent) {
     Object.keys(data.by_agent).forEach(function(name) {
       var ag = CC.agents[name];
-      if (ag && !ag._wsUpdated) ag.cost = data.by_agent[name];
+      if (ag) {
+        ag.cost = data.by_agent[name];
+        ag._wsUpdated = false;
+      }
     });
   }
   return data;
