@@ -146,6 +146,8 @@ class HttpApi:
         self._app.router.add_get("/api/daemon/status", self._handle_daemon_status)
         self._app.router.add_post("/api/daemon/restart", self._handle_daemon_restart)
         self._app.router.add_post("/api/daemon/stop", self._handle_daemon_stop)
+        self._app.router.add_get("/api/alerts", self._handle_alerts)
+        self._app.router.add_get("/api/logs/tail", self._handle_logs_tail)
 
         # Dashboard: WebSocket + static serving
         if self.daemon.config.dashboard_enabled:
@@ -312,6 +314,14 @@ class HttpApi:
                 total_sessions = self.daemon.store.session_summary()["total"]
             except Exception:
                 log.exception("cost snapshot / session summary failed in /api/status")
+        alert_count = 0
+        try:
+            alert_count = len([
+                a for a in self._compute_alerts(limit=200)
+                if a.get("severity") in ("critical", "error", "warning")
+            ])
+        except Exception:
+            log.exception("alert_count compute failed in /api/status")
         return web.json_response({
             "status": "running",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -323,6 +333,7 @@ class HttpApi:
             "total_sessions": total_sessions,
             "total_messages": stats.get("total_messages", 0),
             "total_cost": cost_total,
+            "alert_count": alert_count,
         })
 
     async def _handle_costs(self, request: web.Request) -> web.Response:
@@ -1134,6 +1145,222 @@ class HttpApi:
             "status": "ok",
             "message": "Stop requested. Daemon is shutting down.",
         })
+
+    # -- Alerts & logs --
+
+    SEV_ORDER = {"critical": 0, "error": 1, "warning": 2, "info": 3}
+
+    def _compute_alerts(self, limit: int = 200) -> list[dict]:
+        """Aggregate alerts from failed tasks, pending approvals, budgets,
+        failure analyses, MCP health, and recent log WARNINGs/ERRORs.
+
+        Returns a sorted, deduped list of alert dicts.
+        """
+        alerts: list[dict] = []
+        store = self.daemon.store
+
+        # 1. Failed tasks (last 50)
+        if store:
+            try:
+                for t in store.get_recent_tasks(limit=50):
+                    if t.get("status") != "failed":
+                        continue
+                    err = (t.get("error") or "").strip()
+                    is_orphan = "orphan" in err.lower()
+                    agent_name = t.get("agent_name") or t.get("agent")
+                    alerts.append({
+                        "id": f"task-{t['id']}",
+                        "severity": "critical" if is_orphan else "error",
+                        "source": "orphan_task" if is_orphan else "failed_task",
+                        "title": f"Task failed on {agent_name or 'agent'}",
+                        "message": err or "Task exited with no error message",
+                        "timestamp": t.get("completed_at") or t.get("created_at"),
+                        "agent": agent_name,
+                        "entity_id": t["id"],
+                        "actions": [
+                            {"label": "View", "action": "view_task", "entity": t["id"]},
+                        ],
+                    })
+            except Exception:
+                log.exception("alerts: failed_tasks source")
+
+        # 2. Failure analyses (last 20)
+        if store:
+            try:
+                for f in store.get_recent_failures(limit=20):
+                    sev = (f.get("severity") or "medium").lower()
+                    mapped = {"high": "error", "medium": "warning", "low": "info"}.get(sev, "warning")
+                    alerts.append({
+                        "id": f"fail-{f.get('id') or f.get('error_hash')}",
+                        "severity": mapped,
+                        "source": "failure_analysis",
+                        "title": f"{(f.get('category') or 'failure').title()} on {f.get('agent_name') or '?'}",
+                        "message": f.get("root_cause") or f.get("lesson") or "(no detail)",
+                        "timestamp": f.get("timestamp"),
+                        "agent": f.get("agent_name"),
+                        "entity_id": f.get("id"),
+                    })
+            except Exception:
+                log.exception("alerts: failure_analyses source")
+
+        # 3. Pending approvals
+        approvals_store = self._get_approvals_store()
+        if approvals_store:
+            try:
+                for a in approvals_store.list_pending():
+                    alerts.append({
+                        "id": f"approval-{a['id']}",
+                        "severity": "warning",
+                        "source": "pending_approval",
+                        "title": "Approval required",
+                        "message": a.get("reason") or "Task waiting on human approval",
+                        "timestamp": a.get("created_at"),
+                        "entity_id": a["id"],
+                        "actions": [
+                            {"label": "Approve", "action": "approve", "entity": a["id"]},
+                            {"label": "Reject", "action": "reject", "entity": a["id"]},
+                        ],
+                    })
+            except Exception:
+                log.exception("alerts: pending_approvals source")
+
+        # 4. Budget warnings / criticals
+        budget_store = self._get_budget_store()
+        if budget_store:
+            try:
+                for b in budget_store.list_all(enabled_only=True):
+                    limit_usd = float(b.get("limit_usd") or 0)
+                    spend = float(b.get("current_spend") or 0)
+                    if limit_usd <= 0:
+                        continue
+                    ratio = spend / limit_usd
+                    if ratio >= 1.0:
+                        sev = "critical"
+                        msg = f"Budget exhausted: ${spend:.4f} / ${limit_usd:.2f}"
+                    elif ratio >= 0.8:
+                        sev = "warning"
+                        msg = f"Budget at {int(ratio * 100)}%: ${spend:.4f} / ${limit_usd:.2f}"
+                    else:
+                        continue
+                    scope_label = b.get("scope", "?")
+                    if b.get("scope_value"):
+                        scope_label = f"{scope_label}:{b['scope_value']}"
+                    alerts.append({
+                        "id": f"budget-{b['id']}",
+                        "severity": sev,
+                        "source": "budget",
+                        "title": f"Budget {scope_label} ({b.get('period', '?')})",
+                        "message": msg,
+                        "timestamp": None,
+                        "entity_id": b["id"],
+                    })
+            except Exception:
+                log.exception("alerts: budget source")
+
+        # 5. MCP health per agent
+        registry = self.daemon.agent_registry
+        if registry:
+            for agent in registry.values():
+                try:
+                    health = agent.check_mcp_health() if agent.mcp_config_path else {}
+                except Exception:
+                    continue
+                for server, status in (health or {}).items():
+                    status_str = str(status).lower()
+                    if status_str in ("ok", "configured", "healthy", "available"):
+                        continue
+                    alerts.append({
+                        "id": f"mcp-{agent.name}-{server}",
+                        "severity": "warning",
+                        "source": "mcp_health",
+                        "title": f"MCP {server} unhealthy on {agent.name}",
+                        "message": str(status),
+                        "timestamp": None,
+                        "agent": agent.name,
+                        "entity_id": f"{agent.name}:{server}",
+                    })
+
+        # 6. Daemon log tail (WARNING+)
+        try:
+            from claude_daemon.utils.logs import default_log_path, tail_log
+            log_entries = tail_log(default_log_path(), lines=100, min_level="WARNING")
+            for entry in log_entries:
+                level = entry["level"]
+                sev = "critical" if level in ("ERROR", "CRITICAL") else "warning"
+                ts = entry["timestamp"]
+                digest = hashlib.sha1(
+                    (ts + entry["message"]).encode("utf-8"),
+                ).hexdigest()[:12]
+                alerts.append({
+                    "id": f"log-{digest}",
+                    "severity": sev,
+                    "source": "daemon_log",
+                    "title": f"{level} in {entry['logger']}",
+                    "message": entry["message"],
+                    "timestamp": ts,
+                    "traceback": entry.get("traceback"),
+                })
+        except Exception:
+            log.exception("alerts: daemon_log source")
+
+        # Dedupe by id (last write wins — different sources shouldn't collide
+        # but this guards against accidental duplication).
+        seen: dict[str, dict] = {}
+        for a in alerts:
+            seen[a["id"]] = a
+        unique = list(seen.values())
+
+        def _ts_key(a: dict) -> str:
+            # Sort by timestamp descending within the same severity bucket.
+            # Empty/None timestamps sort after timestamped ones by inverting.
+            return a.get("timestamp") or ""
+
+        unique.sort(key=lambda a: (
+            self.SEV_ORDER.get(a.get("severity"), 99),
+            _ts_key(a),
+        ), reverse=False)
+        # Within each severity, flip timestamps so newer comes first.
+        unique.sort(key=lambda a: _ts_key(a), reverse=True)
+        unique.sort(key=lambda a: self.SEV_ORDER.get(a.get("severity"), 99))
+        return unique[:limit]
+
+    async def _handle_alerts(self, request: web.Request) -> web.Response:
+        """GET /api/alerts — aggregated dashboard alerts.
+
+        Query params:
+          severity: filter to exactly this severity (critical|error|warning|info)
+          since: iso timestamp; drop entries older than this
+          limit: max items (default 200, max 500)
+        """
+        severity = request.query.get("severity") or None
+        since = request.query.get("since") or None
+        limit = self._qint(request, "limit", 200, maximum=500)
+        try:
+            alerts = self._compute_alerts(limit=limit * 2 if severity else limit)
+        except Exception:
+            log.exception("alerts aggregator failed")
+            return web.json_response({"alerts": [], "error": "aggregator failed"}, status=500)
+        if severity:
+            alerts = [a for a in alerts if a.get("severity") == severity]
+        if since:
+            alerts = [
+                a for a in alerts
+                if a.get("timestamp") is None or a["timestamp"] >= since
+            ]
+        return web.json_response({"alerts": alerts[:limit]})
+
+    async def _handle_logs_tail(self, request: web.Request) -> web.Response:
+        """GET /api/logs/tail?lines=N&level=LEVEL&since=ISO."""
+        from claude_daemon.utils.logs import default_log_path, tail_log
+        lines = self._qint(request, "lines", 200, maximum=2000)
+        level = (request.query.get("level") or "WARNING").upper()
+        since = request.query.get("since") or None
+        try:
+            entries = tail_log(default_log_path(), lines=lines, min_level=level, since=since)
+        except Exception:
+            log.exception("logs tail failed")
+            return web.json_response({"lines": [], "error": "tail failed"}, status=500)
+        return web.json_response({"lines": entries})
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Receive external webhooks and route to appropriate agent.

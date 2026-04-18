@@ -29,6 +29,10 @@
       <button class="nav-btn" data-view="operations" title="Operations">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </button>
+      <button class="nav-btn nav-btn-alerts" data-view="alerts" title="Alerts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span class="nav-badge" id="alertsBadge" hidden></span>
+      </button>
       <button class="nav-btn" data-view="analytics" title="Analytics">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
       </button>
@@ -124,6 +128,30 @@
 
       <!-- ═══ OPERATIONS ═══ -->
       <div class="view" id="view-operations"></div>
+
+      <!-- ═══ ALERTS ═══ -->
+      <div class="view" id="view-alerts">
+        <div class="alerts-header">
+          <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Alerts &amp; Issues</h2>
+          <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px">
+            Everything that needs your attention — failed tasks, pending approvals, budget overruns, MCP health, and recent daemon warnings.
+          </p>
+        </div>
+        <div class="alerts-toolbar filters-bar">
+          <div class="filter-chips" id="alertFilters">
+            <button data-sev="" class="chip active">All</button>
+            <button data-sev="critical" class="chip">Critical</button>
+            <button data-sev="error" class="chip">Errors</button>
+            <button data-sev="warning" class="chip">Warnings</button>
+            <button data-sev="info" class="chip">Info</button>
+          </div>
+          <input class="filter-input" id="alertSearch" placeholder="Search title, message, agent..." style="flex:1;min-width:200px">
+          <button class="page-btn" id="alertsRefresh">Refresh</button>
+          <button class="page-btn" id="alertsClearDismissed" title="Undismiss all previously dismissed alerts">Reset dismissed</button>
+          <span id="alertsCount" style="font-size:12px;color:var(--text-secondary)"></span>
+        </div>
+        <div id="alertsList">Loading alerts…</div>
+      </div>
 
       <!-- ═══ ANALYTICS ═══ -->
       <div class="view" id="view-analytics">
@@ -221,6 +249,7 @@
 <script src="/static/js/views-tasks.js"></script>
 <script src="/static/js/views-chat.js"></script>
 <script src="/static/js/views-operations.js"></script>
+<script src="/static/js/views-alerts.js"></script>
 <script src="/static/js/views-rest.js"></script>
 <script src="/static/js/views-sessions.js"></script>
 <script src="/static/app.js"></script>
