@@ -50,7 +50,7 @@
       <div class="topbar-stats">
         <div class="stat">Agents <span class="stat-val" id="statAgents">0</span></div>
         <div class="stat">Active <span class="stat-val" id="statActive">0</span></div>
-        <div class="stat" title="Agents that have had at least one conversation">Chatted <span class="stat-val" id="statSessions">0</span></div>
+        <div class="stat stat-clickable" id="statSessionsWrap" title="Click to see per-agent sessions">Sessions <span class="stat-val" id="statSessions">0</span></div>
         <div class="stat">Cost <span class="stat-val" id="statCost">$0.00</span></div>
       </div>
     </header>
@@ -161,6 +161,17 @@
   <div class="stream-body" id="streamBody"></div>
 </div>
 
+<!-- ═══ Sessions drill-down modal ═══ -->
+<div class="sess-overlay" id="sessOverlay"></div>
+<div class="sess-modal glass" id="sessModal">
+  <div class="sess-header">
+    <h3 id="sessTitle">Sessions</h3>
+    <button class="sess-back" id="sessBack" style="display:none">&larr; Back</button>
+    <button class="sess-close" id="sessClose">&times;</button>
+  </div>
+  <div class="sess-body" id="sessBody"></div>
+</div>
+
 <script src="/static/js/state.js"></script>
 <script src="/static/js/api.js"></script>
 <script src="/static/js/websocket.js"></script>
@@ -171,6 +182,7 @@
 <script src="/static/js/views-chat.js"></script>
 <script src="/static/js/views-operations.js"></script>
 <script src="/static/js/views-rest.js"></script>
+<script src="/static/js/views-sessions.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

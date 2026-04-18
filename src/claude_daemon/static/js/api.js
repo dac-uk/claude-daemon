@@ -46,11 +46,11 @@ CC.fetchStatus = async function() {
   if (!data) return;
   CC.totalCost = data.total_cost || 0;
   document.getElementById('statAgents').textContent = data.agents || 0;
-  // "Sessions" slot shows chatted_agents (agents with >=1 conversation).
-  // This is the number the user intuits when reading "7 agents, N sessions".
-  var chatted = (typeof data.chatted_agents === 'number')
-    ? data.chatted_agents : (data.active_sessions || 0);
-  document.getElementById('statSessions').textContent = chatted;
+  // "Sessions" now shows the total historical session count (chatted +
+  // spawned). Clicking it opens a drill-down modal with per-agent breakdown.
+  var total = (typeof data.total_sessions === 'number')
+    ? data.total_sessions : (data.active_sessions || 0);
+  document.getElementById('statSessions').textContent = total;
   document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
   return data;
 };

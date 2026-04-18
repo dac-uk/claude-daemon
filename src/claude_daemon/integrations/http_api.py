@@ -96,6 +96,8 @@ class HttpApi:
         self._app.router.add_get("/api/agents", self._handle_agents)
         self._app.router.add_get("/api/status", self._handle_status)
         self._app.router.add_get("/api/sessions", self._handle_sessions)
+        self._app.router.add_get("/api/sessions/summary", self._handle_sessions_summary)
+        self._app.router.add_get("/api/sessions/history", self._handle_sessions_history)
         self._app.router.add_get("/api/tasks", self._handle_tasks)
         self._app.router.add_post("/api/message", self._handle_message)
         self._app.router.add_post("/api/message/stream", self._handle_message_stream)
@@ -281,13 +283,15 @@ class HttpApi:
         stats = self.daemon.store.get_stats() if self.daemon.store else {}
         cost_total = stats.get("total_cost", 0)
         chatted = 0
+        total_sessions = stats.get("total", 0)
         if self.daemon.store:
             try:
                 snapshot = self.daemon.store.get_cost_snapshot()
                 cost_total = snapshot["total_usd"]
                 chatted = self.daemon.store.count_agents_with_conversations()
+                total_sessions = self.daemon.store.session_summary()["total"]
             except Exception:
-                log.exception("cost snapshot failed in /api/status")
+                log.exception("cost snapshot / session summary failed in /api/status")
         return web.json_response({
             "status": "running",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -296,7 +300,7 @@ class HttpApi:
                 if self.daemon.process_manager else 0
             ),
             "chatted_agents": chatted,
-            "total_sessions": stats.get("total", 0),
+            "total_sessions": total_sessions,
             "total_messages": stats.get("total_messages", 0),
             "total_cost": cost_total,
         })
@@ -442,6 +446,79 @@ class HttpApi:
                 "started_at": active.started_at.isoformat(),
             })
         return web.json_response({"sessions": sessions})
+
+    async def _handle_sessions_summary(
+        self, request: web.Request,
+    ) -> web.Response:
+        """GET /api/sessions/summary — per-agent breakdown of historical sessions.
+
+        Backs the topbar "Sessions N" click-through: total count plus
+        {agent: {chat, spawn, total}} for the drill-down modal.
+        """
+        if not self.daemon.store:
+            return web.json_response({
+                "total": 0, "by_agent": {}, "unattributed": 0,
+            })
+        try:
+            return web.json_response(self.daemon.store.session_summary())
+        except Exception:
+            log.exception("session_summary failed")
+            return web.json_response(
+                {"error": "session summary failed"}, status=500,
+            )
+
+    async def _handle_sessions_history(
+        self, request: web.Request,
+    ) -> web.Response:
+        """GET /api/sessions/history?agent=<name>&limit=<n> — flat list
+        of historical conversation sessions, optionally filtered by agent.
+
+        For each session we attach the linked task_queue row when one exists
+        (spawn sessions) so the dashboard can drill straight through to
+        "what was this agent working on".
+        """
+        if not self.daemon.store:
+            return web.json_response({"sessions": []})
+        agent = request.query.get("agent")
+        try:
+            limit = int(request.query.get("limit", "200"))
+        except ValueError:
+            limit = 200
+        try:
+            sessions = self.daemon.store.list_sessions(limit=limit)
+        except Exception:
+            log.exception("list_sessions failed")
+            return web.json_response({"error": "list failed"}, status=500)
+        if agent:
+            sessions = [s for s in sessions if s.get("agent") == agent]
+        # Fold in the linked task row for spawn sessions so the UI doesn't
+        # need a second round-trip per row.
+        for s in sessions:
+            tid = s.get("task_id")
+            if not tid:
+                continue
+            try:
+                row = self.daemon.store._db.execute(
+                    "SELECT id, agent_name, prompt, status, task_type, "
+                    "created_at, cost_usd, result, error "
+                    "FROM task_queue WHERE id = ?",
+                    (tid,),
+                ).fetchone()
+            except Exception:
+                row = None
+            if row:
+                s["task"] = {
+                    "id": row["id"],
+                    "agent_name": row["agent_name"],
+                    "prompt": row["prompt"],
+                    "status": row["status"],
+                    "task_type": row["task_type"],
+                    "created_at": row["created_at"],
+                    "cost_usd": row["cost_usd"],
+                    "result": row["result"],
+                    "error": row["error"],
+                }
+        return web.json_response({"sessions": sessions, "count": len(sessions)})
 
     async def _handle_tasks(self, request: web.Request) -> web.Response:
         """GET /api/tasks — merged view of live spawned + recent persisted tasks."""
