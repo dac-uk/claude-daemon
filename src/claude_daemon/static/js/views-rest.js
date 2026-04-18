@@ -114,6 +114,9 @@ CC.renderActivityView = async function() {
 };
 
 CC._loadAudit = async function() {
+  if (CC._auditLoading) return;
+  CC._auditLoading = true;
+  try {
   var agent = document.getElementById('filterAgent').value;
   var action = document.getElementById('filterAction').value;
   var offset = CC.auditPage * CC.AUDIT_PER_PAGE;
@@ -154,9 +157,24 @@ CC._loadAudit = async function() {
   // Pagination
   var pag = document.getElementById('auditPagination');
   var hasMore = data.audit && data.audit.length >= CC.AUDIT_PER_PAGE;
-  pag.innerHTML = '<button class="page-btn" onclick="CC.auditPage=Math.max(0,CC.auditPage-1);CC._loadAudit()"' + (CC.auditPage === 0 ? ' disabled' : '') + '>\u25C0 Prev</button>' +
+  pag.innerHTML = '<button class="page-btn" id="auditPrev"' + (CC.auditPage === 0 ? ' disabled' : '') + '>\u25C0 Prev</button>' +
     '<span style="font-size:12px;color:var(--text-secondary)">Page ' + (CC.auditPage + 1) + '</span>' +
-    '<button class="page-btn" onclick="CC.auditPage++;CC._loadAudit()"' + (!hasMore ? ' disabled' : '') + '>Next \u25B6</button>';
+    '<button class="page-btn" id="auditNext"' + (!hasMore ? ' disabled' : '') + '>Next \u25B6</button>';
+  var prev = document.getElementById('auditPrev');
+  var next = document.getElementById('auditNext');
+  if (prev) prev.addEventListener('click', function() {
+    if (CC._auditLoading) return;
+    CC.auditPage = Math.max(0, CC.auditPage - 1);
+    CC._loadAudit();
+  });
+  if (next) next.addEventListener('click', function() {
+    if (CC._auditLoading) return;
+    CC.auditPage++;
+    CC._loadAudit();
+  });
+  } finally {
+    CC._auditLoading = false;
+  }
 };
 
 /* ═══ SETTINGS ═══ */
@@ -335,10 +353,19 @@ CC._submitMcpConfig = async function() {
 };
 
 CC._bindMcpConfig = function() {
+  if (CC._mcpConfigBound) return;
+  CC._mcpConfigBound = true;
   document.getElementById('mcpCfgClose').addEventListener('click', CC.closeMcpConfigModal);
   document.getElementById('mcpCfgCancel').addEventListener('click', CC.closeMcpConfigModal);
   document.getElementById('mcpCfgOverlay').addEventListener('click', CC.closeMcpConfigModal);
   document.getElementById('mcpCfgSave').addEventListener('click', CC._submitMcpConfig);
+  // Close on Escape when modal is visible
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' &&
+        document.getElementById('mcpCfgModal').classList.contains('open')) {
+      CC.closeMcpConfigModal();
+    }
+  });
 };
 if (typeof document !== 'undefined' && document.readyState !== 'loading') CC._bindMcpConfig();
 else if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', CC._bindMcpConfig);

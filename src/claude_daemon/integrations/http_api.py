@@ -204,6 +204,23 @@ class HttpApi:
             await self._runner.cleanup()
             log.info("HTTP API stopped")
 
+    @staticmethod
+    def _qint(request: web.Request, key: str, default: int, *, maximum: int | None = None) -> int:
+        """Parse an integer query parameter, clamped to [1, maximum], with a default."""
+        raw = request.query.get(key)
+        if raw is None or raw == "":
+            val = default
+        else:
+            try:
+                val = int(raw)
+            except (TypeError, ValueError):
+                val = default
+        if maximum is not None and val > maximum:
+            val = maximum
+        if val < 0:
+            val = default
+        return val
+
     # -- Webhook signature verification --
 
     def _verify_github_signature(self, request: web.Request, body: bytes) -> bool:
@@ -428,7 +445,7 @@ class HttpApi:
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """GET /api/metrics?agent=albert&days=7"""
         agent = request.query.get("agent")
-        days = int(request.query.get("days", "7"))
+        days = self._qint(request, "days", 7, maximum=365)
 
         if not self.daemon.store:
             return web.json_response({"metrics": []})
@@ -483,10 +500,7 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"sessions": []})
         agent = request.query.get("agent")
-        try:
-            limit = int(request.query.get("limit", "200"))
-        except ValueError:
-            limit = 200
+        limit = self._qint(request, "limit", 200, maximum=1000)
         try:
             sessions = self.daemon.store.list_sessions(limit=limit)
         except Exception:
@@ -494,33 +508,36 @@ class HttpApi:
             return web.json_response({"error": "list failed"}, status=500)
         if agent:
             sessions = [s for s in sessions if s.get("agent") == agent]
-        # Fold in the linked task row for spawn sessions so the UI doesn't
-        # need a second round-trip per row.
+        # Fold in the linked task row for spawn sessions in a single round-trip.
+        task_ids = [s["task_id"] for s in sessions if s.get("task_id")]
+        task_rows: dict[str, dict] = {}
+        if task_ids:
+            placeholders = ",".join("?" * len(task_ids))
+            try:
+                rows = self.daemon.store._db.execute(
+                    f"SELECT id, agent_name, prompt, status, task_type, "
+                    f"created_at, cost_usd, result, error "
+                    f"FROM task_queue WHERE id IN ({placeholders})",
+                    task_ids,
+                ).fetchall()
+                for row in rows:
+                    task_rows[row["id"]] = {
+                        "id": row["id"],
+                        "agent_name": row["agent_name"],
+                        "prompt": row["prompt"],
+                        "status": row["status"],
+                        "task_type": row["task_type"],
+                        "created_at": row["created_at"],
+                        "cost_usd": row["cost_usd"],
+                        "result": row["result"],
+                        "error": row["error"],
+                    }
+            except Exception:
+                log.exception("Bulk task_queue lookup for sessions failed")
         for s in sessions:
             tid = s.get("task_id")
-            if not tid:
-                continue
-            try:
-                row = self.daemon.store._db.execute(
-                    "SELECT id, agent_name, prompt, status, task_type, "
-                    "created_at, cost_usd, result, error "
-                    "FROM task_queue WHERE id = ?",
-                    (tid,),
-                ).fetchone()
-            except Exception:
-                row = None
-            if row:
-                s["task"] = {
-                    "id": row["id"],
-                    "agent_name": row["agent_name"],
-                    "prompt": row["prompt"],
-                    "status": row["status"],
-                    "task_type": row["task_type"],
-                    "created_at": row["created_at"],
-                    "cost_usd": row["cost_usd"],
-                    "result": row["result"],
-                    "error": row["error"],
-                }
+            if tid and tid in task_rows:
+                s["task"] = task_rows[tid]
         return web.json_response({"sessions": sessions, "count": len(sessions)})
 
     async def _handle_tasks(self, request: web.Request) -> web.Response:
@@ -590,14 +607,14 @@ class HttpApi:
         if api is None:
             return web.json_response({"tasks": []})
         agent = request.query.get("agent")
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = self._qint(request, "limit", 50, maximum=200)
         return web.json_response({"tasks": api.list_pending(agent=agent, limit=limit)})
 
     async def _handle_v1_tasks_recent(self, request: web.Request) -> web.Response:
         api = self._get_task_api()
         if api is None:
             return web.json_response({"tasks": []})
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = self._qint(request, "limit", 50, maximum=200)
         return web.json_response({"tasks": api.list_recent(limit=limit)})
 
     async def _handle_v1_tasks_get(self, request: web.Request) -> web.Response:
@@ -821,7 +838,7 @@ class HttpApi:
         pending_only = request.query.get("pending") == "1"
         if pending_only:
             return web.json_response({"approvals": appr.list_pending()})
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = self._qint(request, "limit", 50, maximum=200)
         return web.json_response({"approvals": appr.list_all(limit=limit)})
 
     async def _handle_v1_approvals_approve(self, request: web.Request) -> web.Response:
@@ -1041,7 +1058,7 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"discussions": [], "stats": {}})
         dtype = request.query.get("type")
-        limit = min(int(request.query.get("limit", "20")), 100)
+        limit = self._qint(request, "limit", 20, maximum=100)
         discussions = self.daemon.store.get_recent_discussions(discussion_type=dtype, limit=limit)
         stats = self.daemon.store.get_discussion_stats(days=7)
         return web.json_response({"discussions": discussions, "stats": stats})
@@ -1051,7 +1068,7 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"failures": [], "patterns": []})
         agent = request.query.get("agent")
-        limit = min(int(request.query.get("limit", "20")), 100)
+        limit = self._qint(request, "limit", 20, maximum=100)
         failures = self.daemon.store.get_recent_failures(agent_name=agent, limit=limit)
         patterns = self.daemon.store.get_failure_patterns(days=7)
         return web.json_response({"failures": failures, "patterns": patterns})
@@ -1061,7 +1078,7 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"evolution": []})
         agent = request.query.get("agent")
-        limit = min(int(request.query.get("limit", "20")), 100)
+        limit = self._qint(request, "limit", 20, maximum=100)
         history = self.daemon.store.get_evolution_history(agent_name=agent, limit=limit)
         return web.json_response({"evolution": history})
 
@@ -1265,8 +1282,8 @@ class HttpApi:
             return web.json_response({"audit": []})
         action = request.query.get("action")
         agent = request.query.get("agent")
-        limit = int(request.query.get("limit", "100"))
-        offset = int(request.query.get("offset", "0"))
+        limit = self._qint(request, "limit", 100, maximum=1000)
+        offset = self._qint(request, "offset", 0)
         entries = self.daemon.store.get_audit_log(
             action=action, agent_name=agent, limit=limit, offset=offset,
         )
