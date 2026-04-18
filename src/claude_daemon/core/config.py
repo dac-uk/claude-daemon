@@ -56,6 +56,7 @@ class DaemonConfig:
     # SDK bridge (persistent sessions via @anthropic-ai/claude-agent-sdk)
     sdk_bridge_enabled: bool = True  # Use Agent SDK for persistent sessions (sub-second responses)
     sdk_bridge_node_path: str = "node"  # Path to Node.js executable
+    sdk_bridge_idle_timeout_ms: int = 90_000  # ms without any event before we fail over to CLI (was process_timeout, 300s whole-stream)
     claude_oauth_token: str = ""  # From CLAUDE_CODE_OAUTH_TOKEN or claude setup-token
 
     # Managed Agents (Anthropic hosted agent execution)
@@ -227,6 +228,7 @@ class DaemonConfig:
             agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
             sdk_bridge_enabled=claude_cfg.get("sdk_bridge_enabled", True),
             sdk_bridge_node_path=claude_cfg.get("sdk_bridge_node_path", "node"),
+            sdk_bridge_idle_timeout_ms=int(claude_cfg.get("sdk_bridge_idle_timeout_ms", 90_000)),
             claude_oauth_token=claude_cfg.get("claude_oauth_token", ""),
             managed_agents_enabled=claude_cfg.get("managed_agents_enabled", False),
             managed_agents_task_types=claude_cfg.get("managed_agents_task_types", [

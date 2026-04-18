@@ -239,6 +239,11 @@ class ProcessManager:
             "--permission-mode", self.config.permission_mode,
         ]
 
+        # Recent Claude CLI versions require --verbose when --print is combined
+        # with --output-format=stream-json; buffered json does not.
+        if output_format == "stream-json":
+            args.append("--verbose")
+
         # Use --bare when API key auth is available (faster, no hooks/LSP overhead).
         # Skip --bare for OAuth/subscription users — bare blocks keychain/OAuth reads.
         if os.environ.get("ANTHROPIC_API_KEY"):
