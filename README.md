@@ -29,7 +29,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
 - **Inter-Agent Communication** - Five communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, and `[OPTIMIZE:name]` to trigger evo code optimization. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
-- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, per-agent chat with streaming responses, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel, native Operations view (tasks / budgets / goals / approvals). All real-time via WebSocket — no polling.
+- **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, per-agent chat with streaming responses, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel, native Operations view (tasks / budgets / goals / approvals), and an Alerts hub that aggregates failed tasks, pending approvals, exhausted budgets, unhealthy MCP servers, and recent daemon-log warnings into one triage screen. All real-time via WebSocket — no polling.
 - **Native Orchestration** - Built-in task queue, budget caps, goal tracking, and approval workflow — Paperclip-free by default. Atomic budget reservations (race-safe), two-pass enforcement where rejection beats approval threshold, re-enforced approvals that can't resurrect cancelled tasks, orphan task sweep on startup. Exposed via `/api/v1/*` and the Ops dashboard view.
 - **CLI Chat** - `claude-daemon chat` opens an interactive terminal session with the daemon's agents. Route to a specific agent with `--agent albert`. Connects to the running daemon via the HTTP API — no separate process needed.
 - **HTTP REST API** - Programmatic access, GitHub/Stripe webhooks, metrics endpoint, WebSocket event bus
@@ -495,6 +495,36 @@ Key semantics:
 ### Operations view
 
 The Command Center's **Ops** tab shows everything above in one screen: task queue with filter chips (including amber `pending_approval`), circular budget gauges, goal progress cards, and the approval inbox. All panels update live over the websocket — no polling.
+
+Every row carries an origin pill so you can see where work came from:
+
+| Source | Meaning |
+|--------|---------|
+| `chat` | Message typed into the Chat tab — the orchestrator persists a row into `task_queue` on entry and updates it on completion, so a 30-second agent reply shows up here alongside everything else |
+| `spawn` | Agent-to-agent dispatch (`[DELEGATE:…]`, workflow steps, background spawns) |
+| `api`   | External caller via `POST /api/v1/tasks` (default) |
+| `heartbeat` | Paperclip heartbeat webhook |
+
+Filter by source with the chip row above the task list, or from the API: `GET /api/tasks?source=chat`, `GET /api/v1/tasks/pending?source=spawn`, `GET /api/v1/tasks/recent?source=api`.
+
+### Alerts & Issues view
+
+The **Alerts** tab is a single triage hub that aggregates unresolved conditions across the daemon into one list, colour-coded by severity:
+
+| Level | Sources |
+|-------|---------|
+| `critical` | Exhausted budgets, orphan tasks swept at startup, recent `ERROR` log lines |
+| `error` | Failed tasks, high-severity failure analyses |
+| `warning` | Pending approvals, budgets >80% spent, unhealthy MCP servers, medium-severity failure analyses, recent `WARNING` log lines |
+| `info` | Discussions that errored or hit cost caps, daemon-restart notes |
+
+Endpoints:
+
+- `GET /api/alerts` — aggregated list (filter with `?severity=critical&since=<iso>`)
+- `GET /api/logs/tail?lines=200&level=WARNING&since=<iso>` — bounded tail of `daemon.log` with stack-trace gluing
+- `GET /api/status` — now includes `alert_count` for the nav badge, plus `version` and `pid` fallback diagnostics so Daemon Control stays populated even when `/api/daemon/status` can't be reached
+
+Dismissals are client-side only (stored in `localStorage`). When the underlying condition clears — task retried, approval resolved, budget reset — the alert stops appearing automatically.
 
 Events you can subscribe to from `/ws`:
 
