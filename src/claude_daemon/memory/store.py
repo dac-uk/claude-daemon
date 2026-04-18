@@ -383,6 +383,77 @@ class ConversationStore:
         ).fetchone()
         return dict(row) if row else {}
 
+    def get_cost_snapshot(self) -> dict:
+        """Return a unified cost view across conversations + agent_metrics.
+
+        The dashboard displays cost in three places (topbar, Agent Fleet cards,
+        Cost tab). Historically each read a different source and showed a
+        different number. This snapshot is the single source of truth.
+
+        The by_agent map is built primarily from agent_metrics (which records
+        every completed agent action including heartbeats and spawn tasks),
+        then folded in with conversations-only agents that have no metrics
+        row yet. user_id format is either "<user>:<agent>" or
+        "<user>:spawn:<task_id>" — the spawn form is already covered via
+        agent_metrics, so we skip it when parsing conversations.
+        """
+        conv_total_row = self._db.execute(
+            "SELECT COALESCE(SUM(total_cost_usd), 0) AS t FROM conversations",
+        ).fetchone()
+        conv_total = float(conv_total_row["t"] if conv_total_row else 0)
+
+        metrics_total_row = self._db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS t FROM agent_metrics",
+        ).fetchone()
+        metrics_total = float(metrics_total_row["t"] if metrics_total_row else 0)
+
+        by_agent: dict[str, float] = {}
+        for r in self._db.execute(
+            "SELECT agent_name, COALESCE(SUM(cost_usd), 0) AS cost "
+            "FROM agent_metrics GROUP BY agent_name",
+        ).fetchall():
+            name = r["agent_name"]
+            if name:
+                by_agent[name] = float(r["cost"])
+
+        for r in self._db.execute(
+            "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) AS cost "
+            "FROM conversations GROUP BY user_id",
+        ).fetchall():
+            uid = str(r["user_id"] or "")
+            parts = uid.split(":")
+            if len(parts) >= 3 and parts[1] == "spawn":
+                continue
+            if len(parts) < 2:
+                continue
+            name = parts[-1]
+            if name and name not in by_agent:
+                by_agent[name] = float(r["cost"])
+
+        deduped_total = max(conv_total, metrics_total)
+        return {
+            "total_usd": deduped_total,
+            "by_agent": by_agent,
+            "by_source": {
+                "conversations": conv_total,
+                "agent_metrics": metrics_total,
+                "deduped_total": deduped_total,
+            },
+        }
+
+    def count_agents_with_conversations(self) -> int:
+        """Number of distinct agents that appear in the conversations table.
+
+        Used by the dashboard topbar to distinguish "agents configured" from
+        "agents that have actually talked". The 7-vs-6 mismatch the user
+        reported was this: 7 agents exist, 6 have a conversation row.
+        """
+        row = self._db.execute(
+            "SELECT COUNT(DISTINCT user_id) AS n FROM conversations "
+            "WHERE user_id LIKE '%:%' AND user_id NOT LIKE '%:spawn:%'",
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     def get_user_stats(self, user_id: str, platform: str | None = None) -> dict:
         """Get per-user statistics. If platform is None, aggregates across all platforms."""
         if platform:

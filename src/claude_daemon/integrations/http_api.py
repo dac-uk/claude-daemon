@@ -101,6 +101,7 @@ class HttpApi:
         self._app.router.add_post("/api/message/stream", self._handle_message_stream)
         self._app.router.add_post("/api/workflow", self._handle_workflow)
         self._app.router.add_get("/api/metrics", self._handle_metrics)
+        self._app.router.add_get("/api/costs", self._handle_costs)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
         self._app.router.add_get("/api/audit", self._handle_audit)
         self._app.router.add_get("/api/config/env", self._handle_env_list)
@@ -248,19 +249,21 @@ class HttpApi:
         agent_costs: dict[str, float] = {}
         if self.daemon.store:
             try:
-                rows = self.daemon.store._db.execute(
-                    "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) as cost "
-                    "FROM conversations GROUP BY user_id"
-                ).fetchall()
-                for r in rows:
-                    parts = str(r["user_id"]).rsplit(":", 1)
-                    if len(parts) == 2:
-                        agent_costs[parts[1]] = agent_costs.get(parts[1], 0) + r["cost"]
+                agent_costs = self.daemon.store.get_cost_snapshot()["by_agent"]
             except Exception:
-                pass
+                log.exception("cost snapshot failed in /api/agents")
 
         agents = []
         for agent in self.daemon.agent_registry:
+            # Coerce mcp_health values to strings so the dashboard never
+            # renders "[object Object]" when a future backend returns a
+            # nested dict.
+            health = agent.check_mcp_health() or {}
+            if isinstance(health, dict):
+                health = {
+                    k: (v if isinstance(v, str) else str(v))
+                    for k, v in health.items()
+                }
             agents.append({
                 "name": agent.name,
                 "role": agent.identity.role,
@@ -268,7 +271,7 @@ class HttpApi:
                 "model": agent.identity.default_model,
                 "is_orchestrator": agent.is_orchestrator,
                 "has_mcp": agent.mcp_config_path is not None,
-                "mcp_health": agent.check_mcp_health(),
+                "mcp_health": health,
                 "heartbeat_tasks": len(agent.parse_heartbeat_tasks()),
                 "cost": agent_costs.get(agent.name, 0),
             })
@@ -276,6 +279,15 @@ class HttpApi:
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         stats = self.daemon.store.get_stats() if self.daemon.store else {}
+        cost_total = stats.get("total_cost", 0)
+        chatted = 0
+        if self.daemon.store:
+            try:
+                snapshot = self.daemon.store.get_cost_snapshot()
+                cost_total = snapshot["total_usd"]
+                chatted = self.daemon.store.count_agents_with_conversations()
+            except Exception:
+                log.exception("cost snapshot failed in /api/status")
         return web.json_response({
             "status": "running",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -283,10 +295,25 @@ class HttpApi:
                 self.daemon.process_manager.active_count
                 if self.daemon.process_manager else 0
             ),
+            "chatted_agents": chatted,
             "total_sessions": stats.get("total", 0),
             "total_messages": stats.get("total_messages", 0),
-            "total_cost": stats.get("total_cost", 0),
+            "total_cost": cost_total,
         })
+
+    async def _handle_costs(self, request: web.Request) -> web.Response:
+        """GET /api/costs - single source of truth for dashboard cost display."""
+        if not self.daemon.store:
+            return web.json_response({
+                "total_usd": 0,
+                "by_agent": {},
+                "by_source": {"conversations": 0, "agent_metrics": 0, "deduped_total": 0},
+            })
+        try:
+            return web.json_response(self.daemon.store.get_cost_snapshot())
+        except Exception:
+            log.exception("get_cost_snapshot failed")
+            return web.json_response({"error": "cost snapshot failed"}, status=500)
 
     async def _handle_message(self, request: web.Request) -> web.Response:
         """POST /api/message — Send a message to an agent."""

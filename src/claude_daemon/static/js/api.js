@@ -46,8 +46,27 @@ CC.fetchStatus = async function() {
   if (!data) return;
   CC.totalCost = data.total_cost || 0;
   document.getElementById('statAgents').textContent = data.agents || 0;
-  document.getElementById('statSessions').textContent = data.active_sessions || 0;
+  // "Sessions" slot shows chatted_agents (agents with >=1 conversation).
+  // This is the number the user intuits when reading "7 agents, N sessions".
+  var chatted = (typeof data.chatted_agents === 'number')
+    ? data.chatted_agents : (data.active_sessions || 0);
+  document.getElementById('statSessions').textContent = chatted;
   document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
+  return data;
+};
+
+CC.fetchCosts = async function() {
+  var data = await CC.api('/api/costs');
+  if (!data) return;
+  CC.totalCost = data.total_usd || 0;
+  document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
+  // Update per-agent cost (unless WS has already pushed a live value).
+  if (data.by_agent) {
+    Object.keys(data.by_agent).forEach(function(name) {
+      var ag = CC.agents[name];
+      if (ag && !ag._wsUpdated) ag.cost = data.by_agent[name];
+    });
+  }
   return data;
 };
 
