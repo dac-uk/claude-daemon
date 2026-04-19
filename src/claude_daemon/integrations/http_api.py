@@ -1437,7 +1437,7 @@ class HttpApi:
         # 5. MCP health per agent
         registry = self.daemon.agent_registry
         if registry:
-            for agent in registry.values():
+            for agent in registry:
                 try:
                     health = agent.check_mcp_health() if agent.mcp_config_path else {}
                 except Exception:
