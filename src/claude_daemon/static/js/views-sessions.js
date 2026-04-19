@@ -55,7 +55,13 @@ CC._sessRender = function() {
     title.textContent = 'Sessions by agent';
     back.style.display = 'none';
     if (!s.summary) {
-      body.innerHTML = '<div class="empty">Could not load sessions. Check daemon logs.</div>';
+      var err = CC.lastApiError && CC.lastApiError.path === '/api/sessions/summary'
+        ? CC.lastApiError : null;
+      var detail = err
+        ? ' HTTP ' + err.status + (err.body && err.body.error ? ': ' + err.body.error : '')
+        : '';
+      body.innerHTML = '<div class="empty">Could not load sessions.' + detail +
+        '<br><small>Check daemon logs for the full traceback.</small></div>';
       return;
     }
     var sm = s.summary;

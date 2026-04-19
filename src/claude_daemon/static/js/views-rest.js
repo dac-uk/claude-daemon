@@ -5,6 +5,10 @@ CC.chartInstances = {};
 
 CC.renderAnalyticsView = async function() {
   var metricsData = await CC.api('/api/metrics?days=7');
+  // 7d cost uses the same cost-snapshot source as the topbar — avoids
+  // the "7D card > all-time pill" inversion that arose from summing
+  // per-agent metric rows client-side with different dedup semantics.
+  var costData = await CC.api('/api/costs?days=7');
   var failData = await CC.api('/api/failures');
   var discData = await CC.api('/api/discussions');
   var taskData = await CC.api('/api/tasks');
@@ -15,9 +19,10 @@ CC.renderAnalyticsView = async function() {
   var failCount = failData && failData.failures ? failData.failures.length : 0;
   var taskCount = taskData && taskData.tasks ? taskData.tasks.length : 0;
   var successCount = taskData ? taskData.tasks.filter(function(t) { return t.status === 'completed'; }).length : 0;
+  var cost7d = costData && typeof costData.total_usd === 'number' ? costData.total_usd : 0;
 
   statsEl.innerHTML = [
-    { l: 'Total Cost (7d)', v: '$' + (metricsData && metricsData.metrics ? metricsData.metrics.reduce(function(s,m){return s+(m.total_cost||0);},0).toFixed(2) : '0.00') },
+    { l: 'Total Cost (7d)', v: '$' + cost7d.toFixed(2) },
     { l: 'Discussions', v: dStats.total || 0 },
     { l: 'Failures (7d)', v: failCount },
     { l: 'Task Success', v: taskCount > 0 ? Math.round(successCount/taskCount*100)+'%' : 'N/A' },

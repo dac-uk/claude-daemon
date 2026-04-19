@@ -401,7 +401,7 @@ class ConversationStore:
         ).fetchone()
         return dict(row) if row else {}
 
-    def get_cost_snapshot(self) -> dict:
+    def get_cost_snapshot(self, days: int | None = None) -> dict:
         """Return a unified cost view across conversations + agent_metrics.
 
         The dashboard displays cost in three places (topbar, Agent Fleet cards,
@@ -414,44 +414,90 @@ class ConversationStore:
         row yet. user_id format is either "<user>:<agent>" or
         "<user>:spawn:<task_id>" — the spawn form is already covered via
         agent_metrics, so we skip it when parsing conversations.
+
+        When ``days`` is given, agent_metrics rows are filtered by their
+        per-row ``timestamp``. ``conversations`` rows lack a per-cost
+        timestamp (costs accumulate into ``total_cost_usd`` over the
+        conversation's lifetime), so in windowed mode we treat the
+        conversations source as unavailable and rely entirely on
+        agent_metrics. ``by_source.conversations`` is reported as 0 to
+        make this explicit to callers. Picking ``max()`` over both
+        sources would otherwise leak all-time conversation cost into a
+        7-day window and produce the inverted totals the dashboard had
+        before this fix.
         """
-        conv_total_row = self._db.execute(
-            "SELECT COALESCE(SUM(total_cost_usd), 0) AS t FROM conversations",
-        ).fetchone()
-        conv_total = float(conv_total_row["t"] if conv_total_row else 0)
+        windowed = days is not None and days > 0
 
-        metrics_total_row = self._db.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0) AS t FROM agent_metrics",
-        ).fetchone()
-        metrics_total = float(metrics_total_row["t"] if metrics_total_row else 0)
+        if windowed:
+            window_clause = f"-{int(days)} days"
+            metrics_total_row = self._db.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) AS t FROM agent_metrics "
+                "WHERE timestamp > datetime('now', ?)",
+                (window_clause,),
+            ).fetchone()
+            metrics_total = float(
+                metrics_total_row["t"] if metrics_total_row else 0,
+            )
+            conv_total = 0.0
 
-        by_agent: dict[str, float] = {}
-        for r in self._db.execute(
-            "SELECT agent_name, COALESCE(SUM(cost_usd), 0) AS cost "
-            "FROM agent_metrics GROUP BY agent_name",
-        ).fetchall():
-            name = r["agent_name"]
-            if name:
-                by_agent[name] = float(r["cost"])
+            by_agent: dict[str, float] = {}
+            for r in self._db.execute(
+                "SELECT agent_name, COALESCE(SUM(cost_usd), 0) AS cost "
+                "FROM agent_metrics "
+                "WHERE timestamp > datetime('now', ?) "
+                "GROUP BY agent_name",
+                (window_clause,),
+            ).fetchall():
+                name = r["agent_name"]
+                if name:
+                    by_agent[name] = float(r["cost"])
 
-        for r in self._db.execute(
-            "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) AS cost "
-            "FROM conversations GROUP BY user_id",
-        ).fetchall():
-            uid = str(r["user_id"] or "")
-            parts = uid.split(":")
-            if len(parts) >= 3 and parts[1] == "spawn":
-                continue
-            if len(parts) < 2:
-                continue
-            name = parts[-1]
-            if name and name not in by_agent:
-                by_agent[name] = float(r["cost"])
+            deduped_total = metrics_total
+        else:
+            conv_total_row = self._db.execute(
+                "SELECT COALESCE(SUM(total_cost_usd), 0) AS t "
+                "FROM conversations",
+            ).fetchone()
+            conv_total = float(
+                conv_total_row["t"] if conv_total_row else 0,
+            )
 
-        deduped_total = max(conv_total, metrics_total)
+            metrics_total_row = self._db.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) AS t FROM agent_metrics",
+            ).fetchone()
+            metrics_total = float(
+                metrics_total_row["t"] if metrics_total_row else 0,
+            )
+
+            by_agent = {}
+            for r in self._db.execute(
+                "SELECT agent_name, COALESCE(SUM(cost_usd), 0) AS cost "
+                "FROM agent_metrics GROUP BY agent_name",
+            ).fetchall():
+                name = r["agent_name"]
+                if name:
+                    by_agent[name] = float(r["cost"])
+
+            for r in self._db.execute(
+                "SELECT user_id, COALESCE(SUM(total_cost_usd), 0) AS cost "
+                "FROM conversations GROUP BY user_id",
+            ).fetchall():
+                uid = str(r["user_id"] or "")
+                parts = uid.split(":")
+                if len(parts) >= 3 and parts[1] == "spawn":
+                    continue
+                if len(parts) < 2:
+                    continue
+                name = parts[-1]
+                if name and name not in by_agent:
+                    by_agent[name] = float(r["cost"])
+
+            deduped_total = max(conv_total, metrics_total)
+
         return {
             "total_usd": deduped_total,
             "by_agent": by_agent,
+            "days": days,
             "by_source": {
                 "conversations": conv_total,
                 "agent_metrics": metrics_total,
@@ -536,20 +582,78 @@ class ConversationStore:
         Returns {total, by_agent: {name: {chat, spawn, total}}, unattributed}.
         Unattributed covers legacy conversations with no colon in user_id
         and spawn rows whose task_id no longer resolves.
+
+        Runs directly off SQL and tolerates malformed rows — a single bad
+        user_id must not 500 the whole dashboard click-through.
         """
-        sessions = self.list_sessions(limit=10000)
+        try:
+            total_row = self._db.execute(
+                "SELECT COUNT(*) AS n FROM conversations",
+            ).fetchone()
+            total = int(total_row["n"]) if total_row else 0
+        except Exception:
+            log.exception("session_summary: count failed")
+            total = 0
+
         by_agent: dict[str, dict[str, int]] = {}
         unattributed = 0
-        for s in sessions:
-            a = s["agent"]
-            if not a:
+
+        try:
+            rows = self._db.execute(
+                "SELECT user_id FROM conversations",
+            ).fetchall()
+        except Exception:
+            log.exception("session_summary: user_id fetch failed")
+            rows = []
+
+        # Cache task_queue agent lookups so a single spawn-task row isn't
+        # queried thousands of times in legacy databases.
+        task_agent_cache: dict[str, str | None] = {}
+
+        for r in rows:
+            try:
+                uid = str(r["user_id"] or "")
+                agent, task_id = self._attribute_session(uid)
+                kind: str
+                if task_id:
+                    if task_id not in task_agent_cache:
+                        try:
+                            tr = self._db.execute(
+                                "SELECT agent_name FROM task_queue "
+                                "WHERE id = ?",
+                                (task_id,),
+                            ).fetchone()
+                            task_agent_cache[task_id] = (
+                                tr["agent_name"] if tr else None
+                            )
+                        except Exception:
+                            log.exception(
+                                "session_summary: task lookup for %s failed",
+                                task_id,
+                            )
+                            task_agent_cache[task_id] = None
+                    agent = agent or task_agent_cache[task_id]
+                    kind = "spawn"
+                elif agent:
+                    kind = "chat"
+                else:
+                    kind = "unknown"
+
+                if not agent:
+                    unattributed += 1
+                    continue
+                bucket = by_agent.setdefault(
+                    agent, {"chat": 0, "spawn": 0, "total": 0},
+                )
+                bucket[kind if kind in ("chat", "spawn") else "chat"] += 1
+                bucket["total"] += 1
+            except Exception:
+                # One malformed row must not poison the whole summary.
+                log.exception("session_summary: row skipped")
                 unattributed += 1
-                continue
-            bucket = by_agent.setdefault(a, {"chat": 0, "spawn": 0, "total": 0})
-            bucket[s["kind"] if s["kind"] in ("chat", "spawn") else "chat"] += 1
-            bucket["total"] += 1
+
         return {
-            "total": len(sessions),
+            "total": total,
             "by_agent": by_agent,
             "unattributed": unattributed,
         }
