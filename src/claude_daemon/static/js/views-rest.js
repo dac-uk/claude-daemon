@@ -4,11 +4,20 @@
 CC.chartInstances = {};
 
 CC.renderAnalyticsView = async function() {
+  // Refresh the topbar "Cost" pill alongside the 7D card so both
+  // values come from the same snapshot instant — otherwise the
+  // topbar can lag (30s poll) and the 7D card looks larger than
+  // all-time spend, which is impossible but visually confusing.
+  CC.cache['/api/costs' + JSON.stringify({})] = null;
+  CC.cache['/api/costs?days=7' + JSON.stringify({})] = null;
   var metricsData = await CC.api('/api/metrics?days=7');
-  // 7d cost uses the same cost-snapshot source as the topbar — avoids
-  // the "7D card > all-time pill" inversion that arose from summing
-  // per-agent metric rows client-side with different dedup semantics.
   var costData = await CC.api('/api/costs?days=7');
+  var costAll = await CC.api('/api/costs');
+  if (costAll && typeof costAll.total_usd === 'number') {
+    CC.totalCost = costAll.total_usd;
+    var pill = document.getElementById('statCost');
+    if (pill) pill.textContent = '$' + CC.totalCost.toFixed(2);
+  }
   var failData = await CC.api('/api/failures');
   var discData = await CC.api('/api/discussions');
   var taskData = await CC.api('/api/tasks');
