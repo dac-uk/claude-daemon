@@ -126,6 +126,7 @@ async function handleSend(cmd) {
     let inputTokens = 0;
     let outputTokens = 0;
     let durationMs = 0;
+    let stopReason = null;
     const startTime = Date.now();
 
     for await (const msg of session.stream()) {
@@ -133,6 +134,9 @@ async function handleSend(cmd) {
 
       if (type === "assistant") {
         // Full or partial assistant message
+        if (msg.message?.stop_reason) {
+          stopReason = msg.message.stop_reason;
+        }
         const content = msg.message?.content;
         if (typeof content === "string" && content.length > resultText.length) {
           const delta = content.slice(resultText.length);
@@ -158,6 +162,9 @@ async function handleSend(cmd) {
         inputTokens = msg.input_tokens || msg.usage?.input_tokens || 0;
         outputTokens = msg.output_tokens || msg.usage?.output_tokens || 0;
         durationMs = msg.duration_ms || (Date.now() - startTime);
+        if (msg.stop_reason || msg.message?.stop_reason) {
+          stopReason = msg.stop_reason || msg.message.stop_reason;
+        }
 
         // Extract result text if we didn't get it from streaming
         if (!resultText && msg.result) {
@@ -184,6 +191,7 @@ async function handleSend(cmd) {
       event: "result", id, agent, sessionId,
       result: resultText, cost, inputTokens, outputTokens,
       durationMs: durationMs || (Date.now() - startTime),
+      stopReason,
     });
   } catch (err) {
     log(`Send error for ${agent}: ${err.message}`);

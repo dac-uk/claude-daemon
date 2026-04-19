@@ -822,18 +822,44 @@ class Orchestrator:
             log.exception("stream_to_agent error for %s", agent.name)
             resp = ClaudeResponse.error("Agent error")
         finally:
-            if resp.is_error or not accumulated:
+            # Classify "no usable response" more precisely now that stop_reason
+            # flows through. A clean end_turn with empty accumulated text is
+            # legitimate (tool-only turn, refusal, etc.) and shouldn't spam
+            # as a warning; only genuine infra errors or non-end stops do.
+            stop_reason = getattr(resp, "stop_reason", "") or ""
+            empty_without_error = (
+                not resp.is_error and not accumulated and stop_reason not in {"end_turn", ""}
+            )
+            if resp.is_error or empty_without_error:
                 log.warning(
-                    "Agent %s produced no usable response. is_error=%s result=%r",
-                    agent.name, resp.is_error, (resp.result or "")[:200],
+                    "Agent %s produced no usable response. is_error=%s "
+                    "stop_reason=%s result=%r",
+                    agent.name, resp.is_error, stop_reason or "unknown",
+                    (resp.result or "")[:200],
                 )
+            # Refund cost on infra failures — the user shouldn't pay for an
+            # SDK-bridge timeout or a stream that ended without a result.
+            recorded_cost = resp.cost or 0.0
+            if resp.is_error and resp.result and any(
+                marker in resp.result for marker in (
+                    "idle timeout",
+                    "stream ended without result",
+                    "bridge process may have crashed",
+                )
+            ):
+                if recorded_cost > 0:
+                    log.warning(
+                        "Refunding $%.4f for infra failure on agent %s: %s",
+                        recorded_cost, agent.name, (resp.result or "")[:120],
+                    )
+                recorded_cost = 0.0
             if chat_task_id and self.store is not None:
                 try:
                     if resp.is_error:
                         self.store.update_task_status(
                             chat_task_id, "failed",
                             error=resp.result or "Agent error",
-                            cost_usd=resp.cost or 0.0,
+                            cost_usd=recorded_cost,
                         )
                     else:
                         self.store.update_task_status(
@@ -847,7 +873,7 @@ class Orchestrator:
                                 self.hub.task_update(
                                     chat_task_id, agent.name,
                                     "failed" if resp.is_error else "completed",
-                                    cost=resp.cost or 0.0,
+                                    cost=recorded_cost,
                                 ),
                             )
                         except Exception:
