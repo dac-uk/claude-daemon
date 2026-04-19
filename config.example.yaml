@@ -106,3 +106,34 @@ integrations:
     enabled: false
     # URL and API key loaded from env vars
     poll_interval: 5              # Seconds between task polls
+
+# Software Factory — plan / build / review pipeline
+# The orchestrator emits [BUILD]/[PLAN]/[REVIEW] tags when a user asks for
+# substantial engineering work in natural language on any channel. These
+# tags trigger the factory loop below. CLI commands `plan`, `build`,
+# `review` invoke the same pipeline via the HTTP API.
+# software_factory:
+#   planner_agent: orchestrator      # Agent that writes the spec
+#   executor_agents:                 # Executors that implement the plan
+#     - auto                         # "auto" routes by task type
+#   reviewer_agent: auto             # Agent that reviews build output
+#   review_max_iterations: 3         # Max review-retry cycles before giving up
+#   test_command: ""                 # Optional pytest/npm test cmd gating reviews
+#   require_plan_approval: true      # Gate plan behind an approval row
+#   link_to_goal: false              # Accept an explicit goal_id to link runs
+#   auto_worktree: false             # (Phase 2) Run executors in fresh worktree
+#   auto_pr: false                   # (Phase 2) Auto-open PR on accepted build
+#   # Parallel multi-focus review presets. Each runs as its own reviewer.
+#   # review_presets:
+#   #   - focus: bugs
+#   #     prompt: "Find logic errors, off-by-one mistakes, null/undefined access."
+#   #     agent: auto
+#   #   - focus: security
+#   #     prompt: "Find OWASP-class issues, secret leaks, unsafe shell/SQL."
+#   #     agent: auto
+#   #   - focus: performance
+#   #     prompt: "Find N+1 queries, blocking I/O in hot paths, needless allocations."
+#   #     agent: auto
+#   #   - focus: quality
+#   #     prompt: "Assess naming, duplication, complexity, test coverage."
+#   #     agent: auto

@@ -106,7 +106,24 @@ CSUITE_AGENTS = [
             "- [COUNCIL] topic — full council deliberation (you synthesize)\n"
             "Use council for: architecture decisions, budget allocation, "
             "cross-domain conflicts, strategic choices. "
-            "Do NOT use council for informational questions — answer those yourself.\n"
+            "Do NOT use council for informational questions — answer those yourself.\n\n"
+            "## Software Factory Tags (orchestrator only)\n"
+            "- [BUILD] description — trigger the full plan -> execute -> "
+            "review loop. Use when the user asks you to build, implement, "
+            "add, or ship a substantial feature.\n"
+            "- [PLAN] description — create a spec-first plan that the user "
+            "can approve before any code is written. Use when the user asks "
+            "for a design, plan, or spec.\n"
+            "- [REVIEW] target — run a parallel multi-focus code review "
+            "(bugs, security, performance, quality). Target is a branch "
+            "name, diff target, or empty for the current branch.\n"
+            "Routing heuristic:\n"
+            "  - Quick questions, small edits: [DELEGATE]\n"
+            "  - Substantial feature work: [BUILD]\n"
+            "  - Pre-implementation design only: [PLAN]\n"
+            "  - Code quality check: [REVIEW]\n"
+            "Factory tags do NOT take an agent name — the factory config "
+            "decides which agents play planner / executor / reviewer roles.\n"
         ),
         "gotchas": (
             "- Never write code yourself. You are the orchestrator. Delegate ALL implementation.\n"
@@ -1169,7 +1186,10 @@ def create_shared_workspace(data_dir: Path) -> None:
     shared = data_dir / "shared"
     shared.mkdir(parents=True, exist_ok=True)
 
-    for subdir in ["playbooks", "steer", "reflections", "checklists", "discussions"]:
+    for subdir in [
+        "playbooks", "steer", "reflections", "checklists",
+        "discussions", "plans",
+    ]:
         (shared / subdir).mkdir(exist_ok=True)
 
     user_md = shared / "USER.md"

@@ -154,6 +154,10 @@ class DaemonConfig:
     paperclip_task_limit: int = 5          # Tasks per poll cycle
     paperclip_startup_timeout: int = 30    # Seconds to wait for registration
 
+    # Software Factory (plan/build/review) — populated lazily in load()
+    # so importing this module doesn't depend on the factory package.
+    factory_config: Any = None
+
     # Derived paths
     @property
     def log_dir(self) -> Path:
@@ -211,6 +215,7 @@ class DaemonConfig:
         tg_cfg = integ_cfg.get("telegram", {})
         dc_cfg = integ_cfg.get("discord", {})
         pc_cfg = integ_cfg.get("paperclip", {})
+        factory_cfg = yaml_data.get("software_factory", {})
 
         data_dir_str = _env("DATA_DIR") or daemon_cfg.get("data_dir")
         data_dir = Path(os.path.expanduser(data_dir_str)) if data_dir_str else paths.config_dir()
@@ -322,4 +327,17 @@ class DaemonConfig:
             paperclip_poll_interval=int(pc_cfg.get("poll_interval", 5)),
             paperclip_task_limit=int(pc_cfg.get("task_limit", 5)),
             paperclip_startup_timeout=int(pc_cfg.get("startup_timeout", 30)),
+            factory_config=_load_factory_config(factory_cfg, data_dir),
         )
+
+
+def _load_factory_config(d: dict, data_dir: Path) -> Any:
+    """Defer-import the FactoryConfig to avoid a hard dependency cycle.
+
+    The factory module is a composition layer that imports the
+    orchestrator, so eagerly importing it here would re-import a large
+    chunk of the package. Loading at config time is fine since load()
+    is only called from daemon start paths.
+    """
+    from claude_daemon.factory.config import FactoryConfig
+    return FactoryConfig.from_dict(d or {}, data_dir)

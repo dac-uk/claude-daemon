@@ -488,7 +488,7 @@ def _cmd_install_service(args: argparse.Namespace) -> None:
 def _cmd_env(args: argparse.Namespace) -> None:
     """Manage environment variables."""
     from claude_daemon.core.config import DaemonConfig
-    from claude_daemon.core.env_manager import list_env_vars, set_env_var, reload_env
+    from claude_daemon.core.env_manager import list_env_vars, set_env_var
 
     # Ensure .env is loaded
     DaemonConfig.load()
@@ -664,7 +664,7 @@ def _cmd_shared_brain(args: argparse.Namespace) -> None:
 
     elif action == "show":
         if not config.shared_brain_path.exists():
-            print(f"Not yet generated. Run: claude-daemon shared-brain sync")
+            print("Not yet generated. Run: claude-daemon shared-brain sync")
             sys.exit(1)
         print(config.shared_brain_path.read_text(encoding="utf-8"))
 
@@ -1028,8 +1028,122 @@ def _cmd_agents(args: argparse.Namespace) -> None:
         )
         print(f"Created agent: {name}")
         print(f"  Workspace: {agent.workspace}")
-        print(f"  Files: SOUL.md, IDENTITY.md, MEMORY.md")
-        print(f"\nEdit the .md files in the workspace to customize this agent.")
+        print("  Files: SOUL.md, IDENTITY.md, MEMORY.md")
+        print("\nEdit the .md files in the workspace to customize this agent.")
+
+
+def _factory_post(path: str, body: dict) -> dict | None:
+    """POST to the daemon's HTTP API and return the decoded JSON body."""
+    import http.client
+    import json
+    import urllib.parse
+
+    from claude_daemon.core.config import DaemonConfig
+
+    config = DaemonConfig.load()
+    if not config.api_enabled:
+        print("Error: HTTP API is not enabled.")
+        print("Fix: set 'api_enabled: true' in config.yaml, then restart.")
+        sys.exit(1)
+
+    base_url = f"http://127.0.0.1:{config.api_port}"
+    headers = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+
+    data = json.dumps(body).encode()
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8080
+
+    conn = http.client.HTTPConnection(host, port, timeout=1800)
+    try:
+        conn.request("POST", path, body=data, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", errors="replace")
+        if resp.status >= 400:
+            print(f"HTTP {resp.status}: {raw}")
+            sys.exit(1)
+        try:
+            return json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            print(raw)
+            return None
+    finally:
+        conn.close()
+
+
+def _cmd_plan(args: argparse.Namespace) -> None:
+    """Submit a plan request to the Software Factory."""
+    body: dict = {"request": args.request}
+    if args.goal_id is not None:
+        body["goal_id"] = args.goal_id
+    result = _factory_post("/api/v1/factory/plan", body)
+    if not result:
+        return
+    print(f"Plan: {result.get('slug', '?')}")
+    if result.get("plan_path"):
+        print(f"Spec: {result['plan_path']}")
+    if result.get("task_id"):
+        print(f"Task: {result['task_id']}")
+    if result.get("approval_id"):
+        print(f"Approval: {result['approval_id']}")
+    if result.get("summary"):
+        print()
+        print(result["summary"])
+
+
+def _cmd_build(args: argparse.Namespace) -> None:
+    """Submit a build request to the Software Factory."""
+    body: dict = {"request": args.request}
+    if args.plan_path:
+        body["plan_path"] = args.plan_path
+    if args.max_cost:
+        body["max_cost"] = args.max_cost
+    if args.executors:
+        body["executor_agents"] = [
+            a.strip() for a in args.executors.split(",") if a.strip()
+        ]
+    if args.skip_plan:
+        body["skip_plan"] = True
+    result = _factory_post("/api/v1/factory/build", body)
+    if not result:
+        return
+    print(f"Build: {result.get('slug', '?')}")
+    if result.get("result_path"):
+        print(f"Result: {result['result_path']}")
+    if result.get("accepted") is not None:
+        print(f"Accepted: {result['accepted']}")
+    if result.get("iterations"):
+        print(f"Iterations: {result['iterations']}")
+    if result.get("summary"):
+        print()
+        print(result["summary"])
+
+
+def _cmd_review(args: argparse.Namespace) -> None:
+    """Submit a review request to the Software Factory."""
+    body: dict = {}
+    if args.target:
+        body["target"] = args.target
+    if args.max_cost:
+        body["max_cost"] = args.max_cost
+    result = _factory_post("/api/v1/factory/review", body)
+    if not result:
+        return
+    print(f"Review: {result.get('slug', '?')}")
+    if result.get("report_path"):
+        print(f"Report: {result['report_path']}")
+    findings = result.get("findings") or []
+    if findings:
+        print(f"Findings ({len(findings)}):")
+        for f in findings:
+            focus = f.get("focus", "?")
+            agent = f.get("agent", "?")
+            print(f"  [{focus}] @{agent}")
+    if result.get("summary"):
+        print()
+        print(result["summary"])
 
 
 def _cmd_jobs(args: argparse.Namespace) -> None:
@@ -1042,7 +1156,7 @@ def _cmd_jobs(args: argparse.Namespace) -> None:
     print(f"  memory_compaction: {config.compaction_cron}")
     print(f"  auto_dream:        {config.dream_cron}")
     print(f"  heartbeat:         every {config.heartbeat_interval}s")
-    print(f"  session_cleanup:   every 6h")
+    print("  session_cleanup:   every 6h")
 
     if config.custom_jobs:
         print("\nCustom jobs:")
@@ -1171,6 +1285,52 @@ def main() -> None:
         help="Override hostname (default: localhost)",
     )
 
+    # software factory: plan / build / review
+    p_plan = sub.add_parser(
+        "plan",
+        help="Create an implementation plan via the Software Factory "
+             "(writes a spec artifact + optional approval row)",
+    )
+    p_plan.add_argument("request", help="Feature request to plan")
+    p_plan.add_argument(
+        "--goal-id", type=int, default=None, help="Optional Goal ID to link",
+    )
+
+    p_build = sub.add_parser(
+        "build",
+        help="Run the full plan -> execute -> review loop",
+    )
+    p_build.add_argument("request", help="Feature request to build")
+    p_build.add_argument(
+        "--plan-path", default=None,
+        help="Existing plan markdown file to use (skip auto-planning)",
+    )
+    p_build.add_argument(
+        "--max-cost", type=float, default=0.0,
+        help="Cost cap in USD (0 = unlimited)",
+    )
+    p_build.add_argument(
+        "--executors", default=None,
+        help="Comma-separated executor agent names (overrides factory config)",
+    )
+    p_build.add_argument(
+        "--skip-plan", action="store_true",
+        help="Skip auto-planning (use only if the request is trivial)",
+    )
+
+    p_review = sub.add_parser(
+        "review",
+        help="Run a parallel multi-focus code review on a diff target",
+    )
+    p_review.add_argument(
+        "target", nargs="?", default="",
+        help="Diff target (default: current branch vs main)",
+    )
+    p_review.add_argument(
+        "--max-cost", type=float, default=0.0,
+        help="Cost cap in USD (0 = unlimited)",
+    )
+
     # agents
     p_agents = sub.add_parser("agents", help="Manage agents")
     p_agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -1203,6 +1363,9 @@ def main() -> None:
         "backend": _cmd_backend,
         "dashboard-url": _cmd_dashboard_url,
         "agents": _cmd_agents,
+        "plan": _cmd_plan,
+        "build": _cmd_build,
+        "review": _cmd_review,
     }
 
     handler = commands.get(args.command)

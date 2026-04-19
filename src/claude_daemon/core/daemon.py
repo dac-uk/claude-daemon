@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from claude_daemon.agents.bootstrap import is_user_profile_unconfigured
@@ -59,6 +58,10 @@ class ClaudeDaemon:
         self.orchestrator: Orchestrator | None = None
         self.workflow_engine: WorkflowEngine | None = None
         self.improvement_planner: ImprovementPlanner | None = None
+        self.factory = None  # SoftwareFactory — set in start() after
+                              # orchestrator + workflow_engine + task_api.
+        self._task_api = None  # TaskAPI shared between daemon + factory.
+        self._approvals_store = None  # ApprovalsStore for approval lookups.
         self._file_watcher = None  # AgentFileWatcher (lazy import)
 
     @property
@@ -367,6 +370,41 @@ class ClaudeDaemon:
         self.workflow_engine = WorkflowEngine(
             self.orchestrator, self.agent_registry,
         )
+        # Software Factory — plan/build/review orchestration.
+        try:
+            from claude_daemon.factory import SoftwareFactory
+            from claude_daemon.orchestration.approvals import ApprovalsStore
+            from claude_daemon.orchestration.task_api import TaskAPI
+
+            factory_config = self.config.factory_config
+            if factory_config is None:
+                from claude_daemon.factory.config import FactoryConfig
+                factory_config = FactoryConfig(
+                    plans_dir=self.config.data_dir / "shared" / "plans",
+                )
+
+            self._approvals_store = ApprovalsStore(self.store)
+            self._task_api = TaskAPI(
+                orchestrator=self.orchestrator,
+                registry=self.agent_registry,
+                store=self.store,
+                approvals_store=self._approvals_store,
+            )
+            self.factory = SoftwareFactory(
+                orchestrator=self.orchestrator,
+                workflow_engine=self.workflow_engine,
+                registry=self.agent_registry,
+                store=self.store,
+                config=factory_config,
+                task_api=self._task_api,
+                approvals_store=self._approvals_store,
+            )
+            self.orchestrator.set_factory(self.factory)
+            log.info("Software Factory initialized (plans_dir=%s)",
+                     factory_config.plans_dir)
+        except Exception:
+            log.exception("Failed to initialize Software Factory")
+
         from claude_daemon.agents.discussion import DiscussionEngine
         self.discussion_engine = DiscussionEngine(
             self.orchestrator, self.agent_registry, self.store,
@@ -865,75 +903,51 @@ class ClaudeDaemon:
     async def run_build_workflow(
         self, request: str, max_total_cost: float = 0.0,
     ) -> str:
-        """Run the 2-stage build quality gate workflow.
+        """Back-compat shim — delegates to the Software Factory.
 
-        Albert builds backend → Luna builds UI → Max reviews → retry on failure.
+        Preserves the original albert -> luna -> max role config for
+        callers that relied on that workflow, while routing all new
+        plan/build/review work through SoftwareFactory so there is a
+        single source of truth for the review loop.
         """
-        if not self.workflow_engine or not self.agent_registry:
+        if not self.factory or not self.agent_registry:
             return "Workflow engine not initialized."
 
-        if self.store:
-            self.store.record_audit(
-                action="workflow_start", details=f"request={request[:200]}"
-            )
-
-        from claude_daemon.agents.workflow import WorkflowStep
-
-        build_steps = []
+        # Match the historical behaviour: only albert/luna act as
+        # executors when they exist, and max is the reviewer when
+        # available. Missing agents fall back to factory defaults.
+        executors: list[str] = []
         if self.agent_registry.get("albert"):
-            build_steps.append(WorkflowStep(
-                agent_name="albert",
-                prompt_template=(
-                    "Build the backend for this request: {original_request}\n\n"
-                    "Implement the core logic, data models, and API endpoints needed."
-                ),
-                label="backend",
-            ))
+            executors.append("albert")
         if self.agent_registry.get("luna"):
-            build_steps.append(WorkflowStep(
-                agent_name="luna",
-                prompt_template=(
-                    "Build the UI for this request: {original_request}\n\n"
-                    "Previous backend work:\n{prev_result}\n\n"
-                    "Create the views, layouts, and visual components."
-                ),
-                label="frontend",
-            ))
-
-        if not build_steps:
+            executors.append("luna")
+        if not executors:
             return "No build agents (albert/luna) found."
 
         reviewer = self.agent_registry.get("max")
-        if reviewer:
-            review_step = WorkflowStep(
-                agent_name="max",
-                prompt_template=(
-                    "Review this build for quality. Original request: {original_request}\n\n"
-                    "Build output:\n{build_output}\n\n"
-                    "Check functional correctness, code quality, and completeness. "
-                    "Respond with PASS if acceptable, or FAIL with specific issues."
-                ),
-                label="review",
-            )
-            result = await self.workflow_engine.execute_review_loop(
-                build_steps, review_step, request, max_iterations=3,
-                max_total_cost=max_total_cost,
-            )
+        if reviewer is not None:
+            # Temporarily override reviewer for this run without
+            # mutating the shared FactoryConfig.
+            saved_reviewer = self.factory.config.reviewer_agent
+            self.factory.config.reviewer_agent = "max"
         else:
-            result = await self.workflow_engine.execute_pipeline(
-                build_steps, request, max_total_cost=max_total_cost,
-            )
+            saved_reviewer = None
 
-        if self.store:
-            self.store.record_audit(
-                action="workflow_complete",
-                details=f"success={result.success}, steps={len(result.steps)}, cost=${result.total_cost:.4f}",
-                cost_usd=result.total_cost, success=result.success,
+        try:
+            result = await self.factory.build(
+                request,
+                executor_agents=executors,
+                max_total_cost=max_total_cost,
+                skip_plan=True,
             )
+        finally:
+            if saved_reviewer is not None:
+                self.factory.config.reviewer_agent = saved_reviewer
 
         summary = f"Workflow {'PASSED' if result.success else 'FAILED'}\n"
-        summary += result.summary()
-        summary += f"\n\nFinal output:\n{result.final_result[:2000]}"
+        summary += result.summary
+        if result.final_output:
+            summary += f"\n\nFinal output:\n{result.final_output[:2000]}"
         return summary
 
     async def heartbeat(self) -> None:

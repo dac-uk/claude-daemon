@@ -39,33 +39,56 @@ AGENT_ADDRESS_PATTERN = re.compile(
 # Placeholder names used in documentation — never match these as real agent names
 _PLACEHOLDER = r'(?!(?:name|agent_name|agent|target|example)\b)'
 
+# Common terminator for all dispatch tags. Extending this keeps the
+# parsers consistent when new tag families (factory, etc.) are added.
+_TAG_TERMINATORS = (
+    r'\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|'
+    r'\[BUILD\]|\[PLAN\]|\[REVIEW\]|\Z'
+)
+
 # Pattern to detect delegation requests in agent responses: [DELEGATE:agent_name] message
 DELEGATION_PATTERN = re.compile(
-    rf'\[DELEGATE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|\Z)',
+    rf'\[DELEGATE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
 # [DISCUSS:agent_name] topic — request a bilateral discussion
 DISCUSS_PATTERN = re.compile(
-    rf'\[DISCUSS:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\[OPTIMIZE:|\Z)',
+    rf'\[DISCUSS:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
 # [COUNCIL] topic — request a full council deliberation
 COUNCIL_PATTERN = re.compile(
-    r'\[COUNCIL\]\s*(.*?)(?=\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[HELP:|\[OPTIMIZE:|\Z)',
+    rf'\[COUNCIL\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
 # [HELP:agent_name] question — quick single-turn consultation
 HELP_PATTERN = re.compile(
-    rf'\[HELP:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[HELP:|\[DISCUSS:|\[COUNCIL\]|\[DELEGATE:|\[OPTIMIZE:|\Z)',
+    rf'\[HELP:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
 # [OPTIMIZE:agent_name] target — trigger evo code optimization workflow
 OPTIMIZE_PATTERN = re.compile(
-    rf'\[OPTIMIZE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?=\[OPTIMIZE:|\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\Z)',
+    rf'\[OPTIMIZE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    re.DOTALL,
+)
+
+# Software Factory dispatch tags — orchestrator emits these when a
+# request warrants the plan/build/review loop. No agent name needed:
+# role assignment is centralised in FactoryConfig.
+BUILD_PATTERN = re.compile(
+    rf'\[BUILD\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    re.DOTALL,
+)
+PLAN_PATTERN = re.compile(
+    rf'\[PLAN\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    re.DOTALL,
+)
+REVIEW_PATTERN = re.compile(
+    rf'\[REVIEW\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
@@ -123,6 +146,7 @@ class Orchestrator:
         self._embedding_store = embedding_store
         self._discussion_engine = None
         self._workflow_engine = None
+        self._factory = None  # SoftwareFactory — set post-init by daemon
         self._budget_store = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
 
@@ -133,6 +157,14 @@ class Orchestrator:
     def set_workflow_engine(self, engine) -> None:
         """Inject workflow engine (avoids circular init)."""
         self._workflow_engine = engine
+
+    def set_factory(self, factory) -> None:
+        """Inject the Software Factory (avoids circular init).
+
+        Enables [BUILD] / [PLAN] / [REVIEW] tag handling. When unset,
+        factory tags emitted by agents are ignored (handlers no-op).
+        """
+        self._factory = factory
 
     def set_budget_store(self, budget_store) -> None:
         """Inject budget store for post-completion spend recording."""
@@ -395,8 +427,6 @@ class Orchestrator:
         # Strip code blocks to avoid matching example tags in markdown
         scan_text = _strip_code_blocks(response.result)
         delegations = DELEGATION_PATTERN.findall(scan_text)
-        if not delegations:
-            return response
 
         appended = []
         for target_name, message in delegations:
@@ -432,6 +462,10 @@ class Orchestrator:
                 response = await self._process_councils(from_agent, response)
             if self._workflow_engine:
                 response = await self._process_optimizations(from_agent, response)
+            if self._factory:
+                response = await self._process_factory_requests(
+                    from_agent, response, platform=platform,
+                )
 
         return response
 
@@ -580,6 +614,101 @@ class Orchestrator:
             except Exception:
                 log.exception("Optimization %s -> %s failed", from_agent.name, target_name)
                 appended.append(f"\n[Optimization for '{target_name}' failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+        return response
+
+    async def _process_factory_requests(
+        self, from_agent: Agent, response: ClaudeResponse,
+        platform: str = "cli",
+    ) -> ClaudeResponse:
+        """Process [BUILD] / [PLAN] / [REVIEW] tags — dispatch to the
+        Software Factory.
+
+        Design notes (from audit):
+        - Called inside the platform guard so factory loops cannot be
+          retriggered from discussion/council turns.
+        - No agent name in the tags — role assignment lives in
+          FactoryConfig, not in the tag.
+        """
+        if not self._factory:
+            return response
+
+        scan = _strip_code_blocks(response.result)
+        builds = BUILD_PATTERN.findall(scan)
+        plans = PLAN_PATTERN.findall(scan)
+        reviews = REVIEW_PATTERN.findall(scan)
+        if not (builds or plans or reviews):
+            return response
+
+        appended: list[str] = []
+
+        for description in plans:
+            desc = description.strip()
+            if not desc:
+                continue
+            log.info("Factory PLAN: %s -> %s", from_agent.name, desc[:80])
+            self.store.record_audit(
+                action="factory_plan_tag", agent_name=from_agent.name,
+                details=f"plan: {desc[:200]}", platform=platform,
+            )
+            try:
+                result = await self._factory.plan(
+                    desc, platform=platform, user_id=from_agent.name,
+                )
+                snippet = result.plan_content[:1200]
+                status_line = (
+                    f"status={result.status}"
+                    + (f" approval_id={result.approval_id}" if result.approval_id else "")
+                    + (f" plan={result.plan_path}" if result.plan_path else "")
+                )
+                appended.append(
+                    f"\n\n--- Plan Created ({status_line}) ---\n{snippet}"
+                )
+            except Exception:
+                log.exception("Factory PLAN failed for %s", from_agent.name)
+                appended.append("\n[Factory PLAN failed: error]")
+
+        for description in builds:
+            desc = description.strip()
+            if not desc:
+                continue
+            log.info("Factory BUILD: %s -> %s", from_agent.name, desc[:80])
+            self.store.record_audit(
+                action="factory_build_tag", agent_name=from_agent.name,
+                details=f"build: {desc[:200]}", platform=platform,
+            )
+            try:
+                result = await self._factory.build(
+                    desc, platform=platform, user_id=from_agent.name,
+                )
+                appended.append(
+                    f"\n\n--- Build Result (slug={result.slug}) ---\n"
+                    f"{result.summary}"
+                )
+            except Exception:
+                log.exception("Factory BUILD failed for %s", from_agent.name)
+                appended.append("\n[Factory BUILD failed: error]")
+
+        for target in reviews:
+            tgt = target.strip()
+            log.info("Factory REVIEW: %s -> %s", from_agent.name, tgt[:80])
+            self.store.record_audit(
+                action="factory_review_tag", agent_name=from_agent.name,
+                details=f"review: {tgt[:200]}", platform=platform,
+            )
+            try:
+                result = await self._factory.review(
+                    tgt or None, platform=platform, user_id=from_agent.name,
+                )
+                appended.append(
+                    f"\n\n--- Review Report (slug={result.slug}) ---\n"
+                    f"{result.summary}"
+                )
+            except Exception:
+                log.exception("Factory REVIEW failed for %s", from_agent.name)
+                appended.append("\n[Factory REVIEW failed: error]")
 
         if appended:
             response.result += "\n".join(appended)

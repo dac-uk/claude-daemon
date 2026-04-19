@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from claude_daemon.agents.orchestrator import Orchestrator, SpawnedTask
+    from claude_daemon.agents.orchestrator import Orchestrator
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.memory.store import ConversationStore
     from claude_daemon.orchestration.approvals import ApprovalsStore
@@ -36,7 +36,26 @@ class TaskSubmission:
     platform: str = "api"
     goal_id: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    source: str = "api"  # api | chat | spawn | heartbeat
+    source: str = "api"  # api | chat | spawn | heartbeat | factory
+    # When True, the task is created as ``pending_approval`` regardless
+    # of budget — used by the Software Factory so plan artefacts are
+    # always human-gated.
+    require_approval: bool = False
+    # Reason to record on the approvals row when require_approval=True.
+    approval_reason: str = "manual approval requested"
+
+
+@dataclass
+class _ForcedApprovalDecision:
+    """Stand-in for an EnforcementDecision when callers force an
+    approval gate without a budget check.
+
+    Only carries the fields ``_handle_approval_required`` reads
+    (``reason`` and ``threshold_usd``).
+    """
+
+    reason: str = "manual approval requested"
+    threshold_usd: float | None = None
 
 
 @dataclass
@@ -107,6 +126,13 @@ class TaskAPI:
                 task_id="", status="rejected",
                 error=f"Unknown agent: {req.agent}",
             )
+
+        # Explicit approval gate (e.g. Software Factory plan artefacts).
+        # Short-circuits budget enforcement so approval is always required
+        # regardless of estimated spend.
+        if req.require_approval:
+            forced = _ForcedApprovalDecision(reason=req.approval_reason)
+            return self._handle_approval_required(req, agent_name, forced)
 
         # Budget enforcement (Phase 2)
         reservations: list[tuple[int, float]] = []

@@ -102,6 +102,16 @@ class HttpApi:
         self._app.router.add_post("/api/message", self._handle_message)
         self._app.router.add_post("/api/message/stream", self._handle_message_stream)
         self._app.router.add_post("/api/workflow", self._handle_workflow)
+        # Software Factory — plan / build / review
+        self._app.router.add_post(
+            "/api/v1/factory/plan", self._handle_factory_plan,
+        )
+        self._app.router.add_post(
+            "/api/v1/factory/build", self._handle_factory_build,
+        )
+        self._app.router.add_post(
+            "/api/v1/factory/review", self._handle_factory_review,
+        )
         self._app.router.add_get("/api/metrics", self._handle_metrics)
         self._app.router.add_get("/api/costs", self._handle_costs)
         self._app.router.add_post("/api/webhook/{source}", self._handle_webhook)
@@ -463,6 +473,114 @@ class HttpApi:
         except Exception:
             log.exception("Workflow API error")
             return web.json_response({"error": "Workflow execution failed"}, status=500)
+
+    # -- /api/v1/factory/* — Software Factory (plan/build/review) --
+
+    def _get_factory(self):
+        """Return the daemon's SoftwareFactory, or None if not ready."""
+        return getattr(self.daemon, "factory", None)
+
+    async def _handle_factory_plan(self, request: web.Request) -> web.Response:
+        factory = self._get_factory()
+        if factory is None:
+            return web.json_response(
+                {"error": "Factory not initialized"}, status=503,
+            )
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        request_text = (body.get("request") or body.get("prompt") or "").strip()
+        if not request_text:
+            return web.json_response(
+                {"error": "Missing 'request' field"}, status=400,
+            )
+        user_id = body.get("user_id", "api")
+        platform = body.get("platform", "api")
+        goal_id = body.get("goal_id")
+        try:
+            result = await factory.plan(
+                request_text, platform=platform, user_id=user_id,
+                goal_id=goal_id,
+            )
+            status = 200 if not result.error else 500
+            return web.json_response(result.to_dict(), status=status)
+        except Exception:
+            log.exception("Factory plan API error")
+            return web.json_response(
+                {"error": "Factory plan failed"}, status=500,
+            )
+
+    async def _handle_factory_build(self, request: web.Request) -> web.Response:
+        factory = self._get_factory()
+        if factory is None:
+            return web.json_response(
+                {"error": "Factory not initialized"}, status=503,
+            )
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        request_text = (body.get("request") or body.get("prompt") or "").strip()
+        if not request_text:
+            return web.json_response(
+                {"error": "Missing 'request' field"}, status=400,
+            )
+        user_id = body.get("user_id", "api")
+        platform = body.get("platform", "api")
+        max_cost = float(body.get("max_cost", 0.0))
+        plan_path_raw = body.get("plan_path")
+        from pathlib import Path as _Path
+        plan_path = _Path(plan_path_raw) if plan_path_raw else None
+        executors = body.get("executor_agents")
+        skip_plan = bool(body.get("skip_plan", False))
+        try:
+            result = await factory.build(
+                request_text,
+                plan_path=plan_path,
+                platform=platform,
+                user_id=user_id,
+                executor_agents=executors,
+                max_total_cost=max_cost,
+                skip_plan=skip_plan,
+            )
+            status = 200 if result.success else 500
+            return web.json_response(result.to_dict(), status=status)
+        except Exception:
+            log.exception("Factory build API error")
+            return web.json_response(
+                {"error": "Factory build failed"}, status=500,
+            )
+
+    async def _handle_factory_review(self, request: web.Request) -> web.Response:
+        factory = self._get_factory()
+        if factory is None:
+            return web.json_response(
+                {"error": "Factory not initialized"}, status=503,
+            )
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            body = {}
+
+        target = (body.get("target") or "").strip() or None
+        user_id = body.get("user_id", "api")
+        platform = body.get("platform", "api")
+        max_cost = float(body.get("max_cost", 0.0))
+        try:
+            result = await factory.review(
+                target, platform=platform, user_id=user_id,
+                max_total_cost=max_cost,
+            )
+            status = 200 if not result.error else 200  # empty-diff not a failure
+            return web.json_response(result.to_dict(), status=status)
+        except Exception:
+            log.exception("Factory review API error")
+            return web.json_response(
+                {"error": "Factory review failed"}, status=500,
+            )
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """GET /api/metrics?agent=albert&days=7"""
