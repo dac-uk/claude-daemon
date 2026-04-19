@@ -93,7 +93,7 @@ class DaemonConfig:
     # Memory
     daily_log_enabled: bool = True
     compaction_threshold: int = 50_000
-    max_session_age_hours: int = 72
+    max_session_age_hours: int = 168  # 7 days — auto-archive dormant sessions
     dream_enabled: bool = True
     max_context_chars: int = 5000
     max_memory_chars: int = 3000

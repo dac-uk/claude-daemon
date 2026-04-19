@@ -793,6 +793,14 @@ html, body {
 .sess-active-dot { width: 6px; height: 6px; border-radius: 50%;
   background: var(--green); box-shadow: 0 0 6px var(--green);
   display: inline-block; flex-shrink: 0; }
+.sess-archived-dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-dim);
+  display: inline-block; flex-shrink: 0; }
+.sess-row-archived { opacity: 0.55; }
+.sess-toggle { display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text-secondary); cursor: pointer;
+  margin: 8px 0 12px; user-select: none; }
+.sess-toggle input { cursor: pointer; }
 .sess-status-pill { font-size: 10px; padding: 2px 8px; border-radius: 999px;
   text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
   background: rgba(138,148,158,0.15); color: var(--text-secondary); }

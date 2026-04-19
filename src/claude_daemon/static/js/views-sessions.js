@@ -12,6 +12,8 @@ CC.sessState = {
   selectedSession: null,
   summary: null,
   sessions: [],
+  allSessions: [],       // full unfiltered set; `sessions` is filtered view
+  showArchived: false,
   loading: false,
 };
 
@@ -119,12 +121,20 @@ CC._sessRender = function() {
     }
 
     var sessions = s.sessions || [];
+    var allSessions = s.allSessions || [];
+    var archivedCount = allSessions.filter(function(x) { return x.status === 'archived'; }).length;
     var chatSessions = sessions.filter(function(x) { return x.kind === 'chat'; });
     var spawnSessions = sessions.filter(function(x) { return x.kind === 'spawn'; });
     var otherSessions = sessions.filter(function(x) { return x.kind !== 'chat' && x.kind !== 'spawn'; });
 
     var totalCost = sessions.reduce(function(sum, x) { return sum + (x.cost_usd || 0); }, 0);
     var totalMsgs = sessions.reduce(function(sum, x) { return sum + (x.message_count || 0); }, 0);
+
+    var checkedAttr = s.showArchived ? ' checked' : '';
+    var toggleLabel = 'Show archived' + (archivedCount > 0 ? ' (' + archivedCount + ')' : '');
+    var toggleHtml = (archivedCount > 0 || s.showArchived)
+      ? '<label class="sess-toggle"><input type="checkbox" id="sessShowArchived"' + checkedAttr + '> ' + toggleLabel + '</label>'
+      : '';
 
     var html = '<div class="sess-agent-header">' +
       '<div class="sess-agent-info">' +
@@ -136,16 +146,20 @@ CC._sessRender = function() {
         '<div class="sess-stat"><span class="sess-stat-val">' + totalMsgs + '</span><span class="sess-stat-label">Messages</span></div>' +
         '<div class="sess-stat"><span class="sess-stat-val">$' + totalCost.toFixed(4) + '</span><span class="sess-stat-label">Total Cost</span></div>' +
       '</div>' +
-    '</div>';
+    '</div>' + toggleHtml;
 
     if (sessions.length === 0) {
+      var emptySub = archivedCount > 0 && !s.showArchived
+        ? 'All ' + archivedCount + ' sessions for this agent are archived. Toggle "Show archived" above to view them.'
+        : 'This agent has no recorded chat or task sessions. Start a conversation via the Chat tab or submit a task to generate activity.';
       html += '<div class="sess-empty-state">' +
         '<div class="sess-empty-icon">\u{1f4ad}</div>' +
         '<div class="sess-empty-title">No sessions yet</div>' +
-        '<div class="sess-empty-sub">This agent has no recorded chat or task sessions. ' +
-          'Start a conversation via the Chat tab or submit a task to generate activity.</div>' +
+        '<div class="sess-empty-sub">' + emptySub + '</div>' +
       '</div>';
       body.innerHTML = html;
+      var emptyToggle = body.querySelector('#sessShowArchived');
+      if (emptyToggle) emptyToggle.addEventListener('change', CC._sessToggleArchived);
       return;
     }
 
@@ -161,6 +175,8 @@ CC._sessRender = function() {
         CC._sessOpenDetail(parseInt(btn.dataset.idx, 10));
       });
     });
+    var toggleEl = body.querySelector('#sessShowArchived');
+    if (toggleEl) toggleEl.addEventListener('change', CC._sessToggleArchived);
     return;
   }
 
@@ -236,8 +252,16 @@ CC._sessRenderCategory = function(label, sessions, kind) {
     } else {
       label = 'Session ' + (sess.session_id || '').substring(0, 8);
     }
-    var statusDot = sess.status === 'active' ? '<span class="sess-active-dot" title="Active"></span>' : '';
-    html += '<button class="sess-row" data-idx="' + globalIdx + '">' +
+    var statusDot;
+    if (sess.status === 'active') {
+      statusDot = '<span class="sess-active-dot" title="Active"></span>';
+    } else if (sess.status === 'archived') {
+      statusDot = '<span class="sess-archived-dot" title="Archived"></span>';
+    } else {
+      statusDot = '';
+    }
+    var rowClass = sess.status === 'archived' ? 'sess-row sess-row-archived' : 'sess-row';
+    html += '<button class="' + rowClass + '" data-idx="' + globalIdx + '">' +
       statusDot +
       '<span class="sess-kind-badge sess-kind-' + (sess.kind || 'unknown') + '">' + (sess.kind || '?') + '</span>' +
       '<span class="sess-label">' + CC.escHtml(label) + '</span>' +
@@ -254,13 +278,27 @@ CC._sessOpenAgent = async function(name) {
   CC.sessState.view = 'sessions';
   CC.sessState.selectedAgent = name;
   CC.sessState.sessions = [];
+  CC.sessState.allSessions = [];
   CC.sessState.loading = true;
   CC._sessRender();
   var url = '/api/sessions/history?agent=' + encodeURIComponent(name) + '&limit=200';
   CC.cache[url] = null;
   var data = await CC.api(url);
-  CC.sessState.sessions = (data && data.sessions) || [];
+  var all = (data && data.sessions) || [];
+  CC.sessState.allSessions = all;
+  CC.sessState.sessions = CC.sessState.showArchived
+    ? all
+    : all.filter(function(s) { return s.status !== 'archived'; });
   CC.sessState.loading = false;
+  CC._sessRender();
+};
+
+CC._sessToggleArchived = function() {
+  CC.sessState.showArchived = !CC.sessState.showArchived;
+  var all = CC.sessState.allSessions || [];
+  CC.sessState.sessions = CC.sessState.showArchived
+    ? all
+    : all.filter(function(s) { return s.status !== 'archived'; });
   CC._sessRender();
 };
 
@@ -280,6 +318,7 @@ CC._sessBack = function() {
     CC.sessState.view = 'agents';
     CC.sessState.selectedAgent = null;
     CC.sessState.sessions = [];
+    CC.sessState.allSessions = [];
   }
   CC._sessRender();
 };
