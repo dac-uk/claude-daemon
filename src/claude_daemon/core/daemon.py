@@ -582,6 +582,18 @@ class ClaudeDaemon:
         """Check if previous shutdown was unclean (crash). Alert user if so."""
         if not self.durable:
             return
+        # If an update-initiated shutdown left a sentinel, the missing
+        # graceful-stop marker is expected (SIGKILL skipped it), not a crash.
+        from claude_daemon.utils.paths import update_sentinel_path
+        sentinel = update_sentinel_path()
+        if sentinel.exists():
+            log.info("Previous shutdown was operator-initiated (update); skipping crash check")
+            self.durable.append_daily_log("Daemon restarted after operator update (not a crash).")
+            try:
+                sentinel.unlink()
+            except OSError:
+                pass
+            return
         today_log = self.durable.read_daily_log()
         if not today_log:
             return

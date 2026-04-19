@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import logging
+import os
 import shutil
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -183,6 +184,11 @@ class DurableMemory:
 
             with open(path, "a") as f:
                 f.write(f"- [{timestamp}] {entry}\n")
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
 
     def read_daily_log(self, d: date | None = None) -> str:
         path = self._daily_log_path(d)

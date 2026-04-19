@@ -55,6 +55,12 @@ def pid_path() -> Path:
     return config_dir() / "daemon.pid"
 
 
+def update_sentinel_path() -> Path:
+    """Marker written by `claude-daemon update-stop` so the next start
+    knows a SIGKILL was operator-initiated, not a crash."""
+    return config_dir() / ".updating"
+
+
 def ensure_dirs() -> None:
     """Create all required directories if they don't exist."""
     for d in [config_dir(), log_dir(), memory_dir()]:

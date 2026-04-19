@@ -311,7 +311,7 @@ def _stop_daemon_for_update() -> None:
     import subprocess as sp
     import time
 
-    from claude_daemon.utils.paths import pid_path
+    from claude_daemon.utils.paths import pid_path, update_sentinel_path
 
     system = platform.system()
     stopped = False
@@ -377,6 +377,14 @@ def _stop_daemon_for_update() -> None:
     if not _alive():
         pf.unlink(missing_ok=True)
         return
+
+    # Mark this shutdown as operator-initiated so the next daemon start
+    # won't mistake a SIGKILL-induced missing graceful-stop marker for a
+    # crash. Written before any signal so a fast SIGKILL can't race us.
+    try:
+        update_sentinel_path().write_text(f"pid={pid}\nts={int(time.time())}\n")
+    except OSError as exc:
+        log.warning("Could not write update sentinel: %s", exc)
 
     # If the service manager already did the unload, give it a head
     # start before sending our own SIGTERM.
