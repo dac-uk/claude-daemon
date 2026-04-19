@@ -81,6 +81,21 @@ CC._bindAlertsControls = function() {
     });
   }
 
+  var dismissAll = document.getElementById('alertsDismissAll');
+  if (dismissAll) {
+    dismissAll.addEventListener('click', function() {
+      var visible = CC._alertsVisibleList();
+      if (visible.length === 0) return;
+      var msg = 'Dismiss ' + visible.length + ' alert' +
+                (visible.length === 1 ? '' : 's') +
+                ' currently shown? Use "Reset dismissed" to undo.';
+      if (!window.confirm(msg)) return;
+      visible.forEach(function(a) { CC._alertsDismissed.add(a.id); });
+      CC._persistDismissed();
+      CC._renderAlertsList();
+    });
+  }
+
   // Action buttons (delegated)
   var list = document.getElementById('alertsList');
   if (list) {
@@ -137,15 +152,20 @@ CC._alertMatches = function(a, f) {
   return true;
 };
 
+CC._alertsVisibleList = function() {
+  var all = CC._alertsCache || [];
+  return all
+    .filter(function(a) { return !CC._alertsDismissed.has(a.id); })
+    .filter(function(a) { return CC._alertMatches(a, CC._alertsFilter); });
+};
+
 CC._renderAlertsList = function() {
   var el = document.getElementById('alertsList');
   var countEl = document.getElementById('alertsCount');
   if (!el) return;
   var all = CC._alertsCache || [];
   var visible = all.filter(function(a) { return !CC._alertsDismissed.has(a.id); });
-  var filtered = visible.filter(function(a) {
-    return CC._alertMatches(a, CC._alertsFilter);
-  });
+  var filtered = CC._alertsVisibleList();
 
   var unresolved = visible.filter(function(a) {
     return ['critical', 'error', 'warning'].indexOf(a.severity) >= 0;
