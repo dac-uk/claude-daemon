@@ -93,11 +93,16 @@ REVIEW_PATTERN = re.compile(
 )
 
 _CODE_BLOCK_RE = re.compile(r'```[\s\S]*?```', re.DOTALL)
+# Single-line inline code spans — strip these too so prose like
+# "use the `[BUILD]` tag" doesn't fire the factory.
+_INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
 
 
 def _strip_code_blocks(text: str) -> str:
-    """Remove fenced code blocks to prevent false tag matches in examples."""
-    return _CODE_BLOCK_RE.sub('', text)
+    """Remove fenced + inline code spans to prevent false tag matches
+    in examples or documentation-style prose."""
+    without_fenced = _CODE_BLOCK_RE.sub('', text)
+    return _INLINE_CODE_RE.sub('', without_fenced)
 
 
 ROUTING_PROMPT = """\
@@ -636,9 +641,12 @@ class Orchestrator:
             return response
 
         scan = _strip_code_blocks(response.result)
-        builds = BUILD_PATTERN.findall(scan)
-        plans = PLAN_PATTERN.findall(scan)
-        reviews = REVIEW_PATTERN.findall(scan)
+        # Cap fan-out so a glitchy / adversarial agent turn can't fire
+        # dozens of concurrent factory pipelines in one response.
+        max_per_turn = 3
+        builds = BUILD_PATTERN.findall(scan)[:max_per_turn]
+        plans = PLAN_PATTERN.findall(scan)[:max_per_turn]
+        reviews = REVIEW_PATTERN.findall(scan)[:max_per_turn]
         if not (builds or plans or reviews):
             return response
 

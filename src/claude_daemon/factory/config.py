@@ -67,8 +67,10 @@ class FactoryConfig:
     reviewer_agent: str = "auto"
     review_max_iterations: int = 3
     review_pass_keyword: str = "PASS"
+    # Resolved to an absolute path at construction time so subsequent
+    # ``os.chdir`` calls don't relocate plan artefacts mid-run.
     plans_dir: Path = field(
-        default_factory=lambda: Path("shared/plans"),
+        default_factory=lambda: (Path.cwd() / "shared" / "plans").resolve(),
     )
     test_command: str = ""
     require_plan_approval: bool = True
@@ -78,6 +80,13 @@ class FactoryConfig:
     review_presets: list[ReviewPreset] = field(
         default_factory=_default_presets,
     )
+
+    def __post_init__(self) -> None:
+        # Normalise ``plans_dir`` to an absolute path. Callers passing
+        # a relative path get it pinned to the current working directory
+        # at construction time (not at first use).
+        if not self.plans_dir.is_absolute():
+            self.plans_dir = (Path.cwd() / self.plans_dir).resolve()
 
     @classmethod
     def from_dict(cls, d: dict[str, Any], data_dir: Path) -> FactoryConfig:

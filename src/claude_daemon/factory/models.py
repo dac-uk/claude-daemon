@@ -50,6 +50,7 @@ class BuildResult:
     iterations: int = 0
     total_cost: float = 0.0
     final_output: str = ""
+    goal_id: int | None = None
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +63,7 @@ class BuildResult:
             "iterations": self.iterations,
             "total_cost": self.total_cost,
             "final_output": self.final_output,
+            "goal_id": self.goal_id,
             "error": self.error,
         }
 

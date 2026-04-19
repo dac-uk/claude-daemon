@@ -277,9 +277,11 @@ class TestFactoryBuild:
 
     @pytest.mark.asyncio
     async def test_uses_existing_plan_path(
-        self, factory, orchestrator, tmp_path: Path,
+        self, factory, orchestrator, factory_config,
     ):
-        plan_file = tmp_path / "myplan.md"
+        # Plan file must live inside plans_dir (P1.5 sandbox).
+        factory_config.plans_dir.mkdir(parents=True, exist_ok=True)
+        plan_file = factory_config.plans_dir / "myplan.md"
         plan_file.write_text("# Plan: Do the thing\n\nSteps: {code: 'x'}")
 
         async def _send(agent, prompt, **kw):
@@ -296,6 +298,35 @@ class TestFactoryBuild:
         assert first_agent.name == "luna"
         # The plan content (including literal braces in the 'code: x'
         # block) must have been safely interpolated — no KeyError raised.
+
+    @pytest.mark.asyncio
+    async def test_plan_path_outside_plans_dir_rejected(
+        self, factory, tmp_path: Path,
+    ):
+        # P1.5: plan_path outside plans_dir must be refused so HTTP/CLI
+        # callers cannot point the factory at arbitrary files.
+        evil = tmp_path / "outside.md"
+        evil.write_text("not allowed")
+        result = await factory.build("Try escape", plan_path=evil)
+        assert not result.success
+        assert "outside" in (result.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_goal_id_flows_to_result(
+        self, factory, orchestrator,
+    ):
+        async def _send(agent, prompt, **kw):
+            if agent.name == "max":
+                return _ok("PASS")
+            return _ok(f"[{agent.name}] built")
+
+        orchestrator.send_to_agent = AsyncMock(side_effect=_send)
+        result = await factory.build(
+            "Linked build", skip_plan=True, goal_id=42,
+        )
+        assert result.success
+        assert result.goal_id == 42
+        assert result.to_dict()["goal_id"] == 42
 
     @pytest.mark.asyncio
     async def test_skip_plan_bypasses_planner(
@@ -656,3 +687,168 @@ class TestBackCompatShim:
         daemon.factory = None
         out = await daemon.run_build_workflow("build")
         assert "not initialized" in out.lower()
+
+
+# ── P0-P2 hardening (ultraview punch list) ───────────────────────
+
+
+class TestHardening:
+    """Targeted tests for the P0-P2 fixes from the ultraview audit."""
+
+    @pytest.mark.asyncio
+    async def test_generate_diff_rejects_flag_style_target(self, factory):
+        # P0.1: git argument injection — a target that looks like a
+        # flag must be refused before hitting the subprocess.
+        out = await factory._generate_diff("--output=/tmp/evil")
+        assert out == ""
+        out2 = await factory._generate_diff("-p --no-index /etc/passwd")
+        assert out2 == ""
+
+    @pytest.mark.asyncio
+    async def test_generate_diff_accepts_safe_ref(
+        self, factory, monkeypatch,
+    ):
+        # Sanity-check the allow-list: a normal ref passes through to
+        # the subprocess. We intercept at asyncio.create_subprocess_exec
+        # so no real git is ever spawned.
+        seen_args: list[tuple] = []
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"fake-diff-output\n", b"")
+
+            def kill(self):
+                pass
+
+        async def _fake_exec(*args, **kw):
+            seen_args.append(args)
+            return _FakeProc()
+
+        import claude_daemon.factory.factory as fac_mod
+        monkeypatch.setattr(
+            fac_mod.asyncio, "create_subprocess_exec", _fake_exec,
+        )
+        out = await factory._generate_diff("main..feature/x")
+        assert "fake-diff-output" in out
+        assert seen_args, "subprocess should have been invoked"
+        # The ref must be passed after the ``--`` separator.
+        invoked = seen_args[0]
+        assert "git" in invoked[0]
+        assert "--" in invoked
+        assert "main..feature/x" in invoked
+
+    def test_slugify_unique_under_rapid_calls(self):
+        # P0.2: same-second calls must produce distinct slugs.
+        from claude_daemon.factory.factory import _slugify
+
+        slugs = {_slugify("same request") for _ in range(50)}
+        assert len(slugs) == 50, (
+            "expected 50 unique slugs even within the same second"
+        )
+
+    @pytest.mark.asyncio
+    async def test_plan_submit_rejection_leaves_no_orphan_file(
+        self, factory, factory_config, monkeypatch,
+    ):
+        # P0.3: if TaskAPI.submit_task returns rejected/error, the
+        # plan .md file must NOT have been written.
+        from claude_daemon.orchestration.task_api import TaskSubmissionResult
+
+        def _reject(sub):
+            return TaskSubmissionResult(
+                task_id="", status="rejected",
+                error="policy refused it",
+            )
+
+        monkeypatch.setattr(factory.task_api, "submit_task", _reject)
+        before = set(factory_config.plans_dir.glob("*.md"))
+        result = await factory.plan("Something forbidden")
+        after = set(factory_config.plans_dir.glob("*.md"))
+        assert result.status == "rejected"
+        assert after == before, (
+            f"orphan plan file was written after rejection: "
+            f"{after - before}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_plan_cost_cap_rejects_over_budget(
+        self, factory, orchestrator,
+    ):
+        # P2.9: plan() now honours a max_cost cap. A response costing
+        # more than the cap returns status=error and leaves no task.
+        orchestrator.send_to_agent = AsyncMock(
+            return_value=_ok("plan body", cost=0.05),
+        )
+        result = await factory.plan("Expensive plan", max_cost=0.01)
+        assert result.status == "error"
+        assert "exceeds cap" in (result.error or "")
+        assert result.task_id == ""
+
+    @pytest.mark.asyncio
+    async def test_factory_tag_fanout_capped_per_turn(
+        self, registry, store,
+    ):
+        # P1.6: an adversarial or glitched agent turn emitting 10
+        # [BUILD] tags must fire at most 3 factory.build() calls.
+        from claude_daemon.agents.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            registry=registry, process_manager=MagicMock(), store=store,
+        )
+        fake_factory = MagicMock()
+        fake_factory.build = AsyncMock(return_value=MagicMock(
+            slug="s", summary="ok", success=True,
+        ))
+        fake_factory.plan = AsyncMock()
+        fake_factory.review = AsyncMock()
+        orch.set_factory(fake_factory)
+
+        albert = registry.get("albert")
+        many_builds = "\n".join(
+            f"[BUILD] thing {i}" for i in range(10)
+        )
+        response = _ok(many_builds)
+        await orch._process_factory_requests(
+            albert, response, platform="cli",
+        )
+        assert fake_factory.build.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_inline_backtick_tag_is_ignored(
+        self, registry, store,
+    ):
+        # P1.8: prose like "use the `[BUILD]` tag" must not fire the
+        # factory — only fenced and inline code spans should be stripped.
+        from claude_daemon.agents.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            registry=registry, process_manager=MagicMock(), store=store,
+        )
+        fake_factory = MagicMock()
+        fake_factory.build = AsyncMock()
+        fake_factory.plan = AsyncMock()
+        fake_factory.review = AsyncMock()
+        orch.set_factory(fake_factory)
+
+        albert = registry.get("albert")
+        response = _ok("You can use the `[BUILD] example` tag any time.")
+        await orch._process_factory_requests(
+            albert, response, platform="cli",
+        )
+        fake_factory.build.assert_not_awaited()
+
+    def test_factory_config_plans_dir_absolutised(self, tmp_path: Path):
+        # P1.7: plans_dir supplied as a relative Path must be pinned to
+        # an absolute path at construction time.
+        import os
+
+        original = Path.cwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = FactoryConfig(plans_dir=Path("relative/plans"))
+            assert cfg.plans_dir.is_absolute()
+            assert cfg.plans_dir == (tmp_path / "relative" / "plans").resolve()
+        finally:
+            os.chdir(original)

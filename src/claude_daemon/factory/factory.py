@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,13 +50,21 @@ def _slugify(request: str, *, max_len: int = 40) -> str:
         base = "request"
     if len(base) > max_len:
         base = base[:max_len].rstrip("-")
-    suffix = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"{base}-{suffix}"
+    # Timestamp gives human-readable ordering; the hex suffix guarantees
+    # uniqueness under rapid / concurrent calls within the same second.
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    rand = secrets.token_hex(3)
+    return f"{base}-{ts}-{rand}"
 
 
 _SEVERITY_RE = re.compile(
     r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b", re.IGNORECASE,
 )
+
+# Only accept git ref/path expressions matching this shape. Blocks
+# option-style inputs (``--output=...``) that ``git diff`` would
+# otherwise interpret as flags.
+_SAFE_GIT_TARGET_RE = re.compile(r"^[A-Za-z0-9._/@^~:-]+$")
 
 
 def _count_severities(text: str) -> dict[str, int]:
@@ -190,6 +199,14 @@ class SoftwareFactory:
             ]
             reviewer = others[0] if others else executors[0]
 
+        if reviewer in executors:
+            log.warning(
+                "Factory reviewer is also an executor (%s) — the build "
+                "will review itself. Consider adding a distinct reviewer "
+                "agent to the registry or factory config.",
+                reviewer.name,
+            )
+
         return _RoleAssignment(
             planner=planner, executors=executors, reviewer=reviewer,
         )
@@ -205,6 +222,7 @@ class SoftwareFactory:
         platform: str = "cli",
         user_id: str = "local",
         goal_id: int | None = None,
+        max_cost: float = 0.0,
     ) -> PlanResult:
         request = request.strip()
         if not request:
@@ -243,16 +261,19 @@ class SoftwareFactory:
                 error=f"Planner error: {response.result[:200]}",
             )
 
-        header = (
-            f"# Plan: {request}\n\n"
-            f"_Generated {datetime.now(timezone.utc).isoformat()} by "
-            f"{planner.name}._\n\n"
-        )
-        plan_path.write_text(header + response.result)
+        # Cost cap enforced AFTER the planner returns (the cost is only
+        # knowable post-hoc). If over budget, fail without persisting.
+        if max_cost and response.cost > max_cost:
+            return PlanResult(
+                slug=slug, plan_path=plan_path, plan_content=response.result,
+                status="error", cost=response.cost,
+                error=f"Plan cost ${response.cost:.4f} exceeds cap ${max_cost:.4f}",
+            )
 
-        # Fix #2: submit the plan as a task via TaskAPI so the single
-        # approval path handles task + approval row creation. We never
-        # call ApprovalsStore.create() directly here.
+        # Audit-fix ordering: submit the TaskAPI row FIRST. Only write
+        # the plan file to disk after a successful submit, so we never
+        # leave orphan ``.md`` artefacts pointing at a task that never
+        # got created.
         task_id = ""
         approval_id: int | None = None
         status = "pending"
@@ -275,10 +296,33 @@ class SoftwareFactory:
             task_id = submit_result.task_id
             status = submit_result.status
             sub_error = submit_result.error or ""
+            if status in ("rejected", "error"):
+                # Do not write the plan file — surface the submit error.
+                return PlanResult(
+                    slug=slug, plan_path=plan_path, plan_content=response.result,
+                    status=status, cost=response.cost,
+                    error=sub_error or "Task submission failed",
+                )
             if self.approvals_store and task_id and status == "pending_approval":
                 row = self.approvals_store.get_by_task(task_id)
                 if row:
                     approval_id = row["id"]
+
+        header = (
+            f"# Plan: {request}\n\n"
+            f"_Generated {datetime.now(timezone.utc).isoformat()} by "
+            f"{planner.name}._\n\n"
+        )
+        try:
+            plan_path.write_text(header + response.result)
+        except OSError as exc:
+            log.exception("Failed to write plan file %s", plan_path)
+            return PlanResult(
+                slug=slug, plan_path=plan_path, plan_content=response.result,
+                task_id=task_id, approval_id=approval_id,
+                status="error", cost=response.cost,
+                error=f"Plan file write failed: {exc}",
+            )
 
         self.store.record_audit(
             action="factory_plan_complete", agent_name=planner.name,
@@ -353,7 +397,29 @@ class SoftwareFactory:
                 f"_Auto-generated {datetime.now(timezone.utc).isoformat()}._"
                 f"\n\n{plan_content}",
             )
-        elif plan_path is not None and plan_path.exists():
+        elif plan_path is not None:
+            # Sandbox caller-supplied plan paths to ``plans_dir`` so an
+            # HTTP/CLI caller can't point the factory at arbitrary files
+            # (e.g. secret keys) and have their contents embedded in
+            # the executor prompt.
+            try:
+                plans_root = self.config.plans_dir.resolve()
+                resolved = plan_path.resolve()
+                resolved.relative_to(plans_root)
+            except (OSError, ValueError):
+                return BuildResult(
+                    slug=slug, success=False,
+                    error=(
+                        f"plan_path {plan_path} is outside "
+                        f"plans_dir {self.config.plans_dir}"
+                    ),
+                )
+            if not resolved.exists():
+                return BuildResult(
+                    slug=slug, success=False,
+                    error=f"plan_path {plan_path} does not exist",
+                )
+            plan_path = resolved
             plan_content = plan_path.read_text()
 
         roles = self._resolve_roles(executor_override=executor_agents)
@@ -393,13 +459,15 @@ class SoftwareFactory:
         )
 
         log.info(
-            "Factory.build slug=%s executors=%s reviewer=%s",
-            slug, [a.name for a in roles.executors], roles.reviewer.name,
+            "Factory.build slug=%s executors=%s reviewer=%s goal_id=%s",
+            slug, [a.name for a in roles.executors],
+            roles.reviewer.name, goal_id,
         )
+        goal_detail = f" goal_id={goal_id}" if goal_id is not None else ""
         self.store.record_audit(
             action="factory_build_start",
             agent_name=roles.executors[0].name,
-            details=f"slug={slug}: {request[:160]}",
+            details=f"slug={slug}{goal_detail}: {request[:160]}",
         )
 
         result = await self.workflow.execute_review_loop(
@@ -439,7 +507,7 @@ class SoftwareFactory:
             agent_name=roles.reviewer.name,
             details=(
                 f"slug={slug} success={result.success} "
-                f"iterations={iterations}"
+                f"iterations={iterations}{goal_detail}"
             ),
             cost_usd=result.total_cost, success=result.success,
         )
@@ -453,6 +521,7 @@ class SoftwareFactory:
             iterations=iterations,
             total_cost=result.total_cost,
             final_output=result.final_result,
+            goal_id=goal_id,
         )
 
     # ------------------------------------------------------------------ #
@@ -655,7 +724,12 @@ class SoftwareFactory:
         args = ["git", "diff"]
         t = target.strip()
         if t and t.upper() != "HEAD":
-            args.append(t)
+            if not _SAFE_GIT_TARGET_RE.match(t):
+                log.warning("Refusing unsafe git diff target: %r", t)
+                return ""
+            # ``--`` prevents git from treating a valid-looking ref as
+            # a flag if an exotic ref shape sneaks past the regex.
+            args.extend(["--", t])
 
         try:
             proc = await asyncio.create_subprocess_exec(

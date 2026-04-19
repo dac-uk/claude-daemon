@@ -536,6 +536,7 @@ class HttpApi:
         plan_path = _Path(plan_path_raw) if plan_path_raw else None
         executors = body.get("executor_agents")
         skip_plan = bool(body.get("skip_plan", False))
+        goal_id = body.get("goal_id")
         try:
             result = await factory.build(
                 request_text,
@@ -545,6 +546,7 @@ class HttpApi:
                 executor_agents=executors,
                 max_total_cost=max_cost,
                 skip_plan=skip_plan,
+                goal_id=goal_id,
             )
             status = 200 if result.success else 500
             return web.json_response(result.to_dict(), status=status)

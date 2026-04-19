@@ -1106,6 +1106,8 @@ def _cmd_build(args: argparse.Namespace) -> None:
         ]
     if args.skip_plan:
         body["skip_plan"] = True
+    if args.goal_id is not None:
+        body["goal_id"] = args.goal_id
     result = _factory_post("/api/v1/factory/build", body)
     if not result:
         return
@@ -1316,6 +1318,10 @@ def main() -> None:
     p_build.add_argument(
         "--skip-plan", action="store_true",
         help="Skip auto-planning (use only if the request is trivial)",
+    )
+    p_build.add_argument(
+        "--goal-id", type=int, default=None,
+        help="Optional Goal ID to link this build to",
     )
 
     p_review = sub.add_parser(
