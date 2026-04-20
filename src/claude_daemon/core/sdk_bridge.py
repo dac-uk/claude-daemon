@@ -55,6 +55,19 @@ class SDKBridgeManager:
         """Check if a warm session exists for this (agent, model) pair."""
         return self._key(agent_name, model) in self._sessions and self.is_alive
 
+    def warm_session_models(self, agent_name: str) -> list[str]:
+        """Return the list of models with warm sessions for this agent."""
+        if not self.is_alive:
+            return []
+        prefix = f"{agent_name}:"
+        return sorted(
+            key[len(prefix):] for key in self._sessions if key.startswith(prefix)
+        )
+
+    def warm_session_count(self) -> int:
+        """Total number of warm sessions across all agents."""
+        return len(self._sessions) if self.is_alive else 0
+
     async def start(self) -> None:
         """Spawn the Node.js bridge process."""
         if self._started and self.is_alive:
