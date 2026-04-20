@@ -529,39 +529,52 @@ class ClaudeDaemon:
         log.info("Shutting down...")
         sd_notify("STOPPING=1")
 
-        # Stop HTTP API
-        if hasattr(self, "_http_api") and self._http_api:
-            try:
-                await self._http_api.stop()
-                log.info("Stopped HTTP API")
-            except Exception:
-                log.exception("Error stopping HTTP API")
-
-        if self.router:
-            for name, integration in self.router.integrations.items():
+        try:
+            # Stop HTTP API
+            if hasattr(self, "_http_api") and self._http_api:
                 try:
-                    await integration.stop()
-                    log.info("Stopped integration: %s", name)
+                    await self._http_api.stop()
+                    log.info("Stopped HTTP API")
                 except Exception:
-                    log.exception("Error stopping integration: %s", name)
+                    log.exception("Error stopping HTTP API")
 
-        if self._file_watcher:
-            self._file_watcher.stop()
+            if self.router:
+                for name, integration in self.router.integrations.items():
+                    try:
+                        await integration.stop()
+                        log.info("Stopped integration: %s", name)
+                    except Exception:
+                        log.exception("Error stopping integration: %s", name)
 
-        if self.scheduler:
-            self.scheduler.stop()
+            if self._file_watcher:
+                try:
+                    self._file_watcher.stop()
+                except Exception:
+                    log.exception("Error stopping file watcher")
 
-        if self.process_manager:
-            await self.process_manager.drain_all()
+            if self.scheduler:
+                try:
+                    self.scheduler.stop()
+                except Exception:
+                    log.exception("Error stopping scheduler")
 
-        if self.durable:
-            self.durable.append_daily_log("Daemon stopped gracefully.")
+            if self.process_manager:
+                try:
+                    await self.process_manager.drain_all()
+                except Exception:
+                    log.exception("Error draining processes")
+        finally:
+            if self.durable:
+                try:
+                    self.durable.append_daily_log("Daemon stopped gracefully.")
+                except Exception:
+                    log.debug("Could not write graceful-stop marker")
 
-        if self.store:
-            self.store.close()
+            if self.store:
+                self.store.close()
 
-        self._remove_pid()
-        log.info("Claude Daemon stopped.")
+            self._remove_pid()
+            log.info("Claude Daemon stopped.")
 
     def _mark_stale_tasks(self) -> None:
         """Mark any pending/running tasks from a previous daemon run as failed."""
@@ -604,9 +617,9 @@ class ClaudeDaemon:
         last_started = None
         last_stopped = None
         for i, line in enumerate(lines):
-            if "Daemon started" in line:
+            if line.endswith("Daemon started."):
                 last_started = i
-            if "Daemon stopped gracefully" in line:
+            if line.endswith("Daemon stopped gracefully."):
                 last_stopped = i
         if last_started is not None and (last_stopped is None or last_stopped < last_started):
             log.warning("Previous daemon instance did not shut down cleanly — possible crash")

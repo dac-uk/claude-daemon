@@ -60,7 +60,7 @@ async def test_sentinel_suppresses_crash_warning(
 ):
     """A: sentinel present → no warning, sentinel deleted, info line appended."""
     # Unbalanced markers — would normally trip the crash warning.
-    durable.append_daily_log("Daemon started")
+    durable.append_daily_log("Daemon started.")
     sentinel_path.write_text("pid=123\nts=1\n")
 
     d = _StubDaemon(durable)
@@ -78,7 +78,7 @@ async def test_unbalanced_markers_without_sentinel_still_warn(
     durable: DurableMemory, sentinel_path: Path, caplog
 ):
     """B: no sentinel + unbalanced markers → warning fires (regression guard)."""
-    durable.append_daily_log("Daemon started")
+    durable.append_daily_log("Daemon started.")
     assert not sentinel_path.exists()
 
     d = _StubDaemon(durable)
