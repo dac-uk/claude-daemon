@@ -4,8 +4,12 @@ CC.chat = {
   activeChannel: 'team',
   histories: {},
   unread: new Set(),
-  streaming: false,
-  abortCtrl: null,
+  // Concurrent streams keyed by streamId → {abortCtrl, channel, agentMsg}
+  activeStreams: new Map(),
+};
+
+CC.chatNewStreamId = function() {
+  return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 };
 
 CC.initChat = function() {
@@ -27,19 +31,32 @@ CC.initChat = function() {
     }
   });
 
+  // Delegated click handler for inline per-message stop buttons.
+  var msgEl = document.getElementById('chatMessages');
+  msgEl.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-stop-stream]');
+    if (!btn) return;
+    CC.chatAbortStream(btn.getAttribute('data-stop-stream'));
+  });
+
   CC.renderChatChannels();
   CC.renderChatMessages();
   CC.renderChatHeader();
 };
 
 CC.chatSendFromInput = function() {
-  if (CC.chat.streaming) return;
   var input = document.getElementById('chatInput');
   var text = input.value.trim();
   if (!text) return;
   input.value = '';
   input.style.height = 'auto';
   CC.chatSend(text);
+};
+
+CC.chatAbortStream = function(streamId) {
+  var s = CC.chat.activeStreams.get(streamId);
+  if (!s) return;
+  try { s.abortCtrl.abort(); } catch (_) {}
 };
 
 CC.renderChatChannels = function() {
@@ -128,16 +145,22 @@ CC.renderChatMessages = function() {
     var color = m.role !== 'user' && m.agent ? CC.agentColor(m.agent) : '';
     var borderStyle = color ? ' style="border-left: 3px solid ' + color + '"' : '';
     var time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    var streamAttr = m.streamId ? ' data-stream-id="' + m.streamId + '"' : '';
 
     var meta = '';
     if (m.role === 'user') {
       meta = '<div class="meta">you ' + time + '</div>';
     } else {
       var name = m.agent || 'agent';
-      meta = '<div class="meta">' + (CC.AGENT_EMOJI[name] || '') + ' ' + name + ' ' + time + '</div>';
+      var stopBtn = (m.streaming && m.streamId)
+        ? '<button class="stop-stream-btn" data-stop-stream="' + m.streamId + '" title="Stop this response" aria-label="Stop response">'
+          + '<svg viewBox="0 0 24 24" width="10" height="10"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>'
+          + '</button>'
+        : '';
+      meta = '<div class="meta">' + (CC.AGENT_EMOJI[name] || '') + ' ' + name + ' ' + time + stopBtn + '</div>';
     }
 
-    html += '<div class="chat-message ' + cls + '"' + borderStyle + '>'
+    html += '<div class="chat-message ' + cls + '"' + borderStyle + streamAttr + '>'
       + meta + '<div class="msg-text">' + CC.chatFormatText(m.text || '') + '</div></div>';
   });
 
@@ -156,34 +179,32 @@ CC.chatSend = async function(prompt) {
   var ch = CC.chat.activeChannel;
   if (!CC.chat.histories[ch]) CC.chat.histories[ch] = [];
 
-  // Add user message
   CC.chat.histories[ch].push({
     role: 'user', text: prompt, timestamp: Date.now()
   });
   CC.renderChatMessages();
   CC.chatPersist(ch);
 
-  // Prepare request
   var body = { message: prompt, user_id: 'dashboard' };
   if (ch !== 'team') body.agent = ch;
 
-  // Add placeholder agent message
+  var streamId = CC.chatNewStreamId();
   var agentMsg = {
     role: 'agent', agent: ch === 'team' ? 'johnny' : ch,
-    text: '', timestamp: Date.now(), streaming: true
+    text: '', timestamp: Date.now(), streaming: true, streamId: streamId,
   };
   CC.chat.histories[ch].push(agentMsg);
   CC.renderChatMessages();
 
-  CC.chat.streaming = true;
-  CC.chat.abortCtrl = new AbortController();
+  var abortCtrl = new AbortController();
+  CC.chat.activeStreams.set(streamId, { abortCtrl: abortCtrl, channel: ch, agentMsg: agentMsg });
 
   try {
     var resp = await fetch('/api/message/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: CC.chat.abortCtrl.signal,
+      signal: abortCtrl.signal,
     });
 
     var reader = resp.body.getReader();
@@ -205,7 +226,7 @@ CC.chatSend = async function(prompt) {
           var evt = JSON.parse(line.slice(6));
           if (evt.text) {
             agentMsg.text += evt.text;
-            CC.chatUpdateLast(ch);
+            CC.chatUpdateMsg(streamId, ch);
           } else if (evt.done) {
             agentMsg.streaming = false;
             if (evt.error) {
@@ -216,32 +237,36 @@ CC.chatSend = async function(prompt) {
       }
     }
   } catch (e) {
-    if (e.name !== 'AbortError') {
+    if (e.name === 'AbortError') {
+      agentMsg.text = (agentMsg.text ? agentMsg.text + '\n\n' : '') + '_[stopped]_';
+    } else {
       agentMsg.text = agentMsg.text || 'Error: ' + e.message;
     }
   } finally {
     agentMsg.streaming = false;
+    agentMsg.streamId = null;
     if (!agentMsg.text) {
       agentMsg.text = '(No response. Check daemon log: `tail -50 ~/.config/claude-daemon/logs/daemon.log`)';
     }
-    CC.chat.streaming = false;
-    CC.chat.abortCtrl = null;
-    CC.renderChatMessages();
+    CC.chat.activeStreams.delete(streamId);
+    if (ch === CC.chat.activeChannel) {
+      CC.renderChatMessages();
+    }
     CC.chatPersist(ch);
   }
 };
 
-CC.chatUpdateLast = function(ch) {
+CC.chatUpdateMsg = function(streamId, ch) {
   if (ch !== CC.chat.activeChannel) {
     CC.chat.unread.add(ch);
     CC.renderChatChannels();
     return;
   }
   var el = document.getElementById('chatMessages');
-  var lastMsg = el.querySelector('.chat-message:last-child .msg-text');
-  var msgs = CC.chat.histories[ch];
-  if (lastMsg && msgs.length) {
-    lastMsg.innerHTML = CC.chatFormatText(msgs[msgs.length - 1].text);
+  var msgEl = el.querySelector('[data-stream-id="' + streamId + '"] .msg-text');
+  var s = CC.chat.activeStreams.get(streamId);
+  if (msgEl && s) {
+    msgEl.innerHTML = CC.chatFormatText(s.agentMsg.text);
     el.scrollTop = el.scrollHeight;
   }
 };
@@ -257,9 +282,16 @@ CC.chatPersist = function(ch) {
 };
 
 CC.chatHandleStreamDelta = function(agentName, text) {
-  // Route WebSocket stream deltas to chat (for messages from other platforms)
-  if (CC.chat.streaming) return; // We're already handling our own stream
+  // Route WebSocket stream deltas (messages arriving from other platforms).
+  // Suppress if we already have a local stream for this agent — our own
+  // chatSend fetch() is already consuming deltas from the SSE endpoint.
   var ch = agentName;
+  var streams = CC.chat.activeStreams;
+  var iter = streams.values();
+  for (var entry = iter.next(); !entry.done; entry = iter.next()) {
+    if (entry.value.channel === ch) return;
+  }
+
   if (!CC.chat.histories[ch]) CC.chat.histories[ch] = [];
   var msgs = CC.chat.histories[ch];
   var last = msgs[msgs.length - 1];
@@ -274,7 +306,7 @@ CC.chatHandleStreamDelta = function(agentName, text) {
     CC.chat.unread.add(ch);
     if (CC.currentView === 'chat') CC.renderChatChannels();
   } else if (CC.currentView === 'chat') {
-    CC.chatUpdateLast(ch);
+    CC.renderChatMessages();
   }
 };
 
@@ -283,7 +315,9 @@ CC.chatHandleAgentIdle = function(agentName) {
   var msgs = CC.chat.histories[ch];
   if (msgs && msgs.length) {
     var last = msgs[msgs.length - 1];
-    if (last.streaming) {
+    if (last.streaming && !last.streamId) {
+      // Only clear externally-tracked streams (no streamId means it wasn't
+      // started by our own chatSend). Local streams clear themselves.
       last.streaming = false;
       CC.chatPersist(ch);
       if (ch === CC.chat.activeChannel && CC.currentView === 'chat') {

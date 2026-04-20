@@ -449,6 +449,30 @@ html, body {
   animation: blink 0.8s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* Subtle pulsing glow on agent messages that are still streaming so the
+   user can see at-a-glance which responses are in flight. */
+.chat-message.agent.streaming {
+  animation: stream-pulse 2s ease-in-out infinite;
+}
+@keyframes stream-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0,200,255,0.0); }
+  50%      { box-shadow: 0 0 14px 0 rgba(0,200,255,0.22); }
+}
+
+/* Inline per-message stop button, sits in the meta row beside the agent
+   name. Tinted red so it reads as a destructive/cancel action. */
+.chat-message .meta .stop-stream-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 6px; padding: 0;
+  vertical-align: middle;
+  border: 1px solid rgba(255,85,115,0.5); border-radius: 50%;
+  background: rgba(255,85,115,0.10); color: var(--red, #ff5573);
+  cursor: pointer; transition: all 0.15s; }
+.chat-message .meta .stop-stream-btn:hover {
+  background: rgba(255,85,115,0.25);
+  box-shadow: 0 0 10px rgba(255,85,115,0.45); }
+.chat-message .meta .stop-stream-btn svg { display: block; }
+
 .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border);
   display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; }
 .chat-input-area textarea { flex: 1; background: var(--surface); color: var(--text);
