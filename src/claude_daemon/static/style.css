@@ -473,6 +473,21 @@ html, body {
   box-shadow: 0 0 10px rgba(255,85,115,0.45); }
 .chat-message .meta .stop-stream-btn svg { display: block; }
 
+/* "Stopping…" transitional state: between the user clicking stop and
+   the fetch teardown actually completing. Dim the message, freeze the
+   pulse, turn the stop button into a spinner, disable further clicks. */
+.chat-message.stopping { opacity: 0.6; animation: none; }
+.chat-message.stopping .msg-text::after { animation: none; opacity: 0.3; }
+.chat-message.stopping .stop-stream-btn {
+  pointer-events: none;
+  border-color: rgba(255,255,255,0.15);
+  background: transparent;
+  border-top-color: var(--red, #ff5573);
+  animation: stop-spin 0.7s linear infinite;
+}
+.chat-message.stopping .stop-stream-btn svg { visibility: hidden; }
+@keyframes stop-spin { to { transform: rotate(360deg); } }
+
 .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border);
   display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; }
 .chat-input-area textarea { flex: 1; background: var(--surface); color: var(--text);

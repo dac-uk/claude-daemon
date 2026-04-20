@@ -56,6 +56,13 @@ CC.chatSendFromInput = function() {
 CC.chatAbortStream = function(streamId) {
   var s = CC.chat.activeStreams.get(streamId);
   if (!s) return;
+  // Optimistic UI: mark stopping immediately so the user sees feedback
+  // before the fetch teardown completes. The fetch-read loop may still
+  // be mid-event when we abort; actual AbortError arrives on next tick.
+  s.agentMsg._stopping = true;
+  if (s.channel === CC.chat.activeChannel) {
+    CC.renderChatMessages();
+  }
   try { s.abortCtrl.abort(); } catch (_) {}
 };
 
@@ -142,6 +149,7 @@ CC.renderChatMessages = function() {
   msgs.forEach(function(m) {
     var cls = m.role === 'user' ? 'user' : 'agent';
     if (m.streaming) cls += ' streaming';
+    if (m._stopping) cls += ' stopping';
     var color = m.role !== 'user' && m.agent ? CC.agentColor(m.agent) : '';
     var borderStyle = color ? ' style="border-left: 3px solid ' + color + '"' : '';
     var time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -238,13 +246,14 @@ CC.chatSend = async function(prompt) {
     }
   } catch (e) {
     if (e.name === 'AbortError') {
-      agentMsg.text = (agentMsg.text ? agentMsg.text + '\n\n' : '') + '_[stopped]_';
+      agentMsg.text = (agentMsg.text ? agentMsg.text + '\n\n' : '') + '(stopped)';
     } else {
       agentMsg.text = agentMsg.text || 'Error: ' + e.message;
     }
   } finally {
     agentMsg.streaming = false;
     agentMsg.streamId = null;
+    agentMsg._stopping = false;
     if (!agentMsg.text) {
       agentMsg.text = '(No response. Check daemon log: `tail -50 ~/.config/claude-daemon/logs/daemon.log`)';
     }
@@ -257,11 +266,10 @@ CC.chatSend = async function(prompt) {
 };
 
 CC.chatUpdateMsg = function(streamId, ch) {
-  if (ch !== CC.chat.activeChannel) {
-    CC.chat.unread.add(ch);
-    CC.renderChatChannels();
-    return;
-  }
+  // Only called from our own chatSend — the user initiated this stream,
+  // so never mark the source channel as "unread". If they've switched
+  // away, the channel's busy indicator already reflects work-in-flight.
+  if (ch !== CC.chat.activeChannel) return;
   var el = document.getElementById('chatMessages');
   var msgEl = el.querySelector('[data-stream-id="' + streamId + '"] .msg-text');
   var s = CC.chat.activeStreams.get(streamId);
