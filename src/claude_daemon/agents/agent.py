@@ -342,9 +342,11 @@ class Agent:
                 "- Decision affects multiple domains (architecture + design + cost)\n"
                 "- High-stakes choice with significant consequences\n"
                 "- You're stuck and need diverse perspectives\n\n"
+                "**[STATUS:agent-name]** — Check an agent's health and activity (free, no LLM call).\n"
+                "**[STATUS]** — Fleet-wide summary of all agents. Use before delegating to check availability.\n\n"
                 "**Decision guide:** Simple task → DELEGATE | Quick question → HELP | "
                 "Need alignment → DISCUSS | High-stakes/multi-domain → COUNCIL | "
-                "Unsure? Start with HELP, escalate to DISCUSS if needed."
+                "Check availability → STATUS | Unsure? Start with HELP, escalate to DISCUSS if needed."
             )
         else:
             medium.append(
@@ -358,6 +360,8 @@ class Agent:
                 "- Disagreements that need resolution\n"
                 "- High-stakes choices (before escalating to the user)\n"
                 "- Architecture decisions, major refactors, new initiatives\n\n"
+                "**[STATUS:agent-name]** — Check an agent's health and activity (free, no LLM call).\n"
+                "**[STATUS]** — Fleet-wide summary of all agents.\n\n"
                 "**Council Protocol:** State the topic clearly → each agent provides their "
                 "domain perspective → you synthesize into a clear decision → only escalate "
                 "to the user if: capital >500, legal exposure, public commitments, or genuine "

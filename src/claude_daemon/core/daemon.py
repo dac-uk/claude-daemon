@@ -177,24 +177,29 @@ class ClaudeDaemon:
         """
         if not self.agent_registry or not self.process_manager._sdk_bridge:
             return
+        if not self.process_manager._sdk_bridge.is_alive:
+            log.warning("SDK bridge not alive during pre-warm, skipping")
+            return
 
         PRIORITY_AGENTS = {"johnny", "albert"}
+        sem = asyncio.Semaphore(self.config.sdk_prewarm_concurrency)
 
         async def _warm_one(agent, model: str) -> tuple[str, bool]:
             label = f"{agent.name}:{model}"
-            try:
-                ok = await self.process_manager.ensure_agent_session(
-                    agent_name=agent.name,
-                    model=model,
-                    system_prompt=agent.build_static_context(),
-                    mcp_config_path=agent.mcp_config_path,
-                    settings_path=agent.settings_path,
-                    agent_workspace=str(agent.workspace),
-                )
-                return label, bool(ok)
-            except Exception:
-                log.debug("Pre-create session failed for %s", label)
-                return label, False
+            async with sem:
+                try:
+                    ok = await self.process_manager.ensure_agent_session(
+                        agent_name=agent.name,
+                        model=model,
+                        system_prompt=agent.build_static_context(),
+                        mcp_config_path=agent.mcp_config_path,
+                        settings_path=agent.settings_path,
+                        agent_workspace=str(agent.workspace),
+                    )
+                    return label, bool(ok)
+                except Exception:
+                    log.debug("Pre-create session failed for %s", label)
+                    return label, False
 
         tasks = []
         for agent in self.agent_registry:
@@ -443,7 +448,8 @@ class ClaudeDaemon:
                  len(self.agent_registry), self.agent_registry.agent_names())
 
         # Pre-create SDK sessions for all agents in background (warm sessions on startup)
-        if self.config.sdk_bridge_enabled and self.process_manager._sdk_bridge:
+        bridge = self.process_manager._sdk_bridge
+        if self.config.sdk_bridge_enabled and bridge and bridge.is_alive:
             asyncio.create_task(self._precreate_agent_sessions())
 
         # Register agents with Managed Agents API (if enabled + API key available)
