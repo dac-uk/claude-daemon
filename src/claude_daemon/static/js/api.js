@@ -62,7 +62,15 @@ CC.fetchStatus = async function() {
   document.getElementById('statSessions').textContent = total;
   document.getElementById('statCost').textContent = '$' + CC.totalCost.toFixed(2);
   if (typeof CC.setAlertsBadge === 'function') {
-    CC.setAlertsBadge(data.alert_count || 0);
+    if (CC._alertsCache && CC._alertsDismissed) {
+      var unresolved = CC._alertsCache.filter(function(a) {
+        return !CC._alertsDismissed.has(a.id) &&
+          ['critical', 'error', 'warning'].indexOf(a.severity) >= 0;
+      }).length;
+      CC.setAlertsBadge(unresolved);
+    } else {
+      CC.setAlertsBadge(data.alert_count || 0);
+    }
   }
   return data;
 };
