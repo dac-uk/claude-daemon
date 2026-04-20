@@ -452,9 +452,17 @@ CC._opsRender = function() {
               '" class="ops-disc-link" onclick="CC.navigate(\'tasks\');return false;">' +
               'View source discussion &rarr;</a></div>'
             : '') +
+          '<div class="ops-task-actions">' +
+          (t.session_id
+            ? '<button class="ops-reply-btn" data-reply-task="' + tid +
+              '" data-reply-agent="' + agent +
+              '" data-reply-session="' + CC.escHtml(t.session_id) +
+              '">Reply to ' + agent + '</button>'
+            : '') +
           (t.status === 'pending' || t.status === 'running'
             ? '<button class="ops-cancel-btn" data-cancel="' + tid + '">Cancel</button>'
             : '') +
+          '</div>' +
         '</div>';
       }
       html += '</div>';
@@ -542,6 +550,23 @@ CC._opsBindEvents = function() {
       btn.textContent = 'Cancelling...';
       await fetch('/api/v1/tasks/' + tid + '/cancel', { method: 'POST' });
       await CC.renderOperationsView();
+    });
+  });
+
+  el.querySelectorAll('.ops-reply-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var agent = btn.dataset.replyAgent;
+      var sessionId = btn.dataset.replySession;
+      var taskId = btn.dataset.replyTask;
+      CC.chat.resumeSessionId = sessionId;
+      CC.chat.resumeTaskId = taskId;
+      CC.chatSwitchChannel(agent);
+      CC.navigate('chat');
+      setTimeout(function() {
+        var input = document.getElementById('chatInput');
+        if (input) input.focus();
+      }, 100);
     });
   });
 

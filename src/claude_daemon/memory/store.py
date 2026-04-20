@@ -205,6 +205,10 @@ class ConversationStore:
                     "ALTER TABLE task_queue ADD COLUMN source TEXT NOT NULL DEFAULT 'api'"
                 )
                 self._db.commit()
+            if "session_id" not in cols:
+                log.info("Migrating schema: adding task_queue.session_id column")
+                self._db.execute("ALTER TABLE task_queue ADD COLUMN session_id TEXT")
+                self._db.commit()
         except sqlite3.OperationalError:
             # task_queue doesn't exist yet — schema.sql will create it on next startup
             pass
@@ -816,6 +820,7 @@ class ConversationStore:
         task_type: str = "default", platform: str = "spawn", user_id: str = "local",
         metadata: str | None = None, goal_id: int | None = None,
         initial_status: str = "pending", source: str = "api",
+        session_id: str | None = None,
     ) -> None:
         """Insert a new task_queue row with the given initial status.
 
@@ -828,34 +833,55 @@ class ConversationStore:
         self._db.execute(
             "INSERT INTO task_queue "
             "(id, agent_name, prompt, status, task_type, platform, user_id, "
-            "metadata, goal_id, source) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "metadata, goal_id, source, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task_id, agent_name, prompt, initial_status, task_type, platform,
-             user_id, metadata, goal_id, source),
+             user_id, metadata, goal_id, source, session_id),
         )
         self._db.commit()
 
     def update_task_status(
         self, task_id: str, status: str,
         result: str | None = None, error: str | None = None, cost_usd: float = 0.0,
+        session_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         if status == "running":
-            self._db.execute(
-                "UPDATE task_queue SET status = ?, started_at = ? WHERE id = ?",
-                (status, now, task_id),
-            )
+            if session_id:
+                self._db.execute(
+                    "UPDATE task_queue SET status = ?, started_at = ?, session_id = ? "
+                    "WHERE id = ?",
+                    (status, now, session_id, task_id),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE task_queue SET status = ?, started_at = ? WHERE id = ?",
+                    (status, now, task_id),
+                )
         elif status in ("completed", "failed"):
-            self._db.execute(
-                "UPDATE task_queue SET status = ?, result = ?, error = ?, cost_usd = ?, "
-                "completed_at = ? WHERE id = ?",
-                (status, result, error, cost_usd, now, task_id),
-            )
+            if session_id:
+                self._db.execute(
+                    "UPDATE task_queue SET status = ?, result = ?, error = ?, cost_usd = ?, "
+                    "completed_at = ?, session_id = ? WHERE id = ?",
+                    (status, result, error, cost_usd, now, session_id, task_id),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE task_queue SET status = ?, result = ?, error = ?, cost_usd = ?, "
+                    "completed_at = ? WHERE id = ?",
+                    (status, result, error, cost_usd, now, task_id),
+                )
         else:
-            self._db.execute(
-                "UPDATE task_queue SET status = ? WHERE id = ?",
-                (status, task_id),
-            )
+            if session_id:
+                self._db.execute(
+                    "UPDATE task_queue SET status = ?, session_id = ? WHERE id = ?",
+                    (status, session_id, task_id),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE task_queue SET status = ? WHERE id = ?",
+                    (status, task_id),
+                )
         self._db.commit()
 
     def update_task_metadata(self, task_id: str, patch: dict) -> bool:

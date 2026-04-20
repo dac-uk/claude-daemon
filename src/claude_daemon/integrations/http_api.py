@@ -446,6 +446,7 @@ class HttpApi:
 
         agent_name = body.get("agent")
         user_id = body.get("user_id", "api-user")
+        session_id = body.get("session_id")
 
         resp = web.StreamResponse(
             status=200,
@@ -461,6 +462,7 @@ class HttpApi:
         try:
             async for chunk in self.daemon.handle_message_streaming(
                 prompt=message,
+                session_id=session_id,
                 platform="api",
                 user_id=user_id,
                 agent_name=agent_name,

@@ -6,6 +6,9 @@ CC.chat = {
   unread: new Set(),
   // Concurrent streams keyed by streamId → {abortCtrl, channel, agentMsg}
   activeStreams: new Map(),
+  // Set by Operations Reply button — cleared after one send
+  resumeSessionId: null,
+  resumeTaskId: null,
 };
 
 CC.chatNewStreamId = function() {
@@ -120,17 +123,38 @@ CC.renderChatHeader = function() {
   var ch = CC.chat.activeChannel;
   var agent = CC.agents[ch];
 
+  var headerHtml = '';
   if (ch === 'team') {
-    el.innerHTML = '<span class="chat-h-emoji">#</span> <strong>Team</strong> <span class="chat-h-role">Messages auto-route to the best agent</span>';
+    headerHtml = '<span class="chat-h-emoji">#</span> <strong>Team</strong> <span class="chat-h-role">Messages auto-route to the best agent</span>';
   } else if (agent) {
     var name = ch.charAt(0).toUpperCase() + ch.slice(1);
     var statusBadge = agent.status === 'busy'
       ? '<span class="status-badge busy">busy</span>'
       : '<span class="status-badge idle">idle</span>';
-    el.innerHTML = '<span class="chat-h-emoji">' + (agent.emoji || '') + '</span> '
+    headerHtml = '<span class="chat-h-emoji">' + (agent.emoji || '') + '</span> '
       + '<strong>' + name + '</strong> '
       + '<span class="chat-h-role">' + (agent.role || '') + '</span> '
       + statusBadge;
+  }
+
+  if (CC.chat.resumeSessionId && CC.chat.activeChannel === ch) {
+    var tid = CC.chat.resumeTaskId || '';
+    var tidShort = tid.length > 8 ? tid.slice(0, 8) : tid;
+    headerHtml += '<div class="chat-resume-banner">'
+      + 'Continuing task <code>' + CC.escHtml(tidShort) + '</code> — next message resumes this session. '
+      + '<button class="chat-resume-cancel">Cancel</button>'
+      + '</div>';
+  }
+
+  el.innerHTML = headerHtml;
+
+  var cancelBtn = el.querySelector('.chat-resume-cancel');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function() {
+      CC.chat.resumeSessionId = null;
+      CC.chat.resumeTaskId = null;
+      CC.renderChatHeader();
+    });
   }
 };
 
@@ -195,6 +219,12 @@ CC.chatSend = async function(prompt) {
 
   var body = { message: prompt, user_id: 'dashboard' };
   if (ch !== 'team') body.agent = ch;
+  if (CC.chat.resumeSessionId) {
+    body.session_id = CC.chat.resumeSessionId;
+  }
+  CC.chat.resumeSessionId = null;
+  CC.chat.resumeTaskId = null;
+  CC.renderChatHeader();
 
   var streamId = CC.chatNewStreamId();
   var agentMsg = {

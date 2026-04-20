@@ -579,6 +579,23 @@ html, body {
   box-shadow: 0 0 12px rgba(255,34,102,0.25); }
 .ops-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.ops-task-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ops-reply-btn { padding: 6px 14px; border-radius: 6px;
+  background: rgba(0,229,255,0.12); color: var(--neon-cyan, #00e5ff);
+  border: 1px solid rgba(0,229,255,0.3); cursor: pointer; font-weight: 600;
+  font-size: 12px; transition: all 0.2s; }
+.ops-reply-btn:hover { background: rgba(0,229,255,0.22);
+  box-shadow: 0 0 12px rgba(0,229,255,0.25); }
+
+.chat-resume-banner { margin-top: 6px; padding: 6px 12px; border-radius: 8px;
+  background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.25);
+  font-size: 12px; color: var(--neon-cyan, #00e5ff); display: inline-flex;
+  align-items: center; gap: 8px; }
+.chat-resume-banner code { background: rgba(0,0,0,0.3); padding: 1px 5px;
+  border-radius: 4px; font-size: 11px; }
+.chat-resume-cancel { background: none; border: none; color: var(--text-dim, #aaa);
+  cursor: pointer; font-size: 11px; text-decoration: underline; }
+
 /* Per-row source origin pill */
 .ops-task-source { display: flex; justify-content: flex-start; }
 .source-pill { font-size: 10px; font-weight: 700; letter-spacing: 0.04em;

@@ -780,6 +780,7 @@ class Orchestrator:
                     chat_task_id, agent.name, prompt[:2000],
                     task_type=task_type, platform=platform, user_id=user_id,
                     source="chat", initial_status="running",
+                    session_id=conv["session_id"],
                 )
                 if self.hub:
                     try:
@@ -872,6 +873,7 @@ class Orchestrator:
                         recorded_cost, agent.name, (resp.result or "")[:120],
                     )
                 recorded_cost = 0.0
+            final_session = getattr(resp, "session_id", None) or conv["session_id"]
             if chat_task_id and self.store is not None:
                 try:
                     if resp.is_error:
@@ -879,12 +881,14 @@ class Orchestrator:
                             chat_task_id, "failed",
                             error=resp.result or "Agent error",
                             cost_usd=recorded_cost,
+                            session_id=final_session,
                         )
                     else:
                         self.store.update_task_status(
                             chat_task_id, "completed",
                             result=(accumulated or resp.result or "")[:4000],
                             cost_usd=resp.cost or 0.0,
+                            session_id=final_session,
                         )
                     if self.hub:
                         try:
@@ -1025,13 +1029,16 @@ class Orchestrator:
                 log.exception("Background task %s on %s failed", task_id, agent.name)
                 spawned.result = f"Task failed: {e}"
                 spawned.status = "failed"
+                response = None
             # Update DB with final status
             try:
+                spawn_session = getattr(response, "session_id", None) if response else None
                 self.store.update_task_status(
                     task_id, spawned.status,
                     result=spawned.result[:5000] if spawned.result else None,
                     error=spawned.result if spawned.status == "failed" else None,
                     cost_usd=spawned.cost,
+                    session_id=spawn_session,
                 )
             except Exception:
                 pass
