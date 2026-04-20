@@ -209,6 +209,18 @@ class ConversationStore:
             # task_queue doesn't exist yet — schema.sql will create it on next startup
             pass
 
+        # discussions: add action_task_ids column for council→task linking
+        try:
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(discussions)").fetchall()}
+            if "action_task_ids" not in cols:
+                log.info("Migrating schema: adding discussions.action_task_ids column")
+                self._db.execute(
+                    "ALTER TABLE discussions ADD COLUMN action_task_ids TEXT DEFAULT '[]'"
+                )
+                self._db.commit()
+        except sqlite3.OperationalError:
+            pass
+
     def close(self) -> None:
         self._db.close()
 
@@ -997,17 +1009,32 @@ class ConversationStore:
         initiator: str, participants: list[str], outcome: str,
         total_turns: int, total_cost_usd: float, duration_ms: int,
         synthesis: str = "", transcript: str = "",
+        action_task_ids: list[str] | None = None,
     ) -> None:
         import json as _json
         now = datetime.now(timezone.utc).isoformat()
         self._db.execute(
             "INSERT OR REPLACE INTO discussions "
             "(id, discussion_type, topic, initiator, participants, outcome, "
-            "total_turns, total_cost_usd, duration_ms, synthesis, transcript, completed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "total_turns, total_cost_usd, duration_ms, synthesis, transcript, "
+            "completed_at, action_task_ids) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (discussion_id, discussion_type, topic[:2000], initiator,
              _json.dumps(participants), outcome, total_turns, total_cost_usd,
-             duration_ms, synthesis[:5000], transcript[:10000], now),
+             duration_ms, synthesis[:5000], transcript[:10000], now,
+             _json.dumps(action_task_ids or [])),
+        )
+        self._db.commit()
+
+    def update_discussion_post_synthesis(
+        self, discussion_id: str, synthesis: str,
+        action_task_ids: list[str] | None = None,
+    ) -> None:
+        """Update synthesis + action task IDs after council completes."""
+        import json as _json
+        self._db.execute(
+            "UPDATE discussions SET synthesis = ?, action_task_ids = ? WHERE id = ?",
+            (synthesis[:5000], _json.dumps(action_task_ids or []), discussion_id),
         )
         self._db.commit()
 

@@ -94,6 +94,8 @@ class DaemonConfig:
     discussion_max_cost: float = 1.00  # USD cost cap per bilateral discussion
     council_max_cost: float = 2.00  # USD cost cap per council session
     council_max_rounds: int = 2  # Rounds per council (each agent speaks once per round)
+    council_auto_execute_actions: bool = True  # Auto-spawn tasks from council action items
+    council_max_actions_per_run: int = 8  # Max tasks spawned per council session
 
     # Memory
     daily_log_enabled: bool = True
@@ -273,6 +275,8 @@ class DaemonConfig:
             discussion_max_cost=float(claude_cfg.get("discussion_max_cost", 1.00)),
             council_max_cost=float(claude_cfg.get("council_max_cost", 2.00)),
             council_max_rounds=int(claude_cfg.get("council_max_rounds", 2)),
+            council_auto_execute_actions=claude_cfg.get("council_auto_execute_actions", True),
+            council_max_actions_per_run=int(claude_cfg.get("council_max_actions_per_run", 8)),
             disabled_mcp_servers=claude_cfg.get("disabled_mcp_servers", []),
             agent_hot_reload=daemon_cfg.get("agent_hot_reload", True),
             agent_reload_interval=int(daemon_cfg.get("agent_reload_interval", 10)),

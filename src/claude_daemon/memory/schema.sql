@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS discussions (
     duration_ms INTEGER DEFAULT 0,
     synthesis TEXT,
     transcript TEXT,
-    completed_at TIMESTAMP
+    completed_at TIMESTAMP,
+    action_task_ids TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_discussions_type ON discussions(discussion_type);
 CREATE INDEX IF NOT EXISTS idx_discussions_ts ON discussions(timestamp);

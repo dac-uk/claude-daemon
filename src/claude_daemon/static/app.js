@@ -86,9 +86,25 @@ CC.init = async function() {
   // Connect WebSocket
   CC.connectWS();
 
-  // Route from hash
+  // Route from hash — supports deep links like #discussions/{id}
   var hash = location.hash.replace('#', '') || 'overview';
-  CC.navigate(hash);
+  var discMatch = hash.match(/^discussions\/(.+)$/);
+  if (discMatch) {
+    CC._pendingDiscussionId = discMatch[1];
+    CC.navigate('tasks');
+  } else {
+    CC.navigate(hash);
+  }
+
+  // Handle hashchange for in-page deep-link navigation
+  window.addEventListener('hashchange', function() {
+    var h = location.hash.replace('#', '');
+    var dm = h.match(/^discussions\/(.+)$/);
+    if (dm) {
+      CC._pendingDiscussionId = dm[1];
+      CC.navigate('tasks');
+    }
+  });
 
   // Refresh status every 30s
   setInterval(CC.fetchStatus, 30000);

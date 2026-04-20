@@ -410,6 +410,7 @@ class ClaudeDaemon:
             self.orchestrator, self.agent_registry, self.store,
             self.config, shared_dir,
             hub=getattr(self, "_dashboard_hub", None),
+            task_api=self._task_api,
         )
         self.orchestrator.set_discussion_engine(self.discussion_engine)
         self.orchestrator.set_workflow_engine(self.workflow_engine)

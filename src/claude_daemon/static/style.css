@@ -588,6 +588,15 @@ html, body {
 .source-pill-spawn { color: var(--neon-purple, #b388ff); }
 .source-pill-api { color: var(--green, #6eff8a); }
 .source-pill-heartbeat { color: var(--orange, #ffa640); }
+.source-pill-council { color: var(--neon-pink, #ff22aa); }
+.source-pill-factory { color: var(--neon-cyan, #00e5ff); }
+.ops-council-tag { font-size: 11px; font-weight: 600; color: var(--neon-pink, #ff22aa);
+  margin-right: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; display: inline-block; vertical-align: middle; }
+.ops-disc-link { color: var(--neon-pink, #ff22aa); font-size: 12px; text-decoration: none; }
+.ops-disc-link:hover { text-decoration: underline; }
+.disc-actions { font-size: 12px; padding: 6px 12px; color: var(--text-secondary); }
+.disc-actions a { color: var(--neon-pink, #ff22aa); text-decoration: none; }
+.disc-actions a:hover { text-decoration: underline; }
 
 /* Source filter chip row sits above the status chip row. Gives a clear
    "origin" axis separate from the status axis. */

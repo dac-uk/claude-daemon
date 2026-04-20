@@ -13,11 +13,13 @@ processed by the orchestrator alongside existing [DELEGATE:name] tags.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +28,7 @@ if TYPE_CHECKING:
     from claude_daemon.agents.registry import AgentRegistry
     from claude_daemon.core.config import DaemonConfig
     from claude_daemon.memory.store import ConversationStore
+    from claude_daemon.orchestration.task_api import TaskAPI
 
 log = logging.getLogger(__name__)
 
@@ -59,15 +62,74 @@ You are synthesizing a council discussion into a clear decision.
 ## Full Transcript
 {transcript}
 
+## Participants
+{participants}
+
 ## Your Task
-Produce:
+Produce in this exact order:
+
 1. **Decision**: Clear conclusion (1-2 sentences)
 2. **Rationale**: Key arguments that led here (3-5 bullets)
-3. **Dissent**: Any unresolved disagreements
-4. **Action Items**: Who does what next
+3. **Dissent**: Any unresolved disagreements (or "None.")
+4. **Action Items**: Prose summary of who does what next.
+5. **Executable Actions** (REQUIRED): A fenced ```json block matching \
+the schema below. Each entry becomes a real task assigned to the named \
+agent. Use ONLY agent names from the Participants list above. Omit any \
+action that needs human judgement before it can safely execute — flag \
+those in Dissent instead.
 
+```json
+{{"actions": [
+  {{"owner": "<agent_name>",
+    "prompt": "<single concrete instruction, imperative voice, max 400 chars>",
+    "priority": "high|medium|low",
+    "requires_approval": false}}
+]}}
+```
+
+If there are genuinely no safe executable actions, emit `{{"actions": []}}`.
 Be decisive. If no clear consensus, make the call based on weight of arguments.
 """
+
+
+# ---------------------------------------------------------------------------
+# Action-item extraction from synthesis
+# ---------------------------------------------------------------------------
+
+_ACTIONS_BLOCK = re.compile(
+    r"```json\s*(\{[\s\S]*?\"actions\"[\s\S]*?\})\s*```", re.MULTILINE,
+)
+
+
+def _extract_action_items(synthesis_text: str) -> list[dict]:
+    """Pull the fenced JSON action block out of a synthesis string.
+
+    Returns [] on malformed/absent block (never raises).
+    """
+    m = _ACTIONS_BLOCK.search(synthesis_text or "")
+    if not m:
+        return []
+    try:
+        payload = json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        log.warning("Council synthesis had malformed action JSON")
+        return []
+    actions = payload.get("actions") or []
+    cleaned: list[dict] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        owner = str(a.get("owner", "")).strip()
+        prompt = str(a.get("prompt", "")).strip()
+        if not owner or not prompt:
+            continue
+        cleaned.append({
+            "owner": owner,
+            "prompt": prompt[:2000],
+            "priority": a.get("priority", "medium"),
+            "requires_approval": bool(a.get("requires_approval", False)),
+        })
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +207,7 @@ class DiscussionEngine:
         config: DaemonConfig | None = None,
         shared_dir: Path | None = None,
         hub=None,
+        task_api: TaskAPI | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self.registry = registry
@@ -152,6 +215,7 @@ class DiscussionEngine:
         self.config = config
         self.shared_dir = shared_dir
         self.hub = hub
+        self.task_api = task_api
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -228,6 +292,13 @@ class DiscussionEngine:
         # Synthesize via the orchestrator agent
         if result.turns and result.outcome != "error":
             result.synthesis = await self._synthesize(result, platform, user_id)
+
+        # Spawn action tasks from the synthesis
+        task_ids = await self._spawn_council_actions(result)
+
+        # Update the DB record with synthesis + action task IDs
+        # (_run_discussion recorded it before synthesis was available)
+        self._update_discussion_post_synthesis(result, task_ids)
 
         return result
 
@@ -409,6 +480,7 @@ class DiscussionEngine:
         prompt = SYNTHESIS_PROMPT.format(
             topic=result.config.topic,
             transcript=result.transcript,
+            participants=", ".join(result.config.participants),
         )
 
         response = await self.orchestrator.send_to_agent(
@@ -435,6 +507,78 @@ class DiscussionEngine:
         return response.result
 
     # ------------------------------------------------------------------ #
+    # Post-council action spawning
+    # ------------------------------------------------------------------ #
+
+    async def _spawn_council_actions(
+        self, result: DiscussionResult,
+    ) -> list[str]:
+        """Extract action items from synthesis and submit each as a task.
+
+        Returns list of created task_ids.
+        """
+        if not self.task_api:
+            return []
+        if self.config and not getattr(self.config, "council_auto_execute_actions", True):
+            return []
+
+        actions = _extract_action_items(result.synthesis)
+        if not actions:
+            return []
+
+        max_n = getattr(self.config, "council_max_actions_per_run", 8) if self.config else 8
+        actions = actions[:max_n]
+
+        from claude_daemon.orchestration.task_api import TaskSubmission
+
+        task_ids: list[str] = []
+        for idx, a in enumerate(actions):
+            if a["owner"] not in result.config.participants:
+                log.warning(
+                    "Council action owner %r not in participants; skipping",
+                    a["owner"],
+                )
+                continue
+
+            framed = (
+                f"[From council {result.discussion_id}] "
+                f"Topic: {result.config.topic}\n\n"
+                f"Action ({a['priority']}): {a['prompt']}\n\n"
+                f"Report back concretely on what you did, what you verified, "
+                f"and what (if anything) still needs a human."
+            )
+            sub = TaskSubmission(
+                prompt=framed,
+                agent=a["owner"],
+                source="council",
+                task_type="council_action",
+                metadata={
+                    "discussion_id": result.discussion_id,
+                    "topic": result.config.topic,
+                    "priority": a["priority"],
+                    "action_index": idx,
+                },
+                require_approval=a["requires_approval"],
+                approval_reason=(
+                    f"Council {result.discussion_id} action "
+                    f"(owner={a['owner']})"
+                ),
+            )
+            try:
+                res = self.task_api.submit_task(sub)
+                if res.task_id:
+                    task_ids.append(res.task_id)
+            except Exception:
+                log.exception("Failed to spawn council action %d for %s", idx, a["owner"])
+
+        if task_ids:
+            log.info(
+                "Council %s spawned %d action tasks: %s",
+                result.discussion_id, len(task_ids), task_ids,
+            )
+        return task_ids
+
+    # ------------------------------------------------------------------ #
     # Convergence detection
     # ------------------------------------------------------------------ #
 
@@ -446,7 +590,10 @@ class DiscussionEngine:
     # Persistence
     # ------------------------------------------------------------------ #
 
-    def _record_discussion(self, result: DiscussionResult, duration_ms: int) -> None:
+    def _record_discussion(
+        self, result: DiscussionResult, duration_ms: int,
+        action_task_ids: list[str] | None = None,
+    ) -> None:
         """Persist discussion to DB and shared markdown file."""
         try:
             self.store.record_discussion(
@@ -461,6 +608,7 @@ class DiscussionEngine:
                 duration_ms=duration_ms,
                 synthesis=result.synthesis,
                 transcript=result.transcript,
+                action_task_ids=action_task_ids,
             )
         except Exception:
             log.exception("Failed to record discussion %s to DB", result.discussion_id)
@@ -496,3 +644,19 @@ class DiscussionEngine:
                 (disc_dir / filename).write_text("\n".join(parts))
             except Exception:
                 log.debug("Failed to write discussion transcript to markdown")
+
+    def _update_discussion_post_synthesis(
+        self, result: DiscussionResult, action_task_ids: list[str],
+    ) -> None:
+        """Update the DB record after synthesis + action spawning."""
+        try:
+            self.store.update_discussion_post_synthesis(
+                discussion_id=result.discussion_id,
+                synthesis=result.synthesis,
+                action_task_ids=action_task_ids,
+            )
+        except Exception:
+            log.exception(
+                "Failed to update discussion %s post-synthesis",
+                result.discussion_id,
+            )

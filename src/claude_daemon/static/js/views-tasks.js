@@ -128,7 +128,17 @@ CC._renderDiscussionList = function() {
     try { participants = JSON.parse(d.participants).join(', '); } catch(e) { participants = d.participants || ''; }
     var ts = d.completed_at ? new Date(d.completed_at).toLocaleString() : '';
 
-    return '<div class="disc-card glass-sm" onclick="this.classList.toggle(\'expanded\')">' +
+    // Show linked action tasks if present
+    var actionIds = [];
+    try { actionIds = JSON.parse(d.action_task_ids || '[]'); } catch(e) {}
+    var actionsHtml = actionIds.length
+      ? '<div class="disc-actions"><strong>Actions spawned:</strong> ' + actionIds.length +
+        ' task' + (actionIds.length === 1 ? '' : 's') +
+        ' <a href="#operations" onclick="CC.navigate(\'operations\');return false;">' +
+        'View in Operations &rarr;</a></div>'
+      : '';
+
+    return '<div class="disc-card glass-sm" data-discussion-id="' + (d.id || '') + '" onclick="this.classList.toggle(\'expanded\')">' +
       '<div class="disc-header">' +
         '<span class="disc-type ' + typeClass + '">' + typeLabel + '</span>' +
         '<span class="disc-topic">' + CC.escHtml(d.topic || 'Untitled') + '</span>' +
@@ -141,8 +151,19 @@ CC._renderDiscussionList = function() {
         '<span>$' + (d.total_cost_usd || 0).toFixed(4) + '</span>' +
         (ts ? '<span>' + ts + '</span>' : '') +
       '</div>' +
+      actionsHtml +
       (d.synthesis ? '<div class="disc-transcript"><strong>Synthesis:</strong><br>' + CC.escHtml(d.synthesis).replace(/\n/g, '<br>') + '</div>' : '') +
       (d.transcript ? '<div class="disc-transcript"><strong>Transcript:</strong>' + CC.formatTranscript(d.transcript) + '</div>' : '') +
     '</div>';
   }).join('');
+
+  // Auto-expand a deep-linked discussion card
+  if (CC._pendingDiscussionId) {
+    var target = el.querySelector('[data-discussion-id="' + CC._pendingDiscussionId + '"]');
+    if (target) {
+      target.classList.add('expanded');
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    CC._pendingDiscussionId = null;
+  }
 };

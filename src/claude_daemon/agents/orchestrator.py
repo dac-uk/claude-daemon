@@ -572,11 +572,29 @@ class Orchestrator:
                 result = await self._discussion_engine.run_council(
                     topic=topic.strip(),
                 )
+                action_line = ""
+                # Check if any tasks were spawned (stored on the DB row)
+                try:
+                    import json as _json
+                    disc_row = self.store.get_discussion(result.discussion_id)
+                    if disc_row:
+                        ids = _json.loads(disc_row.get("action_task_ids", "[]"))
+                        if ids:
+                            action_line = (
+                                f"\nActions spawned: {len(ids)} "
+                                f"(see Operations tab, source=council)"
+                            )
+                except Exception:
+                    pass
+                if not action_line:
+                    action_line = "\nNo auto-executable actions extracted."
                 appended.append(
                     f"\n\n--- Council Decision ---\n"
                     f"Outcome: {result.outcome} | "
                     f"Cost: ${result.total_cost:.4f} | "
-                    f"Participants: {', '.join(result.config.participants)}\n\n"
+                    f"Participants: {', '.join(result.config.participants)}\n"
+                    f"View transcript: /#discussions/{result.discussion_id}"
+                    f"{action_line}\n\n"
                     f"{result.synthesis}"
                 )
             except Exception:

@@ -12,7 +12,7 @@ CC.opsState = {
 };
 
 CC._opsSourceLabel = function(src) {
-  return { chat: 'Chat', spawn: 'Spawn', api: 'API', heartbeat: 'Heartbeat' }[src] || src;
+  return { chat: 'Chat', spawn: 'Spawn', api: 'API', heartbeat: 'Heartbeat', council: 'Council', factory: 'Factory' }[src] || src;
 };
 
 CC._opsSourceChip = function(key, label, count) {
@@ -161,7 +161,7 @@ CC._opsRender = function() {
   var s = CC.opsState;
   // Source counts are computed over the unfiltered list so the source chips
   // always show totals regardless of the current status/agent filters.
-  var sourceCounts = { all: s.tasks.length, chat: 0, spawn: 0, api: 0, heartbeat: 0 };
+  var sourceCounts = { all: s.tasks.length, chat: 0, spawn: 0, api: 0, heartbeat: 0, council: 0, factory: 0 };
   s.tasks.forEach(function(t) {
     var src = t.source || 'api';
     sourceCounts[src] = (sourceCounts[src] || 0) + 1;
@@ -205,6 +205,8 @@ CC._opsRender = function() {
       CC._opsSourceChip('spawn', 'Spawn', sourceCounts.spawn) +
       CC._opsSourceChip('api', 'API', sourceCounts.api) +
       CC._opsSourceChip('heartbeat', 'Heartbeat', sourceCounts.heartbeat) +
+      CC._opsSourceChip('council', 'Council', sourceCounts.council) +
+      CC._opsSourceChip('factory', 'Factory', sourceCounts.factory) +
     '</div>' +
     '<div class="ops-filters">' +
       CC._opsFilterChip('all', 'All (' + counts.all + ')') +
@@ -263,12 +265,18 @@ CC._opsRender = function() {
       var statusCol = CC._opsStatusColor(t.status);
       var expanded = s.expandedId === tid;
       var src = t.source || 'api';
+      var meta = {};
+      try { meta = typeof t.metadata === 'string' ? JSON.parse(t.metadata || '{}') : (t.metadata || {}); } catch(e) {}
+      var councilPrefix = (src === 'council' && meta.topic)
+        ? '<span class="ops-council-tag" title="' + CC.escHtml(meta.topic) + '">Council: ' +
+            CC.escHtml(meta.topic.substring(0, 50)) + '</span> '
+        : '';
       html += '<div class="ops-task glass-sm ' + (expanded ? 'expanded' : '') +
               '" data-task-id="' + tid + '">' +
         '<div class="ops-task-row">' +
           '<span class="ops-task-id" title="' + CC.escHtml(tid) + '"><code>' +
             CC.escHtml(tidShort) + '</code></span>' +
-          '<span class="ops-task-title">' + CC.escHtml(title) + '</span>' +
+          '<span class="ops-task-title">' + councilPrefix + CC.escHtml(title) + '</span>' +
           '<span class="ops-task-progress">' + CC.escHtml(progress) + '</span>' +
           '<span class="ops-task-status" style="color:' + statusCol + '">' +
             t.status + '</span>' +
@@ -300,6 +308,11 @@ CC._opsRender = function() {
             CC.escHtml(t.result).replace(/\n/g, '<br>') + '</div>' : '') +
           (t.error ? '<div class="ops-task-error"><strong>Error:</strong> ' +
             CC.escHtml(t.error) + '</div>' : '') +
+          (src === 'council' && meta.discussion_id
+            ? '<div><a href="#discussions/' + CC.escHtml(meta.discussion_id) +
+              '" class="ops-disc-link" onclick="CC.navigate(\'tasks\');return false;">' +
+              'View source discussion &rarr;</a></div>'
+            : '') +
           (t.status === 'pending' || t.status === 'running'
             ? '<button class="ops-cancel-btn" data-cancel="' + tid + '">Cancel</button>'
             : '') +

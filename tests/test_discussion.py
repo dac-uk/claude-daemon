@@ -389,3 +389,220 @@ def test_store_discussion_stats(tmp_path: Path):
     assert stats["converged"] == 1
     assert stats["total_cost"] == pytest.approx(0.10)
     s.close()
+
+
+# ---------------------------------------------------------------------------
+# Action extraction tests
+# ---------------------------------------------------------------------------
+
+def test_extract_action_items_valid_json():
+    from claude_daemon.agents.discussion import _extract_action_items
+    synthesis = (
+        "**Decision**: We should proceed.\n"
+        "**Action Items**: Albert rotates secrets, Luna updates docs.\n"
+        "```json\n"
+        '{"actions": [\n'
+        '  {"owner": "albert", "prompt": "Rotate all exposed API secrets", '
+        '"priority": "high", "requires_approval": false},\n'
+        '  {"owner": "luna", "prompt": "Update security docs", '
+        '"priority": "medium", "requires_approval": true}\n'
+        "]}\n"
+        "```\n"
+    )
+    actions = _extract_action_items(synthesis)
+    assert len(actions) == 2
+    assert actions[0]["owner"] == "albert"
+    assert actions[0]["priority"] == "high"
+    assert actions[0]["requires_approval"] is False
+    assert actions[1]["owner"] == "luna"
+    assert actions[1]["requires_approval"] is True
+
+
+def test_extract_action_items_malformed_json():
+    from claude_daemon.agents.discussion import _extract_action_items
+    synthesis = "```json\n{bad json here}\n```"
+    actions = _extract_action_items(synthesis)
+    assert actions == []
+
+
+def test_extract_action_items_empty_actions():
+    from claude_daemon.agents.discussion import _extract_action_items
+    synthesis = '```json\n{"actions": []}\n```'
+    actions = _extract_action_items(synthesis)
+    assert actions == []
+
+
+def test_extract_action_items_missing_block():
+    from claude_daemon.agents.discussion import _extract_action_items
+    synthesis = "Decision: No actions needed. Just monitor."
+    actions = _extract_action_items(synthesis)
+    assert actions == []
+
+
+def test_extract_action_items_skips_malformed_entries():
+    from claude_daemon.agents.discussion import _extract_action_items
+    synthesis = (
+        '```json\n'
+        '{"actions": [{"owner": "albert", "prompt": "Do work"}, '
+        '"not-a-dict", {"owner": "", "prompt": "missing owner"}, '
+        '{"owner": "luna"}]}\n'
+        '```'
+    )
+    actions = _extract_action_items(synthesis)
+    assert len(actions) == 1
+    assert actions[0]["owner"] == "albert"
+
+
+def test_extract_action_items_truncates_long_prompt():
+    from claude_daemon.agents.discussion import _extract_action_items
+    synthesis = (
+        '```json\n'
+        '{"actions": [{"owner": "albert", "prompt": "' + "x" * 3000 + '"}]}\n'
+        '```'
+    )
+    actions = _extract_action_items(synthesis)
+    assert len(actions) == 1
+    assert len(actions[0]["prompt"]) == 2000
+
+
+@pytest.mark.asyncio
+async def test_spawn_council_actions_creates_tasks(engine, store, config):
+    """Council auto-spawns tasks from structured synthesis actions."""
+    config.council_auto_execute_actions = True
+    config.council_max_actions_per_run = 8
+
+    # Give the engine a task_api
+    from claude_daemon.orchestration.task_api import TaskAPI
+    task_api = TaskAPI(
+        orchestrator=engine.orchestrator,
+        registry=engine.registry,
+        store=store,
+    )
+    engine.task_api = task_api
+
+    result = DiscussionResult(
+        discussion_id="council-test-001",
+        config=DiscussionConfig(
+            topic="Security plan",
+            initiator="albert",
+            participants=["albert", "luna"],
+            discussion_type="council",
+        ),
+        synthesis=(
+            "Decision: Rotate secrets.\n"
+            '```json\n'
+            '{"actions": [\n'
+            '  {"owner": "albert", "prompt": "Rotate all API keys", "priority": "high"},\n'
+            '  {"owner": "luna", "prompt": "Update documentation", "priority": "medium"}\n'
+            ']}\n'
+            '```'
+        ),
+    )
+    task_ids = await engine._spawn_council_actions(result)
+    assert len(task_ids) == 2
+
+    # Verify tasks are in the DB with source=council
+    for tid in task_ids:
+        task = store.get_task(tid)
+        assert task is not None
+        assert task["source"] == "council"
+
+
+@pytest.mark.asyncio
+async def test_spawn_council_actions_off_switch(engine, config):
+    """No tasks spawned when council_auto_execute_actions=False."""
+    config.council_auto_execute_actions = False
+
+    result = DiscussionResult(
+        discussion_id="council-off-001",
+        config=DiscussionConfig(
+            topic="Test", initiator="albert",
+            participants=["albert"], discussion_type="council",
+        ),
+        synthesis='```json\n{"actions": [{"owner": "albert", "prompt": "Do work"}]}\n```',
+    )
+    task_ids = await engine._spawn_council_actions(result)
+    assert task_ids == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_council_actions_owner_not_participant(engine, store, config):
+    """Actions for non-participants are skipped."""
+    config.council_auto_execute_actions = True
+    config.council_max_actions_per_run = 8
+
+    from claude_daemon.orchestration.task_api import TaskAPI
+    engine.task_api = TaskAPI(
+        orchestrator=engine.orchestrator,
+        registry=engine.registry,
+        store=store,
+    )
+
+    result = DiscussionResult(
+        discussion_id="council-owner-001",
+        config=DiscussionConfig(
+            topic="Test", initiator="albert",
+            participants=["albert"],
+            discussion_type="council",
+        ),
+        synthesis='```json\n{"actions": [{"owner": "intruder", "prompt": "Evil task"}]}\n```',
+    )
+    task_ids = await engine._spawn_council_actions(result)
+    assert task_ids == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_council_actions_caps_at_max(engine, store, config):
+    """Action count is capped at council_max_actions_per_run."""
+    config.council_auto_execute_actions = True
+    config.council_max_actions_per_run = 2
+
+    from claude_daemon.orchestration.task_api import TaskAPI
+    engine.task_api = TaskAPI(
+        orchestrator=engine.orchestrator,
+        registry=engine.registry,
+        store=store,
+    )
+
+    actions_json = ", ".join(
+        f'{{"owner": "albert", "prompt": "Task {i}"}}'
+        for i in range(5)
+    )
+    result = DiscussionResult(
+        discussion_id="council-cap-001",
+        config=DiscussionConfig(
+            topic="Test", initiator="albert",
+            participants=["albert"],
+            discussion_type="council",
+        ),
+        synthesis=f'```json\n{{"actions": [{actions_json}]}}\n```',
+    )
+    task_ids = await engine._spawn_council_actions(result)
+    assert len(task_ids) == 2
+
+
+def test_store_update_discussion_post_synthesis(tmp_path: Path):
+    """update_discussion_post_synthesis persists synthesis and task IDs."""
+    s = ConversationStore(tmp_path / "test.db")
+    s.record_discussion(
+        discussion_id="disc-synth-001",
+        discussion_type="council",
+        topic="Test council",
+        initiator="albert",
+        participants=["albert", "luna"],
+        outcome="converged",
+        total_turns=4,
+        total_cost_usd=0.12,
+        duration_ms=3000,
+    )
+    s.update_discussion_post_synthesis(
+        discussion_id="disc-synth-001",
+        synthesis="Updated synthesis text.",
+        action_task_ids=["task-abc", "task-def"],
+    )
+    disc = s.get_discussion("disc-synth-001")
+    assert disc is not None
+    assert disc["synthesis"] == "Updated synthesis text."
+    import json
+    assert json.loads(disc["action_task_ids"]) == ["task-abc", "task-def"]
+    s.close()
