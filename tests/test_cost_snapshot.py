@@ -110,3 +110,52 @@ def test_count_agents_with_conversations_excludes_spawn(
     n = store.count_agents_with_conversations()
     # albert + luna = 2 — spawn and no-colon excluded.
     assert n == 2
+
+
+def test_cost_snapshot_windowed_uses_agent_metrics_only(
+    store: ConversationStore,
+) -> None:
+    """With ``days`` set, conversations are ignored (they lack per-cost
+    timestamps) and only agent_metrics rows inside the window count."""
+    _seed_conversation(store, "dashboard:albert", 5.00)  # should be ignored
+    _seed_metric(store, "albert", 0.30)
+    _seed_metric(store, "luna", 0.70)
+    snap = store.get_cost_snapshot(days=7)
+    assert snap["days"] == 7
+    assert snap["total_usd"] == pytest.approx(1.00)
+    assert snap["by_source"]["conversations"] == 0
+    assert snap["by_source"]["agent_metrics"] == pytest.approx(1.00)
+    assert snap["by_agent"]["albert"] == pytest.approx(0.30)
+    assert snap["by_agent"]["luna"] == pytest.approx(0.70)
+
+
+def test_cost_snapshot_windowed_excludes_rows_outside_window(
+    store: ConversationStore,
+) -> None:
+    """Rows older than the window must not contribute."""
+    _seed_metric(store, "albert", 0.50)  # recent
+    # Back-date a row to 30 days ago — must not appear in a 7d window.
+    store._db.execute(
+        "INSERT INTO agent_metrics "
+        "(agent_name, timestamp, metric_type, cost_usd) "
+        "VALUES (?, datetime('now', '-30 days'), 'heartbeat', ?)",
+        ("albert", 2.00),
+    )
+    store._db.commit()
+    snap7 = store.get_cost_snapshot(days=7)
+    assert snap7["total_usd"] == pytest.approx(0.50)
+    snap60 = store.get_cost_snapshot(days=60)
+    assert snap60["total_usd"] == pytest.approx(2.50)
+
+
+def test_cost_snapshot_all_time_unchanged_by_days_none(
+    store: ConversationStore,
+) -> None:
+    """Calling without ``days`` preserves historical behaviour."""
+    _seed_conversation(store, "dashboard:albert", 1.00)
+    _seed_metric(store, "albert", 2.00)
+    snap = store.get_cost_snapshot()
+    assert snap["days"] is None
+    assert snap["total_usd"] == pytest.approx(2.00)
+    assert snap["by_source"]["conversations"] == pytest.approx(1.00)
+    assert snap["by_source"]["agent_metrics"] == pytest.approx(2.00)

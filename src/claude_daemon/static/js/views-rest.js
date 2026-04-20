@@ -4,7 +4,20 @@
 CC.chartInstances = {};
 
 CC.renderAnalyticsView = async function() {
+  // Refresh the topbar "Cost" pill alongside the 7D card so both
+  // values come from the same snapshot instant — otherwise the
+  // topbar can lag (30s poll) and the 7D card looks larger than
+  // all-time spend, which is impossible but visually confusing.
+  CC.cache['/api/costs' + JSON.stringify({})] = null;
+  CC.cache['/api/costs?days=7' + JSON.stringify({})] = null;
   var metricsData = await CC.api('/api/metrics?days=7');
+  var costData = await CC.api('/api/costs?days=7');
+  var costAll = await CC.api('/api/costs');
+  if (costAll && typeof costAll.total_usd === 'number') {
+    CC.totalCost = costAll.total_usd;
+    var pill = document.getElementById('statCost');
+    if (pill) pill.textContent = '$' + CC.totalCost.toFixed(2);
+  }
   var failData = await CC.api('/api/failures');
   var discData = await CC.api('/api/discussions');
   var taskData = await CC.api('/api/tasks');
@@ -16,12 +29,39 @@ CC.renderAnalyticsView = async function() {
   var taskCount = taskData && taskData.tasks ? taskData.tasks.length : 0;
   var successCount = taskData ? taskData.tasks.filter(function(t) { return t.status === 'completed'; }).length : 0;
 
+  // Distinguish "API failed" from "genuinely zero" so the UI never
+  // silently hides a broken cost endpoint behind a misleading $0.00.
+  var cost7dLabel, cost7dTip = '';
+  if (costData === null) {
+    cost7dLabel = 'err';
+    var e = CC.lastApiError || {};
+    cost7dTip = 'cost API failed: ' + (e.status || '?') + ' ' + JSON.stringify(e.body || {});
+  } else if (typeof costData.total_usd !== 'number') {
+    cost7dLabel = 'n/a';
+    cost7dTip = 'unexpected payload: ' + JSON.stringify(costData).substring(0, 200);
+  } else {
+    cost7dLabel = '$' + costData.total_usd.toFixed(2);
+    if (costData.by_source) {
+      cost7dTip = 'agent_metrics(7d)=$' + (costData.by_source.agent_metrics||0).toFixed(2);
+    }
+  }
+
+  var costAllLabel = '';
+  if (costAll && typeof costAll.total_usd === 'number') {
+    costAllLabel = ' / all $' + costAll.total_usd.toFixed(2);
+  } else if (costAll && costAll.by_source) {
+    costAllLabel = ' / all $' + (costAll.by_source.deduped_total||0).toFixed(2);
+  }
+
   statsEl.innerHTML = [
-    { l: 'Total Cost (7d)', v: '$' + (metricsData && metricsData.metrics ? metricsData.metrics.reduce(function(s,m){return s+(m.total_cost||0);},0).toFixed(2) : '0.00') },
+    { l: 'Total Cost (7d)', v: cost7dLabel + costAllLabel, t: cost7dTip },
     { l: 'Discussions', v: dStats.total || 0 },
     { l: 'Failures (7d)', v: failCount },
     { l: 'Task Success', v: taskCount > 0 ? Math.round(successCount/taskCount*100)+'%' : 'N/A' },
-  ].map(function(c) { return '<div class="metric-card glass-sm"><div class="label">'+c.l+'</div><div class="value">'+c.v+'</div></div>'; }).join('');
+  ].map(function(c) {
+    var title = c.t ? ' title="' + CC.escHtml(c.t) + '"' : '';
+    return '<div class="metric-card glass-sm"'+title+'><div class="label">'+c.l+'</div><div class="value">'+c.v+'</div></div>';
+  }).join('');
 
   // Charts
   CC._renderCostChart(metricsData);

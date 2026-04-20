@@ -312,6 +312,7 @@ class SDKBridgeManager:
             num_turns=1,
             duration_ms=result.get("durationMs", 0),
             is_error=False,
+            stop_reason=result.get("stopReason") or "",
         )
 
     async def stream_message(
@@ -384,6 +385,7 @@ class SDKBridgeManager:
                         num_turns=1,
                         duration_ms=event.get("durationMs", 0),
                         is_error=False,
+                        stop_reason=event.get("stopReason") or "",
                     )
                     return
 

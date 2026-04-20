@@ -51,6 +51,7 @@ class ClaudeResponse:
     duration_ms: int
     is_error: bool
     model_used: str = ""
+    stop_reason: str = ""
     raw: dict = field(repr=False, default_factory=dict)
 
     @classmethod
@@ -65,6 +66,7 @@ class ClaudeResponse:
             num_turns=int(data.get("num_turns", 0)),
             duration_ms=int(data.get("duration_ms", 0)),
             is_error=bool(data.get("is_error", False)),
+            stop_reason=str(data.get("stop_reason", "")),
             raw=data,
         )
 
@@ -586,8 +588,9 @@ class ProcessManager:
                 if final_response.session_id:
                     self._confirmed_sessions.add(final_response.session_id)
                 log.info(
-                    "Stream complete: session=%s, cost=$%.4f, turns=%d",
+                    "Stream complete: session=%s, cost=$%.4f, turns=%d, stop_reason=%s",
                     final_response.session_id, final_response.cost, final_response.num_turns,
+                    final_response.stop_reason or "unknown",
                 )
                 yield final_response
             elif accumulated_text:

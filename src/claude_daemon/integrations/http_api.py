@@ -370,15 +370,36 @@ class HttpApi:
         })
 
     async def _handle_costs(self, request: web.Request) -> web.Response:
-        """GET /api/costs - single source of truth for dashboard cost display."""
+        """GET /api/costs[?days=N] — single source of truth for dashboard
+        cost display. Without ``days`` returns all-time totals; with
+        ``days`` returns a time-windowed total computed from agent_metrics
+        only (see get_cost_snapshot for the windowing rationale)."""
         if not self.daemon.store:
             return web.json_response({
                 "total_usd": 0,
                 "by_agent": {},
+                "days": None,
                 "by_source": {"conversations": 0, "agent_metrics": 0, "deduped_total": 0},
             })
+        days_raw = request.query.get("days")
+        days: int | None = None
+        if days_raw:
+            try:
+                parsed = int(days_raw)
+            except ValueError:
+                return web.json_response(
+                    {"error": "days must be an integer"}, status=400,
+                )
+            if parsed < 1 or parsed > 365:
+                return web.json_response(
+                    {"error": "days must be between 1 and 365"},
+                    status=400,
+                )
+            days = parsed
         try:
-            return web.json_response(self.daemon.store.get_cost_snapshot())
+            return web.json_response(
+                self.daemon.store.get_cost_snapshot(days=days),
+            )
         except Exception:
             log.exception("get_cost_snapshot failed")
             return web.json_response({"error": "cost snapshot failed"}, status=500)
@@ -1428,7 +1449,7 @@ class HttpApi:
         # 5. MCP health per agent
         registry = self.daemon.agent_registry
         if registry:
-            for agent in registry.values():
+            for agent in registry:
                 try:
                     health = agent.check_mcp_health() if agent.mcp_config_path else {}
                 except Exception:

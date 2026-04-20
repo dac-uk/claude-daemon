@@ -56,7 +56,7 @@ class DaemonConfig:
     # SDK bridge (persistent sessions via @anthropic-ai/claude-agent-sdk)
     sdk_bridge_enabled: bool = True  # Use Agent SDK for persistent sessions (sub-second responses)
     sdk_bridge_node_path: str = "node"  # Path to Node.js executable
-    sdk_bridge_idle_timeout_ms: int = 90_000  # ms without any event before we fail over to CLI (was process_timeout, 300s whole-stream)
+    sdk_bridge_idle_timeout_ms: int = 300_000  # ms without any event before we fail over to CLI; 5 min covers Opus extended-thinking silent phases (raised from 90s)
     # Advisory soft cap on concurrent CLI subprocesses per agent. When a
     # single agent is running this many or more subprocesses, a warning
     # is logged so the operator can see it — no request is ever blocked
@@ -98,7 +98,7 @@ class DaemonConfig:
     # Memory
     daily_log_enabled: bool = True
     compaction_threshold: int = 50_000
-    max_session_age_hours: int = 72
+    max_session_age_hours: int = 168  # 7 days — auto-archive dormant sessions
     dream_enabled: bool = True
     max_context_chars: int = 5000
     max_memory_chars: int = 3000
@@ -247,7 +247,7 @@ class DaemonConfig:
             agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
             sdk_bridge_enabled=claude_cfg.get("sdk_bridge_enabled", True),
             sdk_bridge_node_path=claude_cfg.get("sdk_bridge_node_path", "node"),
-            sdk_bridge_idle_timeout_ms=int(claude_cfg.get("sdk_bridge_idle_timeout_ms", 90_000)),
+            sdk_bridge_idle_timeout_ms=int(claude_cfg.get("sdk_bridge_idle_timeout_ms", 300_000)),
             per_agent_soft_cap=int(claude_cfg.get("per_agent_soft_cap", 3)),
             claude_oauth_token=claude_cfg.get("claude_oauth_token", ""),
             managed_agents_enabled=claude_cfg.get("managed_agents_enabled", False),

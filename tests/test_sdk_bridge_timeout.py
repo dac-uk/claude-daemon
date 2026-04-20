@@ -93,4 +93,4 @@ def test_config_exposes_idle_timeout_field():
     from claude_daemon.core.config import DaemonConfig
     cfg = DaemonConfig()
     assert hasattr(cfg, "sdk_bridge_idle_timeout_ms")
-    assert cfg.sdk_bridge_idle_timeout_ms == 90_000
+    assert cfg.sdk_bridge_idle_timeout_ms == 300_000

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import sys
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def _cmd_start(args: argparse.Namespace) -> None:
@@ -308,7 +311,7 @@ def _stop_daemon_for_update() -> None:
     import subprocess as sp
     import time
 
-    from claude_daemon.utils.paths import pid_path
+    from claude_daemon.utils.paths import pid_path, update_sentinel_path
 
     system = platform.system()
     stopped = False
@@ -347,29 +350,102 @@ def _stop_daemon_for_update() -> None:
             else:
                 print(f"  systemctl stop failed: {result.stderr.strip()}")
 
-    # Fallback: SIGTERM via PID file (covers --foreground or non-service setups)
+    # Fallback + escalation: SIGTERM → wait → SIGKILL. Covers the case
+    # where `launchctl unload` returned success but the process is still
+    # finishing a slow graceful shutdown (MCP streams, DB flushes) when
+    # we're about to `pip install` over the running binary.
     pf = pid_path()
-    if pf.exists():
+    if not pf.exists():
+        return
+
+    try:
+        pid = int(pf.read_text().strip())
+    except (ValueError, OSError) as exc:
+        log.warning("Unreadable pid file %s: %s", pf, exc)
+        return
+
+    def _alive() -> bool:
         try:
-            pid = int(pf.read_text().strip())
-            os.kill(pid, 0)  # probe
-            if not stopped:
-                print(f"Stopping Claude Daemon (SIGTERM to PID {pid}) ...")
-                os.kill(pid, signal.SIGTERM)
-            # Wait up to 10s for graceful exit
-            for _ in range(20):
-                try:
-                    os.kill(pid, 0)
-                    time.sleep(0.5)
-                except ProcessLookupError:
-                    print("  Daemon process exited.")
-                    pf.unlink(missing_ok=True)
-                    return
-            print(f"  Daemon PID {pid} still running after 10s; continuing anyway.")
+            os.kill(pid, 0)
+            return True
         except ProcessLookupError:
-            pf.unlink(missing_ok=True)
-        except (ValueError, PermissionError):
-            pass
+            return False
+        except PermissionError:
+            # Process exists but owned by another user — treat as alive.
+            return True
+
+    if not _alive():
+        pf.unlink(missing_ok=True)
+        return
+
+    # Mark this shutdown as operator-initiated so the next daemon start
+    # won't mistake a SIGKILL-induced missing graceful-stop marker for a
+    # crash. Written before any signal so a fast SIGKILL can't race us.
+    try:
+        update_sentinel_path().write_text(f"pid={pid}\nts={int(time.time())}\n")
+    except OSError as exc:
+        log.warning("Could not write update sentinel: %s", exc)
+
+    # If the service manager already did the unload, give it a head
+    # start before sending our own SIGTERM.
+    if not stopped:
+        print(f"Stopping Claude Daemon (SIGTERM to PID {pid}) ...")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as exc:
+            log.error("SIGTERM to PID %s failed: %s", pid, exc)
+            print(f"  SIGTERM failed: {exc}")
+
+    def _wait(seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if not _alive():
+                return True
+            time.sleep(0.5)
+        return False
+
+    # Phase 1: graceful — up to 10s
+    if _wait(10.0):
+        print("  Daemon process exited.")
+        pf.unlink(missing_ok=True)
+        return
+
+    # Phase 2: escalate to SIGTERM (if we haven't already) and wait 5s
+    print(f"  Still alive after 10s — sending SIGTERM to PID {pid} ...")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pf.unlink(missing_ok=True)
+        print("  Daemon process exited.")
+        return
+    except OSError as exc:
+        log.error("Escalation SIGTERM to PID %s failed: %s", pid, exc)
+        print(f"  SIGTERM failed: {exc}")
+
+    if _wait(5.0):
+        print("  Daemon process exited.")
+        pf.unlink(missing_ok=True)
+        return
+
+    # Phase 3: SIGKILL — last resort before update clobbers files
+    print(f"  Still alive after 15s — sending SIGKILL to PID {pid} ...")
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pf.unlink(missing_ok=True)
+        print("  Daemon process exited.")
+        return
+    except OSError as exc:
+        log.error("SIGKILL to PID %s failed: %s", pid, exc)
+        print(f"  SIGKILL failed: {exc}; continuing anyway.")
+        return
+
+    if _wait(3.0):
+        print("  Daemon process killed.")
+        pf.unlink(missing_ok=True)
+    else:
+        log.error("PID %s still alive after SIGKILL + 3s wait", pid)
+        print(f"  Daemon PID {pid} survived SIGKILL; continuing anyway.")
 
 
 def _cmd_update(args: argparse.Namespace) -> None:

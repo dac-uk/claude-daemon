@@ -9,11 +9,20 @@ CC.api = async function(path, opts) {
   if (cached && Date.now() - cached.ts < CC.CACHE_TTL) return cached.data;
   try {
     const res = await fetch(url, opts);
-    if (!res.ok) throw new Error(res.statusText);
+    if (!res.ok) {
+      // Preserve status + body for the caller so UI can surface a real
+      // diagnostic instead of a generic "Could not load X".
+      var body = null;
+      try { body = await res.json(); } catch (_) {}
+      CC.lastApiError = { path: path, status: res.status, body: body };
+      console.error('API error:', path, res.status, body);
+      return null;
+    }
     const data = await res.json();
     CC.cache[cacheKey] = { data, ts: Date.now() };
     return data;
   } catch (e) {
+    CC.lastApiError = { path: path, status: 0, body: { error: String(e) } };
     console.error('API error:', path, e);
     return null;
   }

@@ -169,8 +169,7 @@ class EvolutionActuator:
         response = await self.pm.send_message(
             prompt=prompt,
             system_context="You are a system prompt evolution engine. Respond with JSON only.",
-            model="sonnet",
-            max_tokens=1000,
+            model_override="sonnet",
             max_budget=0.05,
             task_type="improvement",
         )
