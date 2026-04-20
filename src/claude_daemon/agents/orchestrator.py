@@ -1084,8 +1084,6 @@ class Orchestrator:
 
     def _cleanup_finished_tasks(self) -> None:
         """Remove completed/failed tasks older than TTL to prevent memory leak."""
-        import time
-        now = time.monotonic()
         to_remove = []
         for tid, task in self._spawned_tasks.items():
             if task.status in ("completed", "failed"):
