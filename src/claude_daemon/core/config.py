@@ -48,7 +48,7 @@ class DaemonConfig:
     model_retry_delay: float = 2.0  # Seconds between fallback retries
     model_max_retries: int = 2  # 0 disables model fallback
     stream_idle_timeout_ms: int = 600_000  # ms before idle stream is killed (default 90s is too short for Opus thinking)
-    auto_compact_pct: int = 50  # Auto-compact at this % of context window (CLI default waits much longer)
+    auto_compact_pct: int = 80  # Auto-compact at this % of context window (50 was too aggressive)
     thinking_enabled: bool = True  # alwaysThinkingEnabled in per-agent settings.json
     default_effort: str = ""  # Override effort level for all tasks (empty = use per-task-type mapping)
     agent_deny_rules: list[str] = field(default_factory=list)  # Extra deny rules appended to defaults
@@ -90,6 +90,8 @@ class DaemonConfig:
     embedding_similarity_threshold: float = 0.3  # Minimum similarity score (0-1) to include
     embedding_chunk_size: int = 500  # Max chars per memory chunk
     embedding_batch_size: int = 128  # Texts per API call
+    embedding_search_timeout_ms: int = 400  # Max ms to wait for semantic search before proceeding
+    embedding_interactive_chat: bool = True  # Include semantic search in live chat (False = skip for speed)
 
     # Inter-agent discussions
     discussions_enabled: bool = True  # Enable multi-turn discussions and council
@@ -246,7 +248,7 @@ class DaemonConfig:
             model_retry_delay=float(claude_cfg.get("model_retry_delay", 2.0)),
             model_max_retries=int(claude_cfg.get("model_max_retries", 2)),
             stream_idle_timeout_ms=int(claude_cfg.get("stream_idle_timeout_ms", 600_000)),
-            auto_compact_pct=int(claude_cfg.get("auto_compact_pct", 50)),
+            auto_compact_pct=int(claude_cfg.get("auto_compact_pct", 80)),
             thinking_enabled=claude_cfg.get("thinking_enabled", True),
             default_effort=claude_cfg.get("default_effort", ""),
             agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
@@ -276,6 +278,8 @@ class DaemonConfig:
             ),
             embedding_chunk_size=int(memory_cfg.get("embedding_chunk_size", 500)),
             embedding_batch_size=int(memory_cfg.get("embedding_batch_size", 128)),
+            embedding_search_timeout_ms=int(memory_cfg.get("embedding_search_timeout_ms", 400)),
+            embedding_interactive_chat=memory_cfg.get("embedding_interactive_chat", True),
             discussions_enabled=claude_cfg.get("discussions_enabled", True),
             discussion_max_turns=int(claude_cfg.get("discussion_max_turns", 6)),
             discussion_max_cost=float(claude_cfg.get("discussion_max_cost", 1.00)),

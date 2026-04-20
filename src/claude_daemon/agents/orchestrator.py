@@ -305,42 +305,42 @@ class Orchestrator:
         correlation_id = str(uuid.uuid4())[:12]
         log.info("[%s] %s <- %s:%s prompt_len=%d", correlation_id, agent.name, platform, user_id, len(prompt))
 
-        # Semantic memory search for task-relevant context
-        semantic_matches = await self._semantic_search(prompt)
-
-        agent_context = agent.build_system_context(semantic_matches=semantic_matches)
-        agent_context += f"\n\n{self.registry.get_agent_summary()}"
-
-        conv = self.store.get_or_create_conversation(
-            session_id=session_id,
-            platform=platform,
-            user_id=f"{user_id}:{agent.name}",
-        )
-
-        self.store.add_message(conv["id"], "user", prompt)
-
-        # Use agent's model for this task type
         model = agent.get_model(task_type)
-
-        if self.hub:
-            await self.hub.agent_busy(agent.name, prompt)
-
-        # Full MCP for all tasks — SDK sessions stay warm so init cost is one-time.
-        # Falls back to lite MCP for subprocess mode (no warm session).
         mcp_path = agent.mcp_config_path
 
-        # Ensure SDK session exists for this agent (lazy creation on first message)
-        await self.pm.ensure_agent_session(
+        # Launch semantic search + session ensure in parallel
+        search_task = asyncio.create_task(self._semantic_search(prompt))
+        ensure_task = asyncio.create_task(self.pm.ensure_agent_session(
             agent_name=agent.name,
             model=model,
             system_prompt=agent.build_static_context(),
             mcp_config_path=mcp_path,
             settings_path=agent.settings_path,
             agent_workspace=str(agent.workspace),
-        )
+        ))
 
-        # If SDK session is warm for this (agent, model), send only dynamic context.
-        # Otherwise fall back to full context for subprocess mode.
+        conv = self.store.get_or_create_conversation(
+            session_id=session_id,
+            platform=platform,
+            user_id=f"{user_id}:{agent.name}",
+        )
+        self.store.add_message(conv["id"], "user", prompt)
+
+        await ensure_task
+        semantic_matches: list[dict] = []
+        timeout_s = self.pm.config.embedding_search_timeout_ms / 1000.0
+        try:
+            semantic_matches = await asyncio.wait_for(search_task, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            log.debug("Semantic search exceeded %dms budget", self.pm.config.embedding_search_timeout_ms)
+            search_task.cancel()
+
+        agent_context = agent.build_system_context(semantic_matches=semantic_matches)
+        agent_context += f"\n\n{self.registry.get_agent_summary()}"
+
+        if self.hub:
+            asyncio.create_task(self.hub.agent_busy(agent.name, prompt))
+
         sdk_active = (self.pm._sdk_bridge and
                       self.pm._sdk_bridge.has_session(agent.name, model))
         if sdk_active:
@@ -751,27 +751,56 @@ class Orchestrator:
         task_type: str = "default",
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Stream a message to a specific agent."""
-        semantic_matches = await self._semantic_search(prompt)
+        model = agent.get_model(task_type)
+        mcp_path = agent.mcp_config_path
 
-        agent_context = agent.build_system_context(semantic_matches=semantic_matches)
-        agent_context += f"\n\n{self.registry.get_agent_summary()}"
+        # Launch semantic search + session ensure in parallel to minimise
+        # time-to-first-token. Semantic search is best-effort with a timeout.
+        interactive = platform in ("api", "cli")
+        skip_search = interactive and not self.pm.config.embedding_interactive_chat
+        if skip_search:
+            search_task = None
+        else:
+            search_task = asyncio.create_task(self._semantic_search(prompt))
+
+        ensure_task = asyncio.create_task(self.pm.ensure_agent_session(
+            agent_name=agent.name,
+            model=model,
+            system_prompt=agent.build_static_context(),
+            mcp_config_path=mcp_path,
+            settings_path=agent.settings_path,
+            agent_workspace=str(agent.workspace),
+        ))
 
         conv = self.store.get_or_create_conversation(
             session_id=session_id,
             platform=platform,
             user_id=f"{user_id}:{agent.name}",
         )
-
         self.store.add_message(conv["id"], "user", prompt)
+
+        # Await session ensure (usually instant for warm sessions)
+        await ensure_task
+
+        # Await semantic search with a hard timeout so a slow embedding
+        # provider never blocks the chat turn.
+        semantic_matches: list[dict] = []
+        if search_task is not None:
+            timeout_s = self.pm.config.embedding_search_timeout_ms / 1000.0
+            try:
+                semantic_matches = await asyncio.wait_for(search_task, timeout=timeout_s)
+            except asyncio.TimeoutError:
+                log.debug("Semantic search exceeded %dms budget — proceeding without", self.pm.config.embedding_search_timeout_ms)
+                search_task.cancel()
+
+        agent_context = agent.build_system_context(semantic_matches=semantic_matches)
+        agent_context += f"\n\n{self.registry.get_agent_summary()}"
 
         accumulated = ""
         final_response = None
         resp = ClaudeResponse.error("No response")
 
-        model = agent.get_model(task_type)
-
-        # Persist a task_queue row tagged source='chat' so the Operations tab
-        # sees chat-initiated work, not just /spawn or /api/v1/tasks submissions.
+        # Persist chat task row in background (fire-and-forget)
         chat_task_id: str | None = None
         if self.store is not None:
             try:
@@ -794,20 +823,9 @@ class Orchestrator:
                 chat_task_id = None
 
         if self.hub:
-            await self.hub.agent_busy(agent.name, prompt)
+            asyncio.create_task(self.hub.agent_busy(agent.name, prompt))
 
         try:
-            mcp_path = agent.mcp_config_path
-
-            await self.pm.ensure_agent_session(
-                agent_name=agent.name,
-                model=model,
-                system_prompt=agent.build_static_context(),
-                mcp_config_path=mcp_path,
-                settings_path=agent.settings_path,
-                agent_workspace=str(agent.workspace),
-            )
-
             sdk_active = (self.pm._sdk_bridge and
                           self.pm._sdk_bridge.has_session(agent.name, model))
             if sdk_active:

@@ -159,7 +159,7 @@ def test_config_new_fields():
     config = DaemonConfig()
     assert config.thinking_enabled is True
     assert config.default_effort == ""
-    assert config.auto_compact_pct == 50
+    assert config.auto_compact_pct == 80
     assert config.agent_deny_rules == []
 
 

@@ -167,6 +167,8 @@ async def test_stream_to_agent_logs_warning_on_empty_response(caplog):
     pm = MagicMock()
     pm.ensure_agent_session = AsyncMock()
     pm._sdk_bridge = None
+    pm.config.embedding_search_timeout_ms = 400
+    pm.config.embedding_interactive_chat = True
 
     async def fake_stream(*args, **kwargs):
         yield ClaudeResponse.error("ANTHROPIC_API_KEY not set")
