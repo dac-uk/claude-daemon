@@ -526,55 +526,58 @@ class ClaudeDaemon:
         log.info("Evo plugin ready")
 
     async def stop(self) -> None:
+        # Write the graceful marker FIRST. Reaching stop() means we got
+        # SIGTERM/SIGINT — this is NOT a crash. Writing early avoids a
+        # race where the new daemon reads the daily log before we finish
+        # drain_all().
+        if self.durable:
+            try:
+                self.durable.append_daily_log("Daemon stopped gracefully.")
+            except Exception:
+                pass
+
         log.info("Shutting down...")
         sd_notify("STOPPING=1")
 
-        try:
-            # Stop HTTP API
-            if hasattr(self, "_http_api") and self._http_api:
+        # Stop HTTP API
+        if hasattr(self, "_http_api") and self._http_api:
+            try:
+                await self._http_api.stop()
+                log.info("Stopped HTTP API")
+            except Exception:
+                log.exception("Error stopping HTTP API")
+
+        if self.router:
+            for name, integration in self.router.integrations.items():
                 try:
-                    await self._http_api.stop()
-                    log.info("Stopped HTTP API")
+                    await integration.stop()
+                    log.info("Stopped integration: %s", name)
                 except Exception:
-                    log.exception("Error stopping HTTP API")
+                    log.exception("Error stopping integration: %s", name)
 
-            if self.router:
-                for name, integration in self.router.integrations.items():
-                    try:
-                        await integration.stop()
-                        log.info("Stopped integration: %s", name)
-                    except Exception:
-                        log.exception("Error stopping integration: %s", name)
+        if self._file_watcher:
+            try:
+                self._file_watcher.stop()
+            except Exception:
+                log.exception("Error stopping file watcher")
 
-            if self._file_watcher:
-                try:
-                    self._file_watcher.stop()
-                except Exception:
-                    log.exception("Error stopping file watcher")
+        if self.scheduler:
+            try:
+                self.scheduler.stop()
+            except Exception:
+                log.exception("Error stopping scheduler")
 
-            if self.scheduler:
-                try:
-                    self.scheduler.stop()
-                except Exception:
-                    log.exception("Error stopping scheduler")
+        if self.process_manager:
+            try:
+                await self.process_manager.drain_all()
+            except Exception:
+                log.exception("Error draining processes")
 
-            if self.process_manager:
-                try:
-                    await self.process_manager.drain_all()
-                except Exception:
-                    log.exception("Error draining processes")
-        finally:
-            if self.durable:
-                try:
-                    self.durable.append_daily_log("Daemon stopped gracefully.")
-                except Exception:
-                    log.debug("Could not write graceful-stop marker")
+        if self.store:
+            self.store.close()
 
-            if self.store:
-                self.store.close()
-
-            self._remove_pid()
-            log.info("Claude Daemon stopped.")
+        self._remove_pid()
+        log.info("Claude Daemon stopped.")
 
     def _mark_stale_tasks(self) -> None:
         """Mark any pending/running tasks from a previous daemon run as failed."""
