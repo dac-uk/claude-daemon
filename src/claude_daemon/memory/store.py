@@ -209,6 +209,28 @@ class ConversationStore:
                 log.info("Migrating schema: adding task_queue.session_id column")
                 self._db.execute("ALTER TABLE task_queue ADD COLUMN session_id TEXT")
                 self._db.commit()
+            # Backfill session_id from conversations for tasks that predate the
+            # column. spawn_task creates conversations under
+            # "{user_id}:spawn:{task_id}:{agent_name}"; chat tasks share
+            # "{user_id}:{agent_name}". Idempotent: only NULLs get filled.
+            try:
+                self._db.execute(
+                    "UPDATE task_queue SET session_id = ("
+                    "  SELECT c.session_id FROM conversations c"
+                    "  WHERE c.user_id = task_queue.user_id || ':spawn:' || task_queue.id || ':' || task_queue.agent_name"
+                    "  ORDER BY c.last_active DESC LIMIT 1"
+                    ") WHERE session_id IS NULL AND source IN ('spawn', 'heartbeat', 'api', 'council')"
+                )
+                self._db.execute(
+                    "UPDATE task_queue SET session_id = ("
+                    "  SELECT c.session_id FROM conversations c"
+                    "  WHERE c.user_id = task_queue.user_id || ':' || task_queue.agent_name"
+                    "  ORDER BY c.last_active DESC LIMIT 1"
+                    ") WHERE session_id IS NULL AND source = 'chat'"
+                )
+                self._db.commit()
+            except sqlite3.OperationalError:
+                pass
         except sqlite3.OperationalError:
             # task_queue doesn't exist yet — schema.sql will create it on next startup
             pass
