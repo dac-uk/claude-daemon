@@ -57,6 +57,7 @@ class DaemonConfig:
     sdk_bridge_enabled: bool = True  # Use Agent SDK for persistent sessions (sub-second responses)
     sdk_bridge_node_path: str = "node"  # Path to Node.js executable
     sdk_bridge_idle_timeout_ms: int = 300_000  # ms without any event before we fail over to CLI; 5 min covers Opus extended-thinking silent phases (raised from 90s)
+    sdk_create_session_timeout_ms: int = 20_000  # ms to wait for SDK bridge to create a session (MCP init can be slow)
     # Advisory soft cap on concurrent CLI subprocesses per agent. When a
     # single agent is running this many or more subprocesses, a warning
     # is logged so the operator can see it — no request is ever blocked
@@ -255,6 +256,7 @@ class DaemonConfig:
             sdk_bridge_enabled=claude_cfg.get("sdk_bridge_enabled", True),
             sdk_bridge_node_path=claude_cfg.get("sdk_bridge_node_path", "node"),
             sdk_bridge_idle_timeout_ms=int(claude_cfg.get("sdk_bridge_idle_timeout_ms", 300_000)),
+            sdk_create_session_timeout_ms=int(claude_cfg.get("sdk_create_session_timeout_ms", 20_000)),
             per_agent_soft_cap=int(claude_cfg.get("per_agent_soft_cap", 3)),
             claude_oauth_token=claude_cfg.get("claude_oauth_token", ""),
             managed_agents_enabled=claude_cfg.get("managed_agents_enabled", False),

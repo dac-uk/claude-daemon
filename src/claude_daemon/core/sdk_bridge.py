@@ -240,11 +240,12 @@ class SDKBridgeManager:
             "resumeSessionId": resume_session_id,
         })
 
+        timeout_s = getattr(self.config, "sdk_create_session_timeout_ms", 20_000) / 1000
         try:
-            result = await asyncio.wait_for(future, timeout=5.0)
+            result = await asyncio.wait_for(future, timeout=timeout_s)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
-            log.warning("SDK create_session timeout for %s", session_key)
+            log.warning("SDK create_session timeout for %s (%.0fs)", session_key, timeout_s)
             return None
 
         if result.get("event") == "error":

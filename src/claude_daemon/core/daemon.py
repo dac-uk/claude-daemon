@@ -168,63 +168,63 @@ class ClaudeDaemon:
         }
 
     async def _precreate_agent_sessions(self) -> None:
-        """Pre-create SDK sessions per agent warm-session strategy.
+        """Pre-create SDK sessions for all agents in parallel.
 
         Strategy: for each agent, deduplicate the models they use across task types
         (chat/default/planning) and create one warm session per unique model.
-        Scheduled tasks (haiku) fall back to subprocess — not worth keeping warm.
-
-        Result in practice:
-          johnny:sonnet (chat/default) + johnny:opus (planning) = 2 sessions
-          albert:opus (all task types use opus)                  = 1 session
-          luna/max:opus                                           = 1 session each
-          penny/jeremy/sophie:sonnet (planning → subprocess)      = 1 session each
-          Total: 8 warm sessions.
+        Priority agents (johnny, albert) also warm their planning model.
+        All sessions are created concurrently via asyncio.gather.
         """
         if not self.agent_registry or not self.process_manager._sdk_bridge:
             return
 
-        # Agents that get a warm session for planning (opus) in addition to chat/default.
-        # Others fall back to subprocess for planning tasks (infrequent).
         PRIORITY_AGENTS = {"johnny", "albert"}
 
-        created = 0
-        for agent in self.agent_registry:
+        async def _warm_one(agent, model: str) -> tuple[str, bool]:
+            label = f"{agent.name}:{model}"
             try:
-                system_prompt = agent.build_static_context()
-                mcp = agent.mcp_config_path
-                settings = agent.settings_path
-                workspace = str(agent.workspace)
-
-                # Collect models to pre-warm for this agent
-                models_to_warm = set()
-
-                # Always warm the default model (covers chat + default)
-                default_model = agent.get_model("default")
-                models_to_warm.add(default_model)
-
-                # For priority agents, also warm the planning model if different
-                if agent.name.lower() in PRIORITY_AGENTS:
-                    planning_model = agent.get_model("planning")
-                    if planning_model and planning_model != default_model:
-                        models_to_warm.add(planning_model)
-
-                for model in models_to_warm:
-                    ok = await self.process_manager.ensure_agent_session(
-                        agent_name=agent.name,
-                        model=model,
-                        system_prompt=system_prompt,
-                        mcp_config_path=mcp,
-                        settings_path=settings,
-                        agent_workspace=workspace,
-                    )
-                    if ok:
-                        created += 1
+                ok = await self.process_manager.ensure_agent_session(
+                    agent_name=agent.name,
+                    model=model,
+                    system_prompt=agent.build_static_context(),
+                    mcp_config_path=agent.mcp_config_path,
+                    settings_path=agent.settings_path,
+                    agent_workspace=str(agent.workspace),
+                )
+                return label, bool(ok)
             except Exception:
-                log.debug("Pre-create session failed for %s (non-critical)", agent.name)
+                log.debug("Pre-create session failed for %s", label)
+                return label, False
 
-        if created:
-            log.info("Pre-created %d SDK sessions at startup", created)
+        tasks = []
+        for agent in self.agent_registry:
+            models_to_warm: set[str] = set()
+            default_model = agent.get_model("default")
+            models_to_warm.add(default_model)
+            if agent.name.lower() in PRIORITY_AGENTS:
+                planning_model = agent.get_model("planning")
+                if planning_model and planning_model != default_model:
+                    models_to_warm.add(planning_model)
+            for model in models_to_warm:
+                tasks.append(_warm_one(agent, model))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        succeeded = []
+        failed = []
+        for r in results:
+            if isinstance(r, tuple):
+                label, ok = r
+                (succeeded if ok else failed).append(label)
+            elif isinstance(r, BaseException):
+                failed.append(f"<error: {r}>")
+
+        log.info(
+            "Pre-warmed %d/%d SDK sessions. OK: [%s]%s",
+            len(succeeded), len(tasks),
+            ", ".join(succeeded),
+            f"  Failed: [{', '.join(failed)}]" if failed else "",
+        )
 
     async def _register_managed_agents(self) -> None:
         """Register all daemon agents with the Managed Agents API."""
