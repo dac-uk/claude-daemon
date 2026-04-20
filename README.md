@@ -21,7 +21,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Managed Agents Backend** - Dual-backend execution: CLI subprocess for fast/cheap tasks (chat, heartbeats), Anthropic's Managed Agents API for long-running/complex tasks (planning, workflows, REM sleep). Automatic fallback to CLI if API fails. Control via `/backend` command.
 - **Self-Evolution (EvolutionActuator)** - The improvement loop is now closed: weekly improvement plans generate targeted SOUL.md/AGENTS.md mutations. Safety guards (size check, protected sections, archive-before-write) prevent data loss. Starts in dry-run mode — proposals logged but not applied until you're confident. Evolution log tracks every mutation.
 - **Code Optimization (Evo)** - Optional code optimization via tree search over hill-climbing. The weekly improvement plan identifies targets (`[OPTIMIZE:albert] Reduce test suite from 45s to under 30s`). Albert (or any code agent) runs [evo](https://github.com/evo-hq/evo) — an Apache 2.0 Claude Code plugin — which spawns N parallel agents in git worktrees, shares failure traces across them, measures each variant against a regression benchmark, keeps winners and discards losers. Automatically installed at daemon startup when `evo_enabled: true` (the default). No new API keys needed beyond Claude Code. Set `evo_enabled: false` to skip installation. Configurable via `evo_max_variants` and `evo_max_budget`.
-- **Semantic Memory Search** - Vector embedding index (sqlite-vec) using Voyage AI's `voyage-code-3` model (1024 dims, best-in-class for code). Cosine similarity search across all memory, playbooks, reflections, and failure lessons. Hybrid search falls back to FTS5 keyword matching when semantic results are sparse. Incremental indexing via SHA-256 content hashing — only changed files are re-embedded. Configurable model, top-k, similarity threshold, and batch size. Graceful degradation — FTS5 still works without sqlite-vec or a Voyage API key.
+- **Semantic Memory Search** - Vector embedding index (sqlite-vec) with configurable providers: **Ollama** (default, local, no API key), **Voyage AI**, or any **OpenAI-compatible** endpoint. Switch models by editing `config.yaml` or asking an agent in natural language — `reload_config()` reinitializes the embedding store automatically. Set `embedding_dim: 0` to auto-detect dimensions on first call. Cosine similarity search across all memory, playbooks, reflections, and failure lessons. Hybrid search falls back to FTS5 keyword matching when semantic results are sparse. Incremental indexing via SHA-256 content hashing — only changed files are re-embedded. Graceful degradation — FTS5 still works without sqlite-vec or the embedding provider.
 - **Failure Analysis & Lesson Extraction** - Every failed agent task is auto-classified via Haiku ($0.02/failure): category, root cause, severity, actionable lesson. Lessons written to `shared/failure-lessons.md` for cross-agent learning. Recurring patterns surfaced in the weekly improvement plan.
 - **Task Persistence** - Spawned background tasks survive daemon restarts. SQLite `task_queue` table tracks full lifecycle (pending → running → completed/failed). Stale tasks from crashed runs are auto-marked as failed on startup.
 - **Crash Alerting & Watchdog** - systemd `Type=notify` with `WatchdogSec=120`. 60-second watchdog ping prevents restart on silent hangs. Crash detection on startup alerts you via Telegram/Discord. No more silent failures.
@@ -1531,11 +1531,21 @@ memory:
   self_improve: true               # Enable self-assessment cycle
   log_retention_days: 30           # Delete daily logs older than this
   embeddings_enabled: true         # Semantic search (requires sqlite-vec for full quality)
-  embedding_model: voyage-code-3   # Voyage model (voyage-code-3, voyage-3, voyage-3-lite)
-  embedding_dim: 1024              # Must match model dimensions
+  embedding_provider: ollama       # "ollama" | "voyage" | "openai" (any OpenAI-compatible)
+  embedding_api_base: http://localhost:11434  # Base URL (Ollama/OpenAI). Ignored for Voyage.
+  embedding_api_key: ""            # Key override (env vars VOYAGE_API_KEY/OPENAI_API_KEY also work)
+  embedding_model: nomic-embed-text  # Provider-specific model name
+  embedding_dim: 0                 # 0 = auto-detect on first embed; set explicitly to skip probe
   embedding_top_k: 3               # Semantic matches injected into agent context
   embedding_similarity_threshold: 0.3  # Minimum score (0-1); below this is discarded
   embedding_chunk_size: 500        # Max chars per memory chunk
+  # Example: local Qwen3 via Ollama
+  #   embedding_provider: ollama
+  #   embedding_model: Qwen3-Embedding-8B:Q4_K_M
+  # Example: Voyage AI
+  #   embedding_provider: voyage
+  #   embedding_model: voyage-code-3
+  #   embedding_dim: 1024
 
 claude:
   discussions_enabled: true        # Enable multi-turn discussions and council
