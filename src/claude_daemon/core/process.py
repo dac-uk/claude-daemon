@@ -230,7 +230,7 @@ class ProcessManager:
             return False
         if bridge.has_session(agent_name, model):
             return True
-        session_id = await bridge.create_session(
+        await bridge.create_session(
             agent_name=agent_name,
             model=model,
             system_prompt=system_prompt,
@@ -238,7 +238,8 @@ class ProcessManager:
             settings_path=settings_path,
             agent_workspace=agent_workspace,
         )
-        return session_id is not None
+        # sessionId may be null until first message — check bridge state instead
+        return bridge.has_session(agent_name, model)
 
     def _should_use_managed(self, task_type: str, agent_name: str | None) -> bool:
         """Route to Managed Agents or CLI based on task characteristics."""
