@@ -120,7 +120,12 @@ async function handleSend(cmd) {
     await session.send(fullMessage);
 
     // Consume the stream
+    // resultText = full accumulated text across all assistant messages in this send
+    // currentMsgText = text within the in-progress assistant message (for delta diff)
+    // currentMsgId = message id of the in-progress assistant message
     let resultText = "";
+    let currentMsgText = "";
+    let currentMsgId = null;
     let sessionId = null;
     let cost = 0;
     let inputTokens = 0;
@@ -137,22 +142,33 @@ async function handleSend(cmd) {
         if (msg.message?.stop_reason) {
           stopReason = msg.message.stop_reason;
         }
+        // Detect a new assistant message (multi-turn: text -> tool_use -> text)
+        // so we don't mis-slice the second message against the first's length.
+        const msgId = msg.message?.id || null;
+        if (msgId && msgId !== currentMsgId) {
+          if (currentMsgText) {
+            resultText += currentMsgText;
+          }
+          currentMsgId = msgId;
+          currentMsgText = "";
+        }
         const content = msg.message?.content;
-        if (typeof content === "string" && content.length > resultText.length) {
-          const delta = content.slice(resultText.length);
-          resultText = content;
+        if (typeof content === "string" && content.length > currentMsgText.length) {
+          const delta = content.slice(currentMsgText.length);
+          currentMsgText = content;
           emit({ event: "text", id, agent, text: delta });
         } else if (Array.isArray(content)) {
-          // Content blocks format
+          // Concatenate all text blocks in this message (tool_use blocks are skipped).
+          let msgText = "";
           for (const block of content) {
             if (block.type === "text" && block.text) {
-              const newText = block.text;
-              if (newText.length > resultText.length) {
-                const delta = newText.slice(resultText.length);
-                resultText = newText;
-                emit({ event: "text", id, agent, text: delta });
-              }
+              msgText += block.text;
             }
+          }
+          if (msgText.length > currentMsgText.length) {
+            const delta = msgText.slice(currentMsgText.length);
+            currentMsgText = msgText;
+            emit({ event: "text", id, agent, text: delta });
           }
         }
       } else if (type === "result") {
@@ -164,6 +180,12 @@ async function handleSend(cmd) {
         durationMs = msg.duration_ms || (Date.now() - startTime);
         if (msg.stop_reason || msg.message?.stop_reason) {
           stopReason = msg.stop_reason || msg.message.stop_reason;
+        }
+
+        // Flush the in-progress assistant message into the accumulated result.
+        if (currentMsgText) {
+          resultText += currentMsgText;
+          currentMsgText = "";
         }
 
         // Extract result text if we didn't get it from streaming
