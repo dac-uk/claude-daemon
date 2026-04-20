@@ -82,6 +82,63 @@ def test_is_session_busy():
     assert pm.is_session_busy("session-1") is True
 
 
+def test_active_count_for_agent_filters_by_agent_name():
+    """Per-agent active count only counts sessions tagged with that agent."""
+    config = MagicMock()
+    config.max_concurrent_sessions = 5
+    pm = ProcessManager(config)
+
+    def _fake(agent_name):
+        m = MagicMock()
+        m.agent_name = agent_name
+        return m
+
+    pm._active["s1"] = _fake("johnny")
+    pm._active["s2"] = _fake("johnny")
+    pm._active["s3"] = _fake("albert")
+    pm._active["s4"] = _fake(None)  # untagged session
+
+    assert pm.active_count_for_agent("johnny") == 2
+    assert pm.active_count_for_agent("albert") == 1
+    assert pm.active_count_for_agent("sophie") == 0
+    assert pm.active_count_for_agent("") == 0
+
+
+def test_agent_soft_cap_warns_but_does_not_block(caplog):
+    """Exceeding per_agent_soft_cap logs a warning and does not raise."""
+    import logging
+    config = MagicMock()
+    config.max_concurrent_sessions = 5
+    config.per_agent_soft_cap = 2
+    pm = ProcessManager(config)
+
+    def _fake(agent_name):
+        m = MagicMock()
+        m.agent_name = agent_name
+        return m
+
+    pm._active["s1"] = _fake("johnny")
+    pm._active["s2"] = _fake("johnny")
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="claude_daemon.core.process"):
+        pm._check_agent_soft_cap("johnny")  # pre-increment count=2 >= cap=2
+    assert any("soft cap" in r.message for r in caplog.records)
+
+    # Below cap — no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="claude_daemon.core.process"):
+        pm._check_agent_soft_cap("albert")
+    assert not any("soft cap" in r.message for r in caplog.records)
+
+    # Disabled (cap=0) — no warning even when over the default.
+    config.per_agent_soft_cap = 0
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="claude_daemon.core.process"):
+        pm._check_agent_soft_cap("johnny")
+    assert not any("soft cap" in r.message for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_auto_parallel_send_message_skips_locked_session():
     """When a session's lock is held, send_message auto-parallels on a fresh session."""
@@ -257,7 +314,7 @@ async def test_execute_buffered_falls_back_on_rate_limit():
 
     async def fake_once(prompt, session_id, system_context, max_budget,
                         platform, user_id, model_override=None, mcp_config_path=None,
-                        settings_path=None, effort=None):
+                        settings_path=None, effort=None, agent_name=None):
         nonlocal call_count
         call_count += 1
         if model_override == "opus":
@@ -294,7 +351,7 @@ async def test_execute_buffered_no_fallback_on_normal_error():
 
     async def fake_once(prompt, session_id, system_context, max_budget,
                         platform, user_id, model_override=None, mcp_config_path=None,
-                        settings_path=None, effort=None):
+                        settings_path=None, effort=None, agent_name=None):
         nonlocal call_count
         call_count += 1
         return ClaudeResponse.error("Authentication error"), "auth failed"
@@ -323,7 +380,7 @@ async def test_execute_buffered_exhausts_chain():
 
     async def fake_once(prompt, session_id, system_context, max_budget,
                         platform, user_id, model_override=None, mcp_config_path=None,
-                        settings_path=None, effort=None):
+                        settings_path=None, effort=None, agent_name=None):
         nonlocal call_count
         call_count += 1
         return ClaudeResponse.error("rate limit exceeded"), "429"

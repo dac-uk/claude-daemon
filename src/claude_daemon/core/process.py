@@ -86,6 +86,9 @@ class ActiveSession:
     started_at: datetime
     process: asyncio.subprocess.Process
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Optional — when set, lets the manager count concurrent sessions per
+    # agent and surface that count for soft-cap advisory warnings.
+    agent_name: str | None = None
 
 
 
@@ -121,6 +124,39 @@ class ProcessManager:
     @property
     def active_count(self) -> int:
         return len(self._active)
+
+    def active_count_for_agent(self, agent_name: str) -> int:
+        """Count in-flight subprocesses tagged with this agent.
+
+        Best-effort: older call sites may not set `agent_name` on
+        ActiveSession (e.g. anonymous CLI jobs), in which case they are
+        excluded from the count.
+        """
+        if not agent_name:
+            return 0
+        return sum(
+            1 for s in self._active.values() if s.agent_name == agent_name
+        )
+
+    def _check_agent_soft_cap(self, agent_name: str | None) -> None:
+        """Advisory — log a warning if a single agent is running more
+        concurrent subprocesses than the configured soft cap. Does not
+        block; the operator just gets visibility."""
+        if not agent_name:
+            return
+        cap = getattr(self.config, "per_agent_soft_cap", 0)
+        if not isinstance(cap, int) or cap <= 0:
+            return
+        count = self.active_count_for_agent(agent_name)
+        # Called *before* the new subprocess is registered in _active, so
+        # `count` is pre-increment — compare against `cap` directly to
+        # warn when launching the (cap+1)th session.
+        if count >= cap:
+            log.warning(
+                "Agent %s has %d concurrent subprocesses (soft cap=%d); "
+                "not blocking but worth checking if this is expected",
+                agent_name, count + 1, cap,
+            )
 
     def is_session_busy(self, session_id: str) -> bool:
         """Check if a session currently has an active Claude subprocess."""
@@ -372,18 +408,21 @@ class ProcessManager:
                     return await self._execute_buffered(
                         prompt, None, system_context, budget, platform, user_id,
                         model_override, mcp_config_path, settings_path, effort,
+                        agent_name=agent_name,
                     )
             async with lock:
                 async with self._semaphore:
                     return await self._execute_buffered(
                         prompt, session_id, system_context, budget, platform, user_id,
                         model_override, mcp_config_path, settings_path, effort,
+                        agent_name=agent_name,
                     )
         else:
             async with self._semaphore:
                 return await self._execute_buffered(
                     prompt, session_id, system_context, budget, platform, user_id,
                     model_override, mcp_config_path, settings_path, effort,
+                    agent_name=agent_name,
                 )
 
     async def stream_message(
@@ -491,6 +530,8 @@ class ProcessManager:
         log.debug("Streaming Claude: session=%s, model=%s, prompt_len=%d",
                    tracking_id, model_override or "default", len(prompt))
 
+        self._check_agent_soft_cap(agent_name)
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -502,6 +543,7 @@ class ProcessManager:
             active = ActiveSession(
                 session_id=tracking_id, platform=platform, user_id=user_id,
                 started_at=datetime.now(timezone.utc), process=proc,
+                agent_name=agent_name,
             )
             self._active[tracking_id] = active
 
@@ -600,6 +642,7 @@ class ProcessManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         effort: str | None = None,
+        agent_name: str | None = None,
     ) -> ClaudeResponse:
         """Execute claude CLI with automatic model fallback on rate limit errors."""
         max_retries = self.config.model_max_retries
@@ -608,6 +651,7 @@ class ProcessManager:
             response, _ = await self._execute_buffered_once(
                 prompt, session_id, system_context, max_budget, platform, user_id,
                 model_override, mcp_config_path, settings_path, effort,
+                agent_name=agent_name,
             )
             response.model_used = model_override or ""
             return response
@@ -619,6 +663,7 @@ class ProcessManager:
             response, stderr_text = await self._execute_buffered_once(
                 prompt, session_id, system_context, max_budget, platform, user_id,
                 model, mcp_config_path, settings_path, effort,
+                agent_name=agent_name,
             )
             response.model_used = model
             last_response = response
@@ -642,6 +687,7 @@ class ProcessManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         effort: str | None = None,
+        agent_name: str | None = None,
     ) -> tuple[ClaudeResponse, str]:
         """Execute a single buffered Claude CLI call. Returns (response, stderr_text)."""
         args, tracking_id = self._build_args(
@@ -651,6 +697,8 @@ class ProcessManager:
         )
 
         log.debug("Executing Claude: session=%s, prompt_len=%d", tracking_id, len(prompt))
+
+        self._check_agent_soft_cap(agent_name)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -663,6 +711,7 @@ class ProcessManager:
             active = ActiveSession(
                 session_id=tracking_id, platform=platform, user_id=user_id,
                 started_at=datetime.now(timezone.utc), process=proc,
+                agent_name=agent_name,
             )
             self._active[tracking_id] = active
 
