@@ -123,6 +123,17 @@ def _cmd_stop(args: argparse.Namespace) -> None:
         print(f"Sent SIGTERM to Claude Daemon (PID {pid})")
         print("  Note: if managed by launchd/systemd, it may respawn.")
         print("  Use 'launchctl unload' or 'systemctl --user stop' instead.")
+        # Wait for process to actually exit (up to 30s)
+        import time
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.5)
+            except ProcessLookupError:
+                print("  Process exited.")
+                pf.unlink(missing_ok=True)
+                break
     except ProcessLookupError:
         print("Claude Daemon is not running (stale PID file)")
         pf.unlink(missing_ok=True)
@@ -135,6 +146,27 @@ def _cmd_restart(args: argparse.Namespace) -> None:
     """Restart the daemon via the OS service manager."""
     import platform
     import subprocess
+    import time
+
+    from claude_daemon.utils.paths import pid_path
+
+    def _wait_for_exit(timeout: float = 30) -> None:
+        """Wait for the old daemon PID to exit before starting the new one."""
+        pf = pid_path()
+        if not pf.exists():
+            return
+        try:
+            pid = int(pf.read_text().strip())
+        except (ValueError, OSError):
+            return
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.5)
+            except ProcessLookupError:
+                pf.unlink(missing_ok=True)
+                return
 
     system = platform.system()
 
@@ -142,6 +174,7 @@ def _cmd_restart(args: argparse.Namespace) -> None:
         plist = Path.home() / "Library" / "LaunchAgents" / "com.claude-daemon.plist"
         if plist.exists():
             subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+            _wait_for_exit()
             result = subprocess.run(
                 ["launchctl", "load", str(plist)],
                 capture_output=True, text=True,
@@ -162,10 +195,9 @@ def _cmd_restart(args: argparse.Namespace) -> None:
             return
         print(f"systemctl restart failed: {result.stderr.strip()}")
 
-    # Fallback
+    # Fallback: stop, wait for exit, then start
     _cmd_stop(args)
-    import time
-    time.sleep(1)
+    _wait_for_exit()
     _cmd_start(args)
 
 
@@ -404,14 +436,16 @@ def _stop_daemon_for_update() -> None:
             time.sleep(0.5)
         return False
 
-    # Phase 1: graceful — up to 10s
-    if _wait(10.0):
+    # Phase 1: graceful — up to 30s (drain_all needs up to 70s but the
+    # marker is written instantly; give SDK bridge + active processes time)
+    if _wait(30.0):
         print("  Daemon process exited.")
         pf.unlink(missing_ok=True)
         return
 
-    # Phase 2: escalate to SIGTERM (if we haven't already) and wait 5s
-    print(f"  Still alive after 10s — sending SIGTERM to PID {pid} ...")
+    # Phase 2: re-send SIGTERM + wait another 40s (total 70s ≈ drain_all
+    # timeout). The daemon may be draining long-running agent sessions.
+    print(f"  Still alive after 30s — sending SIGTERM to PID {pid} ...")
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -422,13 +456,13 @@ def _stop_daemon_for_update() -> None:
         log.error("Escalation SIGTERM to PID %s failed: %s", pid, exc)
         print(f"  SIGTERM failed: {exc}")
 
-    if _wait(5.0):
+    if _wait(40.0):
         print("  Daemon process exited.")
         pf.unlink(missing_ok=True)
         return
 
     # Phase 3: SIGKILL — last resort before update clobbers files
-    print(f"  Still alive after 15s — sending SIGKILL to PID {pid} ...")
+    print(f"  Still alive after 70s — sending SIGKILL to PID {pid} ...")
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -440,11 +474,11 @@ def _stop_daemon_for_update() -> None:
         print(f"  SIGKILL failed: {exc}; continuing anyway.")
         return
 
-    if _wait(3.0):
+    if _wait(5.0):
         print("  Daemon process killed.")
         pf.unlink(missing_ok=True)
     else:
-        log.error("PID %s still alive after SIGKILL + 3s wait", pid)
+        log.error("PID %s still alive after SIGKILL + 5s wait", pid)
         print(f"  Daemon PID {pid} survived SIGKILL; continuing anyway.")
 
 
