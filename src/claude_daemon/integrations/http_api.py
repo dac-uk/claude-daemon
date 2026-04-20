@@ -39,7 +39,9 @@ class HttpApi:
         self.port = port
         self.api_key = api_key
         self.hub = DashboardHub()
-        self._app = web.Application(middlewares=[self._auth_middleware])
+        self._app = web.Application(middlewares=[
+            self._auth_middleware, self._static_cache_middleware,
+        ])
         self._runner: web.AppRunner | None = None
         self._task_api: TaskAPI | None = None
         self._budget_store: BudgetStore | None = None
@@ -202,6 +204,16 @@ class HttpApi:
                 )
 
         return await handler(request)
+
+    @web.middleware
+    async def _static_cache_middleware(self, request: web.Request, handler):
+        # Force browsers to revalidate /static/ assets on every load so JS/CSS
+        # updates are picked up immediately. aiohttp still answers with 304
+        # for unchanged files via If-Modified-Since, so no perf penalty.
+        response = await handler(request)
+        if request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)
