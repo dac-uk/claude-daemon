@@ -635,6 +635,86 @@ html, body {
 .ops-modal-submit { background: linear-gradient(135deg, var(--neon-blue), var(--neon-purple));
   color: white; box-shadow: 0 0 14px rgba(0,200,255,0.3); }
 .ops-modal-submit:hover { box-shadow: 0 0 24px rgba(0,200,255,0.5); }
+.ops-modal-wide { width: 820px; max-width: 94vw; max-height: 86vh; overflow: hidden; }
+.ops-modal-wide .evo-plan-full { flex: 1; overflow: auto; margin: 0;
+  background: rgba(0,0,0,0.35); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px; font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 12px; line-height: 1.5; color: var(--text);
+  white-space: pre-wrap; word-break: break-word; max-height: 64vh; }
+
+/* ── Cognitive Evolution panel ──────────────────────────────── */
+.ops-evo-panel { padding: 0; margin-bottom: 18px; border-radius: var(--radius);
+  border: 1px solid var(--border); overflow: hidden; }
+.ops-evo-panel[open] { background: rgba(0, 229, 255, 0.02); }
+.ops-evo-summary { list-style: none; cursor: pointer;
+  padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+  font-family: 'Orbitron', monospace; font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text); user-select: none; }
+.ops-evo-summary::-webkit-details-marker { display: none; }
+.ops-evo-summary::before { content: '\25b8'; color: var(--text-secondary);
+  transition: transform 0.15s; }
+.ops-evo-panel[open] .ops-evo-summary::before { transform: rotate(90deg); }
+.ops-evo-summary .evo-title { color: var(--accent); font-weight: 600; }
+.ops-evo-summary .evo-meta { color: var(--text-secondary); font-size: 11px;
+  font-family: var(--font); text-transform: none; letter-spacing: 0;
+  font-weight: 400; margin-left: auto; }
+.ops-evo-body { padding: 14px 16px 16px; display: flex; flex-direction: column;
+  gap: 14px; border-top: 1px solid var(--border); }
+
+.evo-plan-card { border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; background: rgba(255,255,255,0.02);
+  display: flex; flex-direction: column; gap: 8px; }
+.evo-plan-header { display: flex; align-items: baseline; gap: 12px; }
+.evo-plan-header strong { font-size: 13px; color: var(--text); }
+.evo-plan-mtime { font-size: 11px; color: var(--text-secondary); }
+.evo-plan-body { margin: 0; padding: 10px 12px; background: rgba(0,0,0,0.25);
+  border-radius: 6px; font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 11px; line-height: 1.5; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word; max-height: 180px;
+  overflow: hidden; }
+.evo-plan-expand { align-self: flex-start; padding: 6px 14px;
+  background: rgba(0,229,255,0.08); color: var(--accent);
+  border: 1px solid rgba(0,229,255,0.25); border-radius: 6px;
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.evo-plan-expand:hover { background: rgba(0,229,255,0.15);
+  box-shadow: 0 0 12px rgba(0,200,255,0.25); }
+
+.evo-empty { color: var(--text-secondary); font-size: 12px;
+  padding: 8px 0; }
+
+.evo-cycles { display: flex; flex-direction: column; gap: 6px; }
+.evo-cycle-row { border: 1px solid var(--border); border-radius: 8px;
+  background: rgba(255,255,255,0.015); overflow: hidden; }
+.evo-cycle-head { display: grid;
+  grid-template-columns: 160px 80px 1fr 20px;
+  align-items: center; gap: 10px;
+  padding: 8px 12px; cursor: pointer; font-size: 12px;
+  transition: background 0.15s; }
+.evo-cycle-head:hover { background: rgba(255,255,255,0.04); }
+.evo-cycle-when { color: var(--text); font-weight: 500; }
+.evo-cycle-counts { color: var(--text-secondary); font-size: 11px; }
+.evo-cycle-chev { color: var(--text-secondary); text-align: right; }
+.evo-dry-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  color: #d29922; background: rgba(210,153,34,0.12);
+  border: 1px solid rgba(210,153,34,0.3); padding: 2px 6px;
+  border-radius: 4px; text-align: center; }
+.evo-applied-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--green, #3fb950); background: rgba(63,185,80,0.12);
+  border: 1px solid rgba(63,185,80,0.3); padding: 2px 6px;
+  border-radius: 4px; text-align: center; }
+.evo-cycle-detail { padding: 10px 14px 14px; border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.15); display: flex; flex-direction: column; gap: 12px; }
+.evo-cycle-agent-group { display: flex; flex-direction: column; gap: 4px; }
+.evo-cycle-agent { font-size: 12px; font-weight: 600; }
+.evo-proposal { padding: 6px 10px; border-left: 2px solid var(--border);
+  margin-left: 8px; font-size: 12px; }
+.evo-proposal.dry { border-left-color: rgba(210,153,34,0.5); }
+.evo-proposal-head code { background: rgba(255,255,255,0.06);
+  padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+.evo-file { color: var(--text-secondary); font-size: 11px; }
+.evo-proposal-rat { color: var(--text-secondary); font-size: 11px;
+  margin-top: 2px; line-height: 1.4; }
 
 /* ── Budget gauges ──────────────────────────────────────────── */
 .budget-gauges { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }

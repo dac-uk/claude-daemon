@@ -155,6 +155,7 @@ class HttpApi:
         self._app.router.add_get("/api/discussions", self._handle_discussions)
         self._app.router.add_get("/api/failures", self._handle_failures)
         self._app.router.add_get("/api/evolution", self._handle_evolution)
+        self._app.router.add_get("/api/improvement/plan", self._handle_improvement_plan)
         self._app.router.add_get("/api/daemon/status", self._handle_daemon_status)
         self._app.router.add_post("/api/daemon/restart", self._handle_daemon_restart)
         self._app.router.add_post("/api/daemon/stop", self._handle_daemon_stop)
@@ -1278,9 +1279,45 @@ class HttpApi:
         if not self.daemon.store:
             return web.json_response({"evolution": []})
         agent = request.query.get("agent")
-        limit = self._qint(request, "limit", 20, maximum=100)
+        limit = self._qint(request, "limit", 20, maximum=500)
         history = self.daemon.store.get_evolution_history(agent_name=agent, limit=limit)
         return web.json_response({"evolution": history})
+
+    async def _handle_improvement_plan(self, request: web.Request) -> web.Response:
+        """GET /api/improvement/plan — current improvement plan markdown + archive index."""
+        from datetime import datetime, timezone
+        playbooks = self.daemon.config.data_dir / "shared" / "playbooks"
+        plan_path = playbooks / "improvement-plan.md"
+        archive_dir = playbooks / "archive"
+
+        markdown = ""
+        mtime = None
+        truncated = False
+        if plan_path.is_file():
+            raw = plan_path.read_text(errors="replace")
+            if len(raw) > 65536:
+                markdown = raw[:65536]
+                truncated = True
+            else:
+                markdown = raw
+            mtime = datetime.fromtimestamp(
+                plan_path.stat().st_mtime, tz=timezone.utc,
+            ).isoformat()
+
+        archive: list[dict] = []
+        if archive_dir.is_dir():
+            for p in sorted(archive_dir.glob("improvement-plan-*.md"), reverse=True):
+                # filename pattern: improvement-plan-YYYY-MM-DD.md
+                date_part = p.stem.replace("improvement-plan-", "", 1)
+                archive.append({"date": date_part, "path": str(p)})
+
+        return web.json_response({
+            "path": str(plan_path),
+            "markdown": markdown,
+            "mtime": mtime,
+            "truncated": truncated,
+            "archive": archive,
+        })
 
     # -- Daemon control --
 

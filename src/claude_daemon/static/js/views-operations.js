@@ -9,6 +9,9 @@ CC.opsState = {
   budgets: [],         // budget gauge data
   goals: [],           // active goals
   approvals: [],       // pending approvals
+  evolutionRows: [],   // flat evolution_log rows (DESC by timestamp)
+  improvementPlan: null, // { path, markdown, mtime, truncated, archive }
+  evoExpanded: {},     // cycle key -> expanded bool
 };
 
 CC._opsSourceLabel = function(src) {
@@ -30,16 +33,22 @@ CC.renderOperationsView = async function() {
 CC._opsLoad = async function() {
   CC.cache['/api/v1/tasks/recent?limit=100'] = null;
   CC.cache['/api/v1/budgets'] = null;
+  CC.cache['/api/evolution?limit=200'] = null;
+  CC.cache['/api/improvement/plan'] = null;
   var results = await Promise.all([
     CC.api('/api/v1/tasks/recent?limit=100'),
     CC.api('/api/v1/budgets'),
     CC.api('/api/v1/goals?status=active'),
     CC.api('/api/v1/approvals?pending=1'),
+    CC.api('/api/evolution?limit=200'),
+    CC.api('/api/improvement/plan'),
   ]);
   CC.opsState.tasks = (results[0] && results[0].tasks) || [];
   CC.opsState.budgets = (results[1] && results[1].budgets) || [];
   CC.opsState.goals = (results[2] && results[2].goals) || [];
   CC.opsState.approvals = (results[3] && results[3].approvals) || [];
+  CC.opsState.evolutionRows = (results[4] && results[4].evolution) || [];
+  CC.opsState.improvementPlan = results[5] || null;
 };
 
 CC._opsFilterChip = function(key, label) {
@@ -143,6 +152,135 @@ CC._opsApprovalInbox = function() {
   return html;
 };
 
+/* ── Cognitive Evolution panel ─────────────────────────────── */
+
+CC._opsGroupEvoCycles = function(rows) {
+  // rows are ORDER BY timestamp DESC — group those within a 5s burst
+  // into a single cycle. Returns newest→oldest.
+  var cycles = [];
+  var bucket = null;
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var t = new Date(r.timestamp).getTime();
+    if (isNaN(t)) continue;
+    if (!bucket || Math.abs(bucket.startedAt - t) > 5000) {
+      bucket = {
+        startedAt: t, rows: [], agents: {}, applied: 0, dryRun: true,
+        key: r.timestamp + '-' + i,
+      };
+      cycles.push(bucket);
+    }
+    bucket.rows.push(r);
+    bucket.agents[r.agent_name] = (bucket.agents[r.agent_name] || 0) + 1;
+    if (!r.dry_run) { bucket.applied += 1; bucket.dryRun = false; }
+    bucket.startedAt = Math.min(bucket.startedAt, t);
+  }
+  return cycles;
+};
+
+CC._opsEvoPanel = function() {
+  var rows = CC.opsState.evolutionRows || [];
+  var plan = CC.opsState.improvementPlan;
+  var hasPlan = plan && plan.markdown;
+  if (rows.length === 0 && !hasPlan) return '';
+
+  var cycles = CC._opsGroupEvoCycles(rows);
+  var latest = cycles[0];
+  var metaBits = [];
+  if (latest) {
+    var rel = CC.formatRelativeTime
+      ? CC.formatRelativeTime(new Date(latest.startedAt).toISOString())
+      : new Date(latest.startedAt).toLocaleString();
+    metaBits.push('Last cycle ' + rel);
+    metaBits.push(latest.rows.length + ' proposal' + (latest.rows.length === 1 ? '' : 's'));
+    metaBits.push(latest.applied + '/' + latest.rows.length + ' applied');
+    metaBits.push(Object.keys(latest.agents).length + ' agent' +
+      (Object.keys(latest.agents).length === 1 ? '' : 's'));
+  } else if (hasPlan) {
+    metaBits.push('Plan only — no evolution rows yet');
+  }
+
+  var html = '<details class="ops-evo-panel glass-sm">' +
+    '<summary class="ops-evo-summary">' +
+      '<span class="evo-title">\u{1f9e0} Cognitive Evolution</span>' +
+      '<span class="evo-meta">' + CC.escHtml(metaBits.join(' \u00b7 ')) + '</span>' +
+    '</summary>' +
+    '<div class="ops-evo-body">';
+
+  if (hasPlan) {
+    var preview = plan.markdown.substring(0, 1000);
+    var mtime = plan.mtime ? new Date(plan.mtime).toLocaleString() : '';
+    html += '<div class="evo-plan-card">' +
+      '<div class="evo-plan-header">' +
+        '<strong>Latest improvement plan</strong>' +
+        (mtime ? '<span class="evo-plan-mtime">' + CC.escHtml(mtime) + '</span>' : '') +
+      '</div>' +
+      '<pre class="evo-plan-body">' + CC.escHtml(preview) +
+        (plan.markdown.length > 1000 ? '\u2026' : '') +
+      '</pre>' +
+      '<button class="evo-plan-expand" id="evoPlanExpand">Show full plan</button>' +
+    '</div>';
+  }
+
+  if (cycles.length === 0) {
+    html += '<div class="evo-empty">No evolution cycles recorded yet.</div>';
+  } else {
+    html += '<div class="evo-cycles">';
+    cycles.forEach(function(c) {
+      var expanded = !!CC.opsState.evoExpanded[c.key];
+      var when = new Date(c.startedAt).toLocaleString();
+      var whenRel = CC.formatRelativeTime
+        ? CC.formatRelativeTime(new Date(c.startedAt).toISOString())
+        : when;
+      html += '<div class="evo-cycle-row ' + (expanded ? 'expanded' : '') + '" data-evo-key="' + CC.escHtml(c.key) + '">' +
+        '<div class="evo-cycle-head">' +
+          '<span class="evo-cycle-when" title="' + CC.escHtml(when) + '">' + CC.escHtml(whenRel) + '</span>' +
+          (c.dryRun ? '<span class="evo-dry-badge">DRY RUN</span>' : '<span class="evo-applied-badge">APPLIED</span>') +
+          '<span class="evo-cycle-counts">' + c.rows.length + ' proposals \u00b7 ' +
+            c.applied + ' applied \u00b7 ' +
+            Object.keys(c.agents).length + ' agents</span>' +
+          '<span class="evo-cycle-chev">' + (expanded ? '\u25be' : '\u25b8') + '</span>' +
+        '</div>';
+      if (expanded) {
+        html += '<div class="evo-cycle-detail">';
+        // Group rows by agent
+        var byAgent = {};
+        c.rows.forEach(function(r) {
+          (byAgent[r.agent_name] = byAgent[r.agent_name] || []).push(r);
+        });
+        Object.keys(byAgent).sort().forEach(function(ag) {
+          var color = CC.agentColor ? CC.agentColor(ag) : 'var(--text)';
+          var emoji = (CC.AGENT_EMOJI && CC.AGENT_EMOJI[ag]) || '';
+          html += '<div class="evo-cycle-agent-group">' +
+            '<div class="evo-cycle-agent" style="color:' + color + '">' +
+              emoji + ' ' + CC.escHtml(ag) + ' (' + byAgent[ag].length + ')' +
+            '</div>';
+          byAgent[ag].forEach(function(r) {
+            var op = (r.operation || '').replace(/_/g, ' ');
+            var heading = r.section_heading || '';
+            var file = r.file_changed || '';
+            var rationale = r.rationale || '';
+            html += '<div class="evo-proposal' + (r.dry_run ? ' dry' : '') + '">' +
+              '<div class="evo-proposal-head"><code>' + CC.escHtml(op) + '</code> ' +
+                CC.escHtml(heading) + (file ? ' <span class="evo-file">in ' +
+                CC.escHtml(file) + '</span>' : '') + '</div>' +
+              (rationale ? '<div class="evo-proposal-rat">\u2014 ' +
+                CC.escHtml(rationale) + '</div>' : '') +
+            '</div>';
+          });
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  html += '</div></details>';
+  return html;
+};
+
 CC._opsStatusColor = function(status) {
   switch (status) {
     case 'running': return 'var(--accent)';
@@ -222,7 +360,8 @@ CC._opsRender = function() {
     '</div>' +
     CC._opsBudgetGauges() +
     CC._opsGoalCards() +
-    CC._opsApprovalInbox();
+    CC._opsApprovalInbox() +
+    CC._opsEvoPanel();
 
   if (tasks.length === 0) {
     html += '<div class="empty glass"><div class="icon">\u26A1</div>' +
@@ -342,6 +481,16 @@ CC._opsRender = function() {
       '</div>' +
     '</div>';
 
+  // Improvement-plan full view modal (populated on open)
+  html += '<div class="ops-modal-overlay" id="evoPlanOverlay"></div>' +
+    '<div class="ops-modal glass ops-modal-wide" id="evoPlanModal">' +
+      '<h3>Improvement plan</h3>' +
+      '<pre class="evo-plan-full" id="evoPlanFullBody"></pre>' +
+      '<div class="ops-modal-actions">' +
+        '<button class="ops-modal-cancel" id="evoPlanClose">Close</button>' +
+      '</div>' +
+    '</div>';
+
   el.innerHTML = html;
   CC._opsBindEvents();
   CC._opsLoadGoalProgress();
@@ -422,6 +571,41 @@ CC._opsBindEvents = function() {
   }
   overlay.addEventListener('click', close);
   document.getElementById('opsModalCancel').addEventListener('click', close);
+
+  // Evolution panel: per-cycle expand/collapse
+  el.querySelectorAll('.evo-cycle-head').forEach(function(h) {
+    h.addEventListener('click', function() {
+      var row = h.parentElement;
+      var key = row && row.dataset.evoKey;
+      if (!key) return;
+      CC.opsState.evoExpanded[key] = !CC.opsState.evoExpanded[key];
+      CC._opsRender();
+    });
+  });
+
+  // Evolution panel: full improvement plan modal
+  var planBtn = document.getElementById('evoPlanExpand');
+  var planModal = document.getElementById('evoPlanModal');
+  var planOverlay = document.getElementById('evoPlanOverlay');
+  var planClose = document.getElementById('evoPlanClose');
+  var closePlan = function() {
+    if (planModal) planModal.classList.remove('open');
+    if (planOverlay) planOverlay.classList.remove('open');
+  };
+  if (planBtn && planModal && planOverlay) {
+    planBtn.addEventListener('click', function() {
+      var plan = CC.opsState.improvementPlan;
+      var body = document.getElementById('evoPlanFullBody');
+      if (body && plan) {
+        body.textContent = plan.markdown + (plan.truncated ? '\n\n… (truncated)' : '');
+      }
+      planModal.classList.add('open');
+      planOverlay.classList.add('open');
+    });
+    planOverlay.addEventListener('click', closePlan);
+    if (planClose) planClose.addEventListener('click', closePlan);
+  }
+
   document.getElementById('opsModalSubmit').addEventListener('click', async function() {
     var prompt = document.getElementById('opsTaskPrompt').value.trim();
     var agent = document.getElementById('opsTaskAgent').value || null;
