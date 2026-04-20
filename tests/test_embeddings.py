@@ -28,7 +28,7 @@ from claude_daemon.memory.embeddings import (
 def test_serialize_f32_roundtrip():
     vec = [1.0, 2.0, 3.0, -0.5]
     serialized = _serialize_f32(vec)
-    assert len(serialized) == len(vec) * 4  # 4 bytes per float32
+    assert len(serialized) == len(vec) * 4
     unpacked = struct.unpack(f"{len(vec)}f", serialized)
     for a, b in zip(vec, unpacked):
         assert a == pytest.approx(b)
@@ -61,22 +61,38 @@ def test_cosine_similarity_zero_vector():
 # ------------------------------------------------------------------ #
 
 
-def test_api_key_prefers_voyage():
+def test_api_key_prefers_config():
+    key = _resolve_api_key("voyage", config_key="cfg-key")
+    assert key == "cfg-key"
+
+
+def test_api_key_voyage_from_env():
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "vk-test", "ANTHROPIC_API_KEY": "ak-test"}):
-        key = _resolve_api_key()
+        key = _resolve_api_key("voyage")
         assert key == "vk-test"
 
 
-def test_api_key_falls_back_to_anthropic():
+def test_api_key_voyage_falls_back_to_anthropic():
     env = {"ANTHROPIC_API_KEY": "ak-fallback"}
     with patch.dict("os.environ", env, clear=True):
-        key = _resolve_api_key()
+        key = _resolve_api_key("voyage")
         assert key == "ak-fallback"
+
+
+def test_api_key_ollama_returns_none():
+    key = _resolve_api_key("ollama")
+    assert key is None
+
+
+def test_api_key_openai_from_env():
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "ok-test"}):
+        key = _resolve_api_key("openai")
+        assert key == "ok-test"
 
 
 def test_api_key_returns_none_when_missing():
     with patch.dict("os.environ", {}, clear=True):
-        key = _resolve_api_key()
+        key = _resolve_api_key("voyage")
         assert key is None
 
 
@@ -107,7 +123,6 @@ def test_chunk_markdown_splits_on_headers():
 
 
 def test_chunk_markdown_respects_max_chunk():
-    # Create a section with paragraphs (chunking splits on \n\n boundaries)
     text = "## Title\n\n" + "\n\n".join(f"Paragraph {i} content." for i in range(20))
     chunks = EmbeddingStore._chunk_markdown(text, max_chunk=100)
     assert len(chunks) > 1
@@ -180,6 +195,7 @@ def test_embed_hash_produces_correct_dim():
     db = sqlite3.connect(":memory:")
     store = EmbeddingStore(db, config)
     store._dim = 384
+    store._dim_detected = True
     vec = store._embed_hash("hello world test embedding")
     assert len(vec) == 384
     db.close()
@@ -190,6 +206,7 @@ def test_embed_hash_is_normalized():
     db = sqlite3.connect(":memory:")
     store = EmbeddingStore(db, config)
     store._dim = 128
+    store._dim_detected = True
     vec = store._embed_hash("some text for embedding")
     norm = math.sqrt(sum(x * x for x in vec))
     assert norm == pytest.approx(1.0, abs=0.01)
@@ -201,6 +218,7 @@ def test_embed_hash_deterministic():
     db = sqlite3.connect(":memory:")
     store = EmbeddingStore(db, config)
     store._dim = 64
+    store._dim_detected = True
     v1 = store._embed_hash("hello world")
     v2 = store._embed_hash("hello world")
     assert v1 == v2
@@ -212,6 +230,7 @@ def test_embed_hash_different_texts_differ():
     db = sqlite3.connect(":memory:")
     store = EmbeddingStore(db, config)
     store._dim = 64
+    store._dim_detected = True
     v1 = store._embed_hash("hello world")
     v2 = store._embed_hash("goodbye universe")
     assert v1 != v2
@@ -225,8 +244,10 @@ def test_embed_hash_different_texts_differ():
 
 def test_config_defaults():
     config = DaemonConfig()
-    assert config.embedding_model == "voyage-code-3"
-    assert config.embedding_dim == 1024
+    assert config.embedding_provider == "ollama"
+    assert config.embedding_api_base == "http://localhost:11434"
+    assert config.embedding_model == "nomic-embed-text"
+    assert config.embedding_dim == 0
     assert config.embedding_top_k == 3
     assert config.embedding_similarity_threshold == 0.3
     assert config.embedding_chunk_size == 500
@@ -241,24 +262,188 @@ def test_config_dim_used_by_store():
     db.close()
 
 
+def test_config_provider_used_by_store():
+    config = DaemonConfig(embeddings_enabled=False, embedding_provider="voyage")
+    db = sqlite3.connect(":memory:")
+    store = EmbeddingStore(db, config)
+    assert store._provider == "voyage"
+    db.close()
+
+
 # ------------------------------------------------------------------ #
-# Index and search integration tests (using hash fallback, no sqlite-vec)
+# Provider dispatch tests (mocked)
+# ------------------------------------------------------------------ #
+
+
+def _make_store(provider="ollama", dim=3, model="test-model"):
+    config = DaemonConfig(
+        embeddings_enabled=False,
+        embedding_provider=provider,
+        embedding_api_base="http://localhost:11434",
+        embedding_dim=dim,
+        embedding_model=model,
+        embedding_batch_size=2,
+    )
+    db = sqlite3.connect(":memory:")
+    store = EmbeddingStore(db, config)
+    store.available = True
+    store._dim_detected = dim > 0
+    return store, db
+
+
+def _mock_httpx_client(response_json):
+    mock_response = MagicMock()
+    mock_response.json.return_value = response_json
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_dispatch():
+    store, db = _make_store("ollama", dim=3)
+    mock_client = _mock_httpx_client({"embeddings": [[0.1, 0.2, 0.3]]})
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_text("hello")
+        assert result == [0.1, 0.2, 0.3]
+        call_url = mock_client.post.call_args[0][0]
+        assert "/api/embed" in call_url
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_voyage_provider_dispatch():
+    store, db = _make_store("voyage", dim=3, model="voyage-code-3")
+    store._api_key = "test-key"
+    mock_client = _mock_httpx_client({"data": [{"embedding": [0.4, 0.5, 0.6]}]})
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_text("hello")
+        assert result == [0.4, 0.5, 0.6]
+        call_url = mock_client.post.call_args[0][0]
+        assert "voyageai.com" in call_url
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_dispatch():
+    store, db = _make_store("openai", dim=3)
+    store._api_key = "test-key"
+    mock_client = _mock_httpx_client({"data": [{"embedding": [0.7, 0.8, 0.9]}]})
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_text("hello")
+        assert result == [0.7, 0.8, 0.9]
+        call_url = mock_client.post.call_args[0][0]
+        assert "/v1/embeddings" in call_url
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_fallback_to_hash():
+    store, db = _make_store("ollama", dim=64)
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=Exception("connection refused"))
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_text("hello")
+        assert result is not None
+        assert len(result) == 64
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_embedding_with_ollama():
+    store, db = _make_store("ollama", dim=3)
+    mock_client = _mock_httpx_client({"embeddings": [[0.1, 0.2, 0.3]]})
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_batch(["hello", "world"])
+        assert result is not None
+        assert len(result) == 2
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_falls_back_to_hash():
+    store, db = _make_store("ollama", dim=64)
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=Exception("API error"))
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_batch(["hello", "world"])
+        assert result is not None
+        assert len(result) == 2
+        assert len(result[0]) == 64
+    db.close()
+
+
+# ------------------------------------------------------------------ #
+# Auto-dimension detection tests
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_auto_dim_detection():
+    store, db = _make_store("ollama", dim=0)
+    assert store._dim_detected is False
+    mock_client = _mock_httpx_client({"embeddings": [[0.1, 0.2, 0.3, 0.4]]})
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_text("hello")
+        assert result is not None
+        assert len(result) == 4
+        assert store._dim == 4
+        assert store._dim_detected is True
+    db.close()
+
+
+# ------------------------------------------------------------------ #
+# Dimension validation tests
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_api_rejects_dimension_mismatch():
+    store, db = _make_store("voyage", dim=1024, model="voyage-code-3")
+    store._api_key = "test-key"
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"data": [{"embedding": [0.1] * 384}]}
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    import httpx
+    with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        result = await store.embed_text("hello")
+        assert result is not None  # falls back to hash
+    db.close()
+
+
+# ------------------------------------------------------------------ #
+# Index and search integration tests
 # ------------------------------------------------------------------ #
 
 
 @pytest.fixture
 def mock_store():
-    """Create an EmbeddingStore with mocked sqlite-vec availability."""
     config = DaemonConfig(
         embeddings_enabled=True,
         embedding_dim=64,
-        embedding_similarity_threshold=0.0,  # Accept all matches for testing
+        embedding_similarity_threshold=0.0,
     )
     db = sqlite3.connect(":memory:")
     store = EmbeddingStore(db, config)
-    # Force available without sqlite-vec by creating a regular table
-    # (can't test vec0 without the extension, but can test the rest)
-    store.available = False  # Will stay false without sqlite-vec
+    store.available = False
     yield store
     db.close()
 
@@ -284,125 +469,14 @@ async def test_index_file_incremental_missing_file(mock_store, tmp_path):
 
 
 # ------------------------------------------------------------------ #
-# Batch embedding API tests (mocked)
-# ------------------------------------------------------------------ #
-
-
-@pytest.mark.asyncio
-async def test_embed_batch_calls_api_in_batches():
-    """Verify batch embedding sends correct API payload."""
-    config = DaemonConfig(
-        embeddings_enabled=False,
-        embedding_dim=3,
-        embedding_batch_size=2,
-        embedding_model="voyage-code-3",
-    )
-    db = sqlite3.connect(":memory:")
-    store = EmbeddingStore(db, config)
-    store.available = True
-    store._api_key = "test-key"
-
-    mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "data": [
-            {"embedding": [0.1, 0.2, 0.3]},
-            {"embedding": [0.4, 0.5, 0.6]},
-        ]
-    }
-    mock_response.raise_for_status = MagicMock()
-
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    import httpx
-    with patch.object(httpx, "AsyncClient", return_value=mock_client):
-        # 2 texts, batch_size=2 => 1 API call
-        result = await store.embed_batch(["hello", "world"])
-        assert result is not None
-        assert len(result) == 2
-        assert result[0] == [0.1, 0.2, 0.3]
-        # Verify the API was called with correct model
-        call_args = mock_client.post.call_args
-        assert call_args[1]["json"]["model"] == "voyage-code-3"
-        assert len(call_args[1]["json"]["input"]) == 2
-
-    db.close()
-
-
-@pytest.mark.asyncio
-async def test_embed_batch_falls_back_to_hash():
-    """When API fails, batch embedding should fall back to hash."""
-    config = DaemonConfig(embeddings_enabled=False, embedding_dim=64)
-    db = sqlite3.connect(":memory:")
-    store = EmbeddingStore(db, config)
-    store.available = True
-    store._api_key = "bad-key"
-
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(side_effect=Exception("API error"))
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    import httpx
-    with patch.object(httpx, "AsyncClient", return_value=mock_client):
-        result = await store.embed_batch(["hello", "world"])
-        assert result is not None
-        assert len(result) == 2
-        assert len(result[0]) == 64  # Hash fallback produces correct dim
-
-    db.close()
-
-
-# ------------------------------------------------------------------ #
-# Dimension validation tests
-# ------------------------------------------------------------------ #
-
-
-@pytest.mark.asyncio
-async def test_api_rejects_dimension_mismatch():
-    """API returning wrong dimensions should raise ValueError."""
-    config = DaemonConfig(embeddings_enabled=False, embedding_dim=1024)
-    db = sqlite3.connect(":memory:")
-    store = EmbeddingStore(db, config)
-    store.available = True
-    store._api_key = "test-key"
-
-    # API returns 384-dim but config expects 1024
-    mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "data": [{"embedding": [0.1] * 384}]
-    }
-    mock_response.raise_for_status = MagicMock()
-
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    import httpx
-    with patch.object(httpx, "AsyncClient", return_value=mock_client):
-        # Should fall back to hash because API raises ValueError
-        result = await store.embed_text("hello")
-        # Falls back to hash embedding
-        assert result is not None
-
-    db.close()
-
-
-# ------------------------------------------------------------------ #
-# Incremental indexing content hash tests
+# Content hash tracking tests
 # ------------------------------------------------------------------ #
 
 
 def test_content_hash_tracking_schema():
-    """embedding_meta table should be created when schema initializes."""
     config = DaemonConfig(embeddings_enabled=False)
     db = sqlite3.connect(":memory:")
     store = EmbeddingStore(db, config)
-
-    # Manually create the meta table (since we can't init vec0 without sqlite-vec)
     db.execute("""
         CREATE TABLE IF NOT EXISTS embedding_meta (
             path TEXT PRIMARY KEY,
@@ -413,7 +487,7 @@ def test_content_hash_tracking_schema():
     """)
     db.execute(
         "INSERT INTO embedding_meta VALUES (?, ?, ?, ?)",
-        ("/test/path", "abc123", "voyage-code-3", "2024-01-01"),
+        ("/test/path", "abc123", "nomic-embed-text", "2024-01-01"),
     )
     row = db.execute("SELECT * FROM embedding_meta WHERE path = ?", ("/test/path",)).fetchone()
     assert row is not None

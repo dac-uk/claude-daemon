@@ -75,11 +75,26 @@ class ClaudeDaemon:
     async def reload_config(self) -> str:
         """Reload config, re-register custom jobs, refresh agent identities. Returns status."""
         try:
+            old_emb_model = self.config.embedding_model
+            old_emb_provider = self.config.embedding_provider
             self.config = DaemonConfig.load()
             # Refresh agent identities from disk
             if self.agent_registry:
                 for agent in self.agent_registry:
                     agent.load_identity()
+            # Reinitialize embedding store if provider or model changed
+            if (self.config.embedding_model != old_emb_model or
+                    self.config.embedding_provider != old_emb_provider):
+                from claude_daemon.memory.embeddings import EmbeddingStore
+                self.embedding_store = EmbeddingStore(self.store._db, self.config)
+                if self.compactor:
+                    self.compactor.embedding_store = self.embedding_store
+                if self.orchestrator:
+                    self.orchestrator.embedding_store = self.embedding_store
+                log.info(
+                    "Embedding store reinitialized: provider=%s model=%s",
+                    self.config.embedding_provider, self.config.embedding_model,
+                )
             if self.store:
                 self.store.record_audit(action="config_reload", details="Configuration reloaded")
             log.info("Configuration reloaded successfully")

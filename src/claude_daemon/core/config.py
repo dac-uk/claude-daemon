@@ -81,12 +81,15 @@ class DaemonConfig:
 
     # Semantic Memory (vector embeddings)
     embeddings_enabled: bool = True  # Enable semantic search (requires sqlite-vec for full quality)
-    embedding_model: str = "voyage-code-3"  # Voyage model (voyage-code-3, voyage-3, voyage-3-lite)
-    embedding_dim: int = 1024  # Must match model output dimensions
+    embedding_provider: str = "ollama"  # "ollama" | "voyage" | "openai" (OpenAI-compatible)
+    embedding_api_base: str = "http://localhost:11434"  # Base URL (Ollama/OpenAI)
+    embedding_api_key: str = ""  # API key override (env vars checked if empty)
+    embedding_model: str = "nomic-embed-text"  # Model name (provider-specific)
+    embedding_dim: int = 0  # 0 = auto-detect on first embed; set explicitly to skip probe
     embedding_top_k: int = 3  # Number of semantic matches to inject into context
     embedding_similarity_threshold: float = 0.3  # Minimum similarity score (0-1) to include
     embedding_chunk_size: int = 500  # Max chars per memory chunk
-    embedding_batch_size: int = 128  # Texts per API call (Voyage max = 128)
+    embedding_batch_size: int = 128  # Texts per API call
 
     # Inter-agent discussions
     discussions_enabled: bool = True  # Enable multi-turn discussions and council
@@ -262,8 +265,11 @@ class DaemonConfig:
             evo_max_variants=int(claude_cfg.get("evo_max_variants", 3)),
             evo_max_budget=float(claude_cfg.get("evo_max_budget", 2.00)),
             embeddings_enabled=memory_cfg.get("embeddings_enabled", True),
-            embedding_model=memory_cfg.get("embedding_model", "voyage-code-3"),
-            embedding_dim=int(memory_cfg.get("embedding_dim", 1024)),
+            embedding_provider=memory_cfg.get("embedding_provider", "ollama"),
+            embedding_api_base=memory_cfg.get("embedding_api_base", "http://localhost:11434"),
+            embedding_api_key=memory_cfg.get("embedding_api_key", ""),
+            embedding_model=memory_cfg.get("embedding_model", "nomic-embed-text"),
+            embedding_dim=int(memory_cfg.get("embedding_dim", 0)),
             embedding_top_k=int(memory_cfg.get("embedding_top_k", 3)),
             embedding_similarity_threshold=float(
                 memory_cfg.get("embedding_similarity_threshold", 0.3)
