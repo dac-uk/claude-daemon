@@ -43,6 +43,7 @@ _PLACEHOLDER = r'(?!(?:name|agent_name|agent|target|example)\b)'
 # parsers consistent when new tag families (factory, etc.) are added.
 _TAG_TERMINATORS = (
     r'\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|'
+    r'\[STATUS:|\[STATUS\]|'
     r'\[BUILD\]|\[PLAN\]|\[REVIEW\]|\Z'
 )
 
@@ -74,6 +75,17 @@ HELP_PATTERN = re.compile(
 OPTIMIZE_PATTERN = re.compile(
     rf'\[OPTIMIZE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
+)
+
+# [STATUS:agent_name] — query agent health/activity (no LLM call, pure data lookup)
+STATUS_PATTERN = re.compile(
+    rf'\[STATUS:{_PLACEHOLDER}(\w+)\]',
+    re.DOTALL,
+)
+
+# [STATUS] (no agent name) — fleet-wide summary
+STATUS_ALL_PATTERN = re.compile(
+    r'\[STATUS\]',
 )
 
 # Software Factory dispatch tags — orchestrator emits these when a
@@ -459,6 +471,9 @@ class Orchestrator:
         if appended:
             response.result += "\n".join(appended)
 
+        # STATUS queries are always allowed — pure data, no LLM cost, no recursion risk
+        response = await self._process_status_queries(from_agent, response)
+
         # Skip discussion/help/council/optimize tags inside discussion turns (prevent recursion)
         if platform not in ("discussion", "council", "intercom"):
             response = await self._process_help_requests(from_agent, response)
@@ -505,6 +520,65 @@ class Orchestrator:
             except Exception:
                 log.exception("Help request %s -> %s failed", from_agent.name, target_name)
                 appended.append(f"\n[Help from '{target_name}' failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+        return response
+
+    async def _process_status_queries(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [STATUS:name] and [STATUS] tags — pure data lookup, no LLM call."""
+        scan_text = _strip_code_blocks(response.result)
+
+        appended = []
+
+        # Per-agent status queries
+        for target_name in STATUS_PATTERN.findall(scan_text):
+            target = self.registry.get(target_name.lower())
+            if not target:
+                appended.append(f"\n[Status query for '{target_name}' failed: agent not found]")
+                continue
+
+            active = self.pm.active_count_for_agent(target.name)
+            metrics = self.store.get_agent_metrics(agent_name=target.name, days=1)
+            mcp = target.check_mcp_health()
+            mcp_ok = sum(1 for v in mcp.values() if v == "configured")
+            mcp_total = len(mcp)
+
+            total_cost = sum(m.get("total_cost", 0) for m in metrics)
+            total_msgs = sum(m.get("count", 0) for m in metrics)
+
+            mcp_str = f"{mcp_ok}/{mcp_total} ok" if mcp_total else "none"
+            appended.append(
+                f"\n\n--- Status: {target.identity.display_name} ---\n"
+                f"Role: {target.identity.role} | Model: {target.get_model('default')}\n"
+                f"Sessions: {active} active | MCP: {mcp_str}\n"
+                f"Today: {total_msgs} messages, ${total_cost:.4f}"
+            )
+
+        # Fleet-wide status queries
+        if STATUS_ALL_PATTERN.search(scan_text):
+            lines = ["--- Fleet Status ---"]
+            total_active = 0
+            total_cost = 0.0
+            for agent in self.registry:
+                active = self.pm.active_count_for_agent(agent.name)
+                metrics = self.store.get_agent_metrics(agent_name=agent.name, days=1)
+                cost = sum(m.get("total_cost", 0) for m in metrics)
+                msgs = sum(m.get("count", 0) for m in metrics)
+                mcp = agent.check_mcp_health()
+                mcp_ok = sum(1 for v in mcp.values() if v == "configured")
+                mcp_total = len(mcp)
+                mcp_str = f"{mcp_ok}/{mcp_total}" if mcp_total else "-"
+                lines.append(
+                    f"{agent.name:<16} | {active} active | "
+                    f"${cost:.2f} ({msgs} msgs) | MCP {mcp_str}"
+                )
+                total_active += active
+                total_cost += cost
+            lines.append(f"Total: {total_active} active sessions | ${total_cost:.2f} today")
+            appended.append("\n\n" + "\n".join(lines))
 
         if appended:
             response.result += "\n".join(appended)
