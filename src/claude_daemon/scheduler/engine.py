@@ -340,6 +340,7 @@ class SchedulerEngine:
                         self.daemon.store.update_task_status(
                             task_id, "failed",
                             error=response.result[:500], cost_usd=response.cost,
+                            session_id=response.session_id,
                         )
                     except Exception:
                         log.exception("Failed to mark heartbeat task failed")
@@ -395,6 +396,7 @@ class SchedulerEngine:
                     self.daemon.store.update_task_status(
                         task_id, "completed",
                         result=response.result[:2000], cost_usd=response.cost,
+                        session_id=response.session_id,
                     )
                 except Exception:
                     log.exception("Failed to mark heartbeat task completed")

@@ -210,23 +210,25 @@ class ConversationStore:
                 self._db.execute("ALTER TABLE task_queue ADD COLUMN session_id TEXT")
                 self._db.commit()
             # Backfill session_id from conversations for tasks that predate the
-            # column. spawn_task creates conversations under
-            # "{user_id}:spawn:{task_id}:{agent_name}"; chat tasks share
-            # "{user_id}:{agent_name}". Idempotent: only NULLs get filled.
+            # column. Conversation user_id patterns:
+            #   spawn_task → "{user_id}:spawn:{task_id}:{agent_name}"
+            #   chat / heartbeat / direct send_to_agent → "{user_id}:{agent_name}"
+            # Try the spawn pattern first (more specific), then fall back to
+            # the plain pattern for any rows still NULL. Idempotent.
             try:
                 self._db.execute(
                     "UPDATE task_queue SET session_id = ("
                     "  SELECT c.session_id FROM conversations c"
                     "  WHERE c.user_id = task_queue.user_id || ':spawn:' || task_queue.id || ':' || task_queue.agent_name"
                     "  ORDER BY c.last_active DESC LIMIT 1"
-                    ") WHERE session_id IS NULL AND source IN ('spawn', 'heartbeat', 'api', 'council')"
+                    ") WHERE session_id IS NULL"
                 )
                 self._db.execute(
                     "UPDATE task_queue SET session_id = ("
                     "  SELECT c.session_id FROM conversations c"
                     "  WHERE c.user_id = task_queue.user_id || ':' || task_queue.agent_name"
                     "  ORDER BY c.last_active DESC LIMIT 1"
-                    ") WHERE session_id IS NULL AND source = 'chat'"
+                    ") WHERE session_id IS NULL"
                 )
                 self._db.commit()
             except sqlite3.OperationalError:
