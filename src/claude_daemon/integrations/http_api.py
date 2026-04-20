@@ -280,6 +280,10 @@ class HttpApi:
     # -- Handlers --
 
     async def _handle_health(self, request: web.Request) -> web.Response:
+        warm_sessions = 0
+        bridge = getattr(self.daemon.process_manager, "_sdk_bridge", None)
+        if bridge:
+            warm_sessions = bridge.warm_session_count()
         return web.json_response({
             "status": "ok",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -287,6 +291,7 @@ class HttpApi:
                 self.daemon.process_manager.active_count
                 if self.daemon.process_manager else 0
             ),
+            "warm_sessions": warm_sessions,
         })
 
     async def _handle_agents(self, request: web.Request) -> web.Response:
@@ -300,6 +305,8 @@ class HttpApi:
             except Exception:
                 log.exception("cost snapshot failed in /api/agents")
 
+        bridge = getattr(self.daemon.process_manager, "_sdk_bridge", None)
+
         agents = []
         for agent in self.daemon.agent_registry:
             # Coerce mcp_health values to strings so the dashboard never
@@ -311,6 +318,7 @@ class HttpApi:
                     k: (v if isinstance(v, str) else str(v))
                     for k, v in health.items()
                 }
+            warm_models = bridge.warm_session_models(agent.name) if bridge else []
             agents.append({
                 "name": agent.name,
                 "role": agent.identity.role,
@@ -321,6 +329,8 @@ class HttpApi:
                 "mcp_health": health,
                 "heartbeat_tasks": len(agent.parse_heartbeat_tasks()),
                 "cost": agent_costs.get(agent.name, 0),
+                "warm_sessions": warm_models,
+                "warm_session_count": len(warm_models),
             })
         return web.json_response({"agents": agents})
 
@@ -354,6 +364,10 @@ class HttpApi:
             from claude_daemon import __version__ as _version
         except Exception:
             _version = "unknown"
+        warm_sessions = 0
+        bridge = getattr(self.daemon.process_manager, "_sdk_bridge", None)
+        if bridge:
+            warm_sessions = bridge.warm_session_count()
         return web.json_response({
             "status": "running",
             "agents": len(self.daemon.agent_registry) if self.daemon.agent_registry else 0,
@@ -361,6 +375,7 @@ class HttpApi:
                 self.daemon.process_manager.active_count
                 if self.daemon.process_manager else 0
             ),
+            "warm_sessions": warm_sessions,
             "chatted_agents": chatted,
             "total_sessions": total_sessions,
             "total_messages": stats.get("total_messages", 0),

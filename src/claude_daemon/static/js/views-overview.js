@@ -13,7 +13,7 @@ CC.renderOverviewMetrics = async function() {
     { label: 'Agents', value: s.agents || 0, sub: Object.values(CC.agents).filter(function(a){ return a.status==='busy'; }).length + ' active' },
     { label: 'Tasks', value: running, sub: (taskData ? taskData.tasks.length : 0) + ' total' },
     { label: 'Total Cost', value: '$' + (s.total_cost || 0).toFixed(2), sub: (s.total_messages || 0) + ' messages' },
-    { label: 'Sessions', value: s.total_sessions || 0, sub: s.active_sessions + ' active', clickable: true, clickAction: 'sessions' },
+    { label: 'Sessions', value: s.total_sessions || 0, sub: s.active_sessions + ' active' + (s.warm_sessions ? ' · ' + s.warm_sessions + ' warm' : ''), clickable: true, clickAction: 'sessions' },
     { label: 'Discussions', value: dStats.total || 0, sub: (dStats.converged || 0) + ' converged' }
   ];
 
