@@ -119,14 +119,17 @@ def _extract_action_items(synthesis_text: str) -> list[dict]:
     for a in actions:
         if not isinstance(a, dict):
             continue
-        owner = str(a.get("owner", "")).strip()
+        owner = str(a.get("owner", "")).strip().lower()
         prompt = str(a.get("prompt", "")).strip()
         if not owner or not prompt:
             continue
+        priority = str(a.get("priority", "medium")).strip().lower()
+        if priority not in ("high", "medium", "low"):
+            priority = "medium"
         cleaned.append({
             "owner": owner,
             "prompt": prompt[:2000],
-            "priority": a.get("priority", "medium"),
+            "priority": priority,
             "requires_approval": bool(a.get("requires_approval", False)),
         })
     return cleaned
@@ -531,9 +534,10 @@ class DiscussionEngine:
 
         from claude_daemon.orchestration.task_api import TaskSubmission
 
+        participants_lc = {p.lower() for p in result.config.participants}
         task_ids: list[str] = []
         for idx, a in enumerate(actions):
-            if a["owner"] not in result.config.participants:
+            if a["owner"] not in participants_lc:
                 log.warning(
                     "Council action owner %r not in participants; skipping",
                     a["owner"],

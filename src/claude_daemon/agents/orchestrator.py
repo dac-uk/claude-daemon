@@ -578,7 +578,8 @@ class Orchestrator:
                     import json as _json
                     disc_row = self.store.get_discussion(result.discussion_id)
                     if disc_row:
-                        ids = _json.loads(disc_row.get("action_task_ids", "[]"))
+                        raw = disc_row.get("action_task_ids") or "[]"
+                        ids = _json.loads(raw)
                         if ids:
                             action_line = (
                                 f"\nActions spawned: {len(ids)} "
