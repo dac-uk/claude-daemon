@@ -339,6 +339,11 @@ class SDKBridgeManager:
 
         if result.get("event") == "error":
             msg = result.get("message", "Unknown error")
+            extra = ""
+            if result.get("errorCode") or result.get("errorSubtype") or result.get("errorName"):
+                extra = f" [code={result.get('errorCode')}, subtype={result.get('errorSubtype')}, name={result.get('errorName')}]"
+            log.warning("SDK send error for %s: %s%s (sessionDead=%s)",
+                        session_key, msg, extra, result.get("sessionDead"))
             if result.get("sessionDead"):
                 self._sessions.pop(session_key, None)
                 self._first_message.pop(session_key, None)
@@ -437,6 +442,11 @@ class SDKBridgeManager:
 
                 elif event_type == "error":
                     msg = event.get("message", "Unknown error")
+                    extra = ""
+                    if event.get("errorCode") or event.get("errorSubtype") or event.get("errorName"):
+                        extra = f" [code={event.get('errorCode')}, subtype={event.get('errorSubtype')}, name={event.get('errorName')}]"
+                    log.warning("SDK stream error for %s: %s%s (sessionDead=%s)",
+                                session_key, msg, extra, event.get("sessionDead"))
                     if event.get("sessionDead"):
                         self._sessions.pop(session_key, None)
                         self._first_message.pop(session_key, None)
