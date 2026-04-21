@@ -204,6 +204,7 @@ async function handleSend(cmd) {
           const zeroProgress = (msg.duration_ms === 0 || msg.duration_ms == null) &&
                                (msg.num_turns === 0 || msg.num_turns == null);
           const isSessionDead = DEAD_SESSION_PATTERNS.test(errMsg) || zeroProgress;
+          log(`Error result for ${agent}: ${errMsg} (subtype=${msg.subtype}, dead=${isSessionDead}, code=${msg.error?.code || 'none'})`);
           if (isSessionDead) {
             sessions.delete(agent);
             sessionMeta.delete(agent);
