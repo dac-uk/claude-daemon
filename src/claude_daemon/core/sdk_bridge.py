@@ -292,7 +292,13 @@ class SDKBridgeManager:
 
         session_id = result.get("sessionId")
         self._sessions[session_key] = session_id or ""
-        log.info("SDK session created for %s (session=%s)", session_key, (session_id or "pending")[:12])
+        if resume_session_id:
+            log.info(
+                "SDK session created for %s (resume=%s, validated on first message)",
+                session_key, resume_session_id[:12],
+            )
+        else:
+            log.info("SDK session created for %s (fresh)", session_key)
         return session_id
 
     async def send_message(
