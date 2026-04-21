@@ -166,6 +166,7 @@ class Orchestrator:
         self._workflow_engine = None
         self._factory = None  # SoftwareFactory — set post-init by daemon
         self._budget_store = None
+        self._compactor = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
 
     def set_discussion_engine(self, engine) -> None:
@@ -187,6 +188,10 @@ class Orchestrator:
     def set_budget_store(self, budget_store) -> None:
         """Inject budget store for post-completion spend recording."""
         self._budget_store = budget_store
+
+    def set_compactor(self, compactor) -> None:
+        """Inject context compactor for post-conversation signal extraction."""
+        self._compactor = compactor
 
     async def _semantic_search(self, prompt: str) -> list[dict]:
         """Hybrid search: semantic vector search with FTS5 keyword fallback.
@@ -218,6 +223,15 @@ class Orchestrator:
                 pass
 
         return matches
+
+    async def _extract_signals(self, session_id: str, agent_name: str) -> None:
+        """Background: run light_sleep to extract memory signals from the conversation."""
+        try:
+            signals = await self._compactor.light_sleep(session_id)
+            if signals:
+                log.info("Memory signals extracted for %s: %d signals", agent_name, len(signals))
+        except Exception:
+            log.debug("Signal extraction failed for %s", agent_name, exc_info=True)
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
@@ -391,6 +405,10 @@ class Orchestrator:
                       self.pm._sdk_bridge.has_session(agent.name, model))
         if sdk_active:
             dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+            recent = self.store.get_conversation_text(conv["id"], limit=20)
+            if recent:
+                history = f"## Recent Conversation History\n{recent[-3000:]}"
+                dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
             effective_context = dynamic_context or None
         else:
             effective_context = agent_context
@@ -459,6 +477,10 @@ class Orchestrator:
                 )
             except Exception:
                 pass
+
+        # Extract memory signals in background (feed the light_sleep → deep_sleep → MEMORY.md pipeline)
+        if not response.is_error and response.output_tokens >= 50 and getattr(self, "_compactor", None):
+            asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
 
         # Process delegation tags in response (skip discussion tags when inside a discussion)
         if not response.is_error:
@@ -938,6 +960,10 @@ class Orchestrator:
                           self.pm._sdk_bridge.has_session(agent.name, model))
             if sdk_active:
                 dynamic_context = agent.build_dynamic_context(semantic_matches=semantic_matches)
+                recent = self.store.get_conversation_text(conv["id"], limit=20)
+                if recent:
+                    history = f"## Recent Conversation History\n{recent[-3000:]}"
+                    dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
                 effective_context = dynamic_context or None
             else:
                 effective_context = agent_context
@@ -1056,6 +1082,10 @@ class Orchestrator:
             model=model, platform=platform,
             success=not resp.is_error,
         )
+
+        # Extract memory signals in background
+        if not resp.is_error and resp.output_tokens >= 50 and getattr(self, "_compactor", None):
+            asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
 
         yield resp
 
