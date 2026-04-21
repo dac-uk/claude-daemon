@@ -144,7 +144,11 @@ class EmbeddingStore:
                         existing_dim, self._dim,
                     )
                     self._db.execute("DROP TABLE IF EXISTS memory_vec")
+                    self._db.execute("DROP TABLE IF EXISTS conv_vec")
                     self._db.execute("DELETE FROM embedding_meta")
+                    self._db.executescript(
+                        "DELETE FROM conv_indexing_watermark;"
+                    )
                     self._db.commit()
         except Exception:
             pass
@@ -157,10 +161,25 @@ class EmbeddingStore:
                 +chunk TEXT,
                 +created_at TEXT
             );
+            CREATE VIRTUAL TABLE IF NOT EXISTS conv_vec USING vec0(
+                embedding float[{self._dim}],
+                +conversation_id INTEGER,
+                +message_id INTEGER,
+                +agent_name TEXT,
+                +chunk TEXT,
+                +role TEXT,
+                +created_at TEXT
+            );
             CREATE TABLE IF NOT EXISTS embedding_meta (
                 path TEXT PRIMARY KEY,
                 content_hash TEXT,
                 model TEXT,
+                indexed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS conv_indexing_watermark (
+                conversation_id INTEGER PRIMARY KEY,
+                last_indexed_message_id INTEGER NOT NULL DEFAULT 0,
+                agent_name TEXT,
                 indexed_at TEXT
             );
         """)
@@ -176,7 +195,9 @@ class EmbeddingStore:
                     row[0], self.config.embedding_model,
                 )
                 self._db.execute("DELETE FROM memory_vec")
+                self._db.execute("DELETE FROM conv_vec")
                 self._db.execute("DELETE FROM embedding_meta")
+                self._db.execute("DELETE FROM conv_indexing_watermark")
                 self._db.commit()
         except Exception:
             pass
@@ -446,15 +467,17 @@ class EmbeddingStore:
         if not embedding:
             return []
 
+        results = []
+        serialized = _serialize_f32(embedding)
+
         try:
             rows = self._db.execute(
                 "SELECT chunk, source, agent_name, distance "
                 "FROM memory_vec "
                 "WHERE embedding MATCH ? "
                 "ORDER BY distance LIMIT ?",
-                (_serialize_f32(embedding), top_k),
+                (serialized, top_k),
             ).fetchall()
-            results = []
             for row in rows:
                 score = 1.0 - row[3]
                 if score >= min_score:
@@ -464,10 +487,41 @@ class EmbeddingStore:
                         "agent_name": row[2],
                         "score": score,
                     })
-            return results
         except Exception as e:
-            log.debug("Semantic search failed: %s", e)
-            return []
+            log.debug("Semantic search (memory_vec) failed: %s", e)
+
+        try:
+            conv_rows = self._db.execute(
+                "SELECT chunk, conversation_id, agent_name, role, created_at, distance "
+                "FROM conv_vec "
+                "WHERE embedding MATCH ? "
+                "ORDER BY distance LIMIT ?",
+                (serialized, top_k),
+            ).fetchall()
+            for row in conv_rows:
+                score = 1.0 - row[5]
+                if score >= min_score:
+                    results.append({
+                        "chunk": row[0],
+                        "source": "conversation",
+                        "agent_name": row[2],
+                        "score": score,
+                        "conversation_id": row[1],
+                    })
+        except sqlite3.OperationalError:
+            pass
+        except Exception as e:
+            log.debug("Semantic search (conv_vec) failed: %s", e)
+
+        seen: set[str] = set()
+        deduped = []
+        for r in sorted(results, key=lambda x: x["score"], reverse=True):
+            if r["chunk"] not in seen:
+                seen.add(r["chunk"])
+                deduped.append(r)
+            if len(deduped) >= top_k:
+                break
+        return deduped
 
     # ------------------------------------------------------------------ #
     # Bulk reindex
@@ -547,3 +601,144 @@ class EmbeddingStore:
                     chunks.append(buf.strip())
 
         return chunks
+
+    @staticmethod
+    def _chunk_conversation_window(
+        messages: list[dict], window_size: int = 3, agent_name: str = "",
+    ) -> list[dict]:
+        """Sliding window over messages producing embeddable conversation chunks.
+
+        Window size = messages per chunk, stride = window_size - 1 (1-message overlap).
+        """
+        if len(messages) < window_size:
+            if not messages:
+                return []
+            window_size = len(messages)
+
+        stride = max(1, window_size - 1)
+        chunks = []
+        for i in range(0, len(messages) - window_size + 1, stride):
+            window = messages[i:i + window_size]
+            lines = []
+            for m in window:
+                role = "User" if m["role"] == "user" else "Assistant"
+                content = (m.get("content") or "")[:600]
+                lines.append(f"{role}: {content}")
+            chunk_text = "\n".join(lines)[:1800]
+            anchor = window[-1]
+            chunks.append({
+                "conversation_id": anchor["conversation_id"],
+                "message_id": anchor["id"],
+                "agent_name": agent_name,
+                "chunk": chunk_text,
+                "role": anchor["role"],
+                "created_at": anchor.get("timestamp", ""),
+            })
+        return chunks
+
+    def get_unindexed_messages(self, conversation_id: int) -> list[dict]:
+        """Fetch messages above the indexing watermark for a conversation."""
+        try:
+            row = self._db.execute(
+                "SELECT last_indexed_message_id FROM conv_indexing_watermark "
+                "WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return []
+        watermark = row[0] if row else 0
+        rows = self._db.execute(
+            "SELECT id, conversation_id, role, content, timestamp "
+            "FROM messages WHERE conversation_id = ? AND id > ? "
+            "ORDER BY id ASC LIMIT 50",
+            (conversation_id, watermark),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    async def index_conversation_messages(
+        self, conversation_id: int, agent_name: str = "",
+    ) -> int:
+        """Index new messages from a conversation into conv_vec."""
+        if not self.available:
+            return 0
+        if not getattr(self.config, "embedding_conv_enabled", True):
+            return 0
+
+        messages = self.get_unindexed_messages(conversation_id)
+        window_size = getattr(self.config, "embedding_conv_window_size", 3)
+        if not messages:
+            return 0
+        if len(messages) < window_size:
+            row = self._db.execute(
+                "SELECT last_indexed_message_id FROM conv_indexing_watermark "
+                "WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+            if not row:
+                return 0
+
+        chunks = self._chunk_conversation_window(messages, window_size, agent_name)
+        if not chunks:
+            return 0
+
+        now = datetime.now(timezone.utc).isoformat()
+        indexed = 0
+        for c in chunks:
+            try:
+                embedding = await self.embed_text(c["chunk"])
+                if not embedding:
+                    continue
+                self._db.execute(
+                    "INSERT INTO conv_vec (embedding, conversation_id, message_id, "
+                    "agent_name, chunk, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        _serialize_f32(embedding),
+                        c["conversation_id"], c["message_id"],
+                        c["agent_name"], c["chunk"], c["role"], c["created_at"],
+                    ),
+                )
+                indexed += 1
+            except Exception:
+                log.debug("Failed to index conversation chunk", exc_info=True)
+
+        max_id = max(m["id"] for m in messages)
+        try:
+            self._db.execute(
+                "INSERT OR REPLACE INTO conv_indexing_watermark "
+                "(conversation_id, last_indexed_message_id, agent_name, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (conversation_id, max_id, agent_name, now),
+            )
+            self._db.commit()
+        except Exception:
+            log.debug("Failed to update conv watermark", exc_info=True)
+
+        return indexed
+
+    async def reindex_conversations(self, days: int = 7) -> int:
+        """Reindex recent conversations into conv_vec."""
+        if not self.available:
+            return 0
+        if not getattr(self.config, "embedding_conv_enabled", True):
+            return 0
+
+        try:
+            rows = self._db.execute(
+                "SELECT id, user_id FROM conversations "
+                "WHERE last_active >= datetime('now', ? || ' days') AND status = 'active'",
+                (f"-{days}",),
+            ).fetchall()
+        except Exception:
+            return 0
+
+        total = 0
+        for row in rows:
+            user_id = row[1] if isinstance(row, (tuple, list)) else row["user_id"]
+            conv_id = row[0] if isinstance(row, (tuple, list)) else row["id"]
+            if ":spawn:" in str(user_id):
+                continue
+            agent_name = str(user_id).rsplit(":", 1)[-1] if ":" in str(user_id) else ""
+            try:
+                count = await self.index_conversation_messages(conv_id, agent_name)
+                total += count
+            except Exception:
+                log.debug("Reindex failed for conv %d", conv_id, exc_info=True)
+        return total

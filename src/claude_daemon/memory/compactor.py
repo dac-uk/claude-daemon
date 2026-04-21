@@ -259,6 +259,13 @@ class ContextCompactor:
             except Exception:
                 log.debug("Embedding reindex failed during deep sleep")
 
+            try:
+                conv_count = await self._embedding_store.reindex_conversations(days=7)
+                if conv_count:
+                    log.info("Deep sleep: reindexed %d conversation chunks", conv_count)
+            except Exception:
+                log.debug("Conversation reindex failed during deep sleep")
+
         log.info("Deep sleep complete")
 
     # ------------------------------------------------------------------ #

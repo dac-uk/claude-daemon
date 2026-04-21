@@ -95,6 +95,8 @@ class DaemonConfig:
     embedding_batch_size: int = 128  # Texts per API call
     embedding_search_timeout_ms: int = 400  # Max ms to wait for semantic search before proceeding
     embedding_interactive_chat: bool = True  # Include semantic search in live chat (False = skip for speed)
+    embedding_conv_enabled: bool = True  # Index conversations into conv_vec for semantic search
+    embedding_conv_window_size: int = 3  # Messages per sliding window chunk
 
     # Inter-agent discussions
     discussions_enabled: bool = True  # Enable multi-turn discussions and council
@@ -286,6 +288,8 @@ class DaemonConfig:
             embedding_batch_size=int(memory_cfg.get("embedding_batch_size", 128)),
             embedding_search_timeout_ms=int(memory_cfg.get("embedding_search_timeout_ms", 400)),
             embedding_interactive_chat=memory_cfg.get("embedding_interactive_chat", True),
+            embedding_conv_enabled=memory_cfg.get("embedding_conv_enabled", True),
+            embedding_conv_window_size=int(memory_cfg.get("embedding_conv_window_size", 3)),
             discussions_enabled=claude_cfg.get("discussions_enabled", True),
             discussion_max_turns=int(claude_cfg.get("discussion_max_turns", 6)),
             discussion_max_cost=float(claude_cfg.get("discussion_max_cost", 1.00)),
