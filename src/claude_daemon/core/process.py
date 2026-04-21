@@ -637,6 +637,17 @@ class ProcessManager:
 
             finally:
                 self._active.pop(tracking_id, None)
+                if proc.returncode is None:
+                    try:
+                        proc.terminate()
+                        await asyncio.wait_for(proc.wait(), timeout=3.0)
+                    except (ProcessLookupError, asyncio.TimeoutError):
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except ProcessLookupError:
+                            pass
+                    log.info("Terminated orphaned CLI subprocess (pid=%s)", proc.pid)
 
             if final_response:
                 # Mark session as confirmed — safe to --resume on next message
