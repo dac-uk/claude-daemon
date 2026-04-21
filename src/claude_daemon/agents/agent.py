@@ -16,6 +16,7 @@ Each agent has its own set of identity files:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -202,7 +203,11 @@ class Agent:
                 cmd = server.get("command", "")
                 env = server.get("env", {})
                 # Check for unresolved env var placeholders
-                unresolved = [k for k, v in env.items() if v.startswith("${") and v.endswith("}")]
+                unresolved = [
+                    k for k, v in env.items()
+                    if v.startswith("${") and v.endswith("}")
+                    and os.environ.get(v[2:-1]) is None
+                ]
                 if unresolved:
                     result[name] = f"unconfigured ({', '.join(unresolved)})"
                 else:

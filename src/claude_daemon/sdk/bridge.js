@@ -98,7 +98,13 @@ async function handleCreate(cmd) {
     // We don't block — sessionId will be captured on first send
     emit({ event: "created", id, agent, sessionId: null });
   } catch (err) {
-    emit({ event: "error", id, agent, message: err.message, recoverable: false });
+    log(`Create error for ${agent}: ${err.message} (code=${err.code}, name=${err.name})`);
+    if (err.stack) log(`  Stack: ${err.stack.split('\n').slice(0, 3).join(' | ')}`);
+    emit({
+      event: "error", id, agent, message: err.message,
+      errorCode: err.code || null, errorName: err.name || null,
+      recoverable: false,
+    });
   }
 }
 
@@ -205,6 +211,8 @@ async function handleSend(cmd) {
           emit({
             event: "error", id, agent,
             message: `Claude Code returned an error result: ${errMsg}`,
+            errorSubtype: msg.subtype || null,
+            errorCode: msg.error?.code || null,
             recoverable: true,
             sessionDead: isSessionDead,
           });
@@ -255,7 +263,8 @@ async function handleSend(cmd) {
       stopReason,
     });
   } catch (err) {
-    log(`Send error for ${agent}: ${err.message}`);
+    log(`Send error for ${agent}: ${err.message} (code=${err.code}, name=${err.name})`);
+    if (err.stack) log(`  Stack: ${err.stack.split('\n').slice(0, 3).join(' | ')}`);
 
     const isSessionDead = DEAD_SESSION_PATTERNS.test(err.message || "");
 
@@ -267,6 +276,8 @@ async function handleSend(cmd) {
     emit({
       event: "error", id, agent,
       message: err.message,
+      errorCode: err.code || null,
+      errorName: err.name || null,
       recoverable: true,
       sessionDead: isSessionDead,
     });

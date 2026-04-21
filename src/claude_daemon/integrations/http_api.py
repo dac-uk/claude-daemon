@@ -1782,6 +1782,7 @@ class HttpApi:
             set_env_var(key, value)
             reload_env()
             await self.daemon.reload_config()
+            await self.daemon.refresh_mcp()
 
             masked = "****" + value[-4:] if len(value) >= 4 else "****"
             if self.daemon.store:

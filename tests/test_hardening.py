@@ -51,8 +51,10 @@ def test_stripe_webhook_signature_verification():
     assert hmac.compare_digest(check_sig, parts["v1"])
 
 
-def test_mcp_health_check_unconfigured(tmp_path: Path):
-    """MCP health check detects unresolved env var placeholders."""
+def test_mcp_health_check_unconfigured(tmp_path: Path, monkeypatch):
+    """MCP health check detects unresolved env var placeholders only when unset."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
     workspace = tmp_path / "test-agent"
     workspace.mkdir()
     (workspace / "SOUL.md").write_text("# Soul\n")
@@ -79,6 +81,11 @@ def test_mcp_health_check_unconfigured(tmp_path: Path):
     health = agent.check_mcp_health()
     assert health["github"] == "unconfigured (GITHUB_TOKEN)"
     assert health["slack"] == "configured"
+
+    # When the env var IS set, the placeholder should NOT be flagged.
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
+    health2 = agent.check_mcp_health()
+    assert health2["github"] == "configured"
 
 
 def test_mcp_health_check_no_config(tmp_path: Path):
