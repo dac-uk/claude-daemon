@@ -474,33 +474,47 @@ class HttpApi:
         )
         await resp.prepare(request)
 
+        stream = self.daemon.handle_message_streaming(
+            prompt=message,
+            session_id=session_id,
+            platform="api",
+            user_id=user_id,
+            agent_name=agent_name,
+        )
+        client_disconnected = False
+
         try:
-            async for chunk in self.daemon.handle_message_streaming(
-                prompt=message,
-                session_id=session_id,
-                platform="api",
-                user_id=user_id,
-                agent_name=agent_name,
-            ):
+            async for chunk in stream:
                 if isinstance(chunk, str):
                     await resp.write(f"data: {json.dumps({'text': chunk})}\n\n".encode())
                     await resp.drain()
                 else:
-                    # ClaudeResponse final result — include error text if failed
                     from claude_daemon.core.process import ClaudeResponse
                     done_event: dict = {"done": True}
                     if isinstance(chunk, ClaudeResponse) and chunk.is_error:
                         done_event["error"] = chunk.result
                     await resp.write(f"data: {json.dumps(done_event)}\n\n".encode())
+        except (ConnectionResetError, ConnectionError, BrokenPipeError):
+            client_disconnected = True
         except Exception as exc:
-            log.exception("API streaming handler error")
-            done_event = {"done": True, "error": f"{type(exc).__name__}: {exc}"}
-            try:
-                await resp.write(f"data: {json.dumps(done_event)}\n\n".encode())
-            except Exception:
-                pass
+            if "closing transport" in str(exc).lower() or "connection reset" in str(exc).lower():
+                client_disconnected = True
+            else:
+                log.exception("API streaming handler error")
+                try:
+                    done_event = {"done": True, "error": f"{type(exc).__name__}: {exc}"}
+                    await resp.write(f"data: {json.dumps(done_event)}\n\n".encode())
+                except Exception:
+                    pass
+        finally:
+            if client_disconnected:
+                log.info("Client disconnected during stream (stop button pressed)")
+                await stream.aclose()
 
-        await resp.write_eof()
+        try:
+            await resp.write_eof()
+        except Exception:
+            pass
         return resp
 
     async def _handle_workflow(self, request: web.Request) -> web.Response:
