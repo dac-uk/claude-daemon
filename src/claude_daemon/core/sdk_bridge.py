@@ -343,7 +343,7 @@ class SDKBridgeManager:
 
         if result.get("event") == "error":
             msg = result.get("message", "Unknown error")
-            if result.get("recoverable"):
+            if result.get("sessionDead"):
                 self._sessions.pop(session_key, None)
                 self._first_message.pop(session_key, None)
             return ClaudeResponse.error(f"SDK bridge error: {msg}")
@@ -441,7 +441,7 @@ class SDKBridgeManager:
 
                 elif event_type == "error":
                     msg = event.get("message", "Unknown error")
-                    if event.get("recoverable"):
+                    if event.get("sessionDead"):
                         self._sessions.pop(session_key, None)
                         self._first_message.pop(session_key, None)
                     yield ClaudeResponse.error(f"SDK bridge error: {msg}")

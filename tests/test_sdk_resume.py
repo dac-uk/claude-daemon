@@ -8,12 +8,14 @@ Covers the three wiring layers:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from claude_daemon.core.process import ClaudeResponse
 from claude_daemon.core.sdk_bridge import SDKBridgeManager
 
 
@@ -343,3 +345,118 @@ def test_config_exposes_sdk_resume_max_age_hours():
     cfg = DaemonConfig()
     assert hasattr(cfg, "sdk_resume_max_age_hours")
     assert cfg.sdk_resume_max_age_hours == 24
+
+
+# ── sessionDead vs transient error behaviour ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_message_preserves_session_on_transient_error():
+    """A transient error (sessionDead=false) must NOT destroy the session."""
+    mgr = _alive_bridge()
+    mgr._sessions["johnny:sonnet"] = "sess-1"
+    mgr._first_message["johnny:sonnet"] = True
+
+    async def fake_send(cmd):
+        req_id = cmd["id"]
+        future = mgr._pending.get(req_id)
+        if future and not future.done():
+            future.set_result({
+                "event": "error",
+                "id": req_id,
+                "message": "overloaded",
+                "recoverable": True,
+                "sessionDead": False,
+            })
+    mgr._send_command.side_effect = fake_send
+
+    resp = await mgr.send_message("johnny", "hi", model="sonnet")
+    assert resp.is_error
+    assert mgr.has_session("johnny", "sonnet"), "session should survive a transient error"
+    assert "johnny:sonnet" in mgr._first_message, "_first_message should survive too"
+
+
+@pytest.mark.asyncio
+async def test_send_message_destroys_session_on_dead_error():
+    """A dead-session error (sessionDead=true) MUST destroy the session."""
+    mgr = _alive_bridge()
+    mgr._sessions["johnny:sonnet"] = "sess-1"
+    mgr._first_message["johnny:sonnet"] = True
+
+    async def fake_send(cmd):
+        req_id = cmd["id"]
+        future = mgr._pending.get(req_id)
+        if future and not future.done():
+            future.set_result({
+                "event": "error",
+                "id": req_id,
+                "message": "session terminated",
+                "recoverable": True,
+                "sessionDead": True,
+            })
+    mgr._send_command.side_effect = fake_send
+
+    resp = await mgr.send_message("johnny", "hi", model="sonnet")
+    assert resp.is_error
+    assert not mgr.has_session("johnny", "sonnet"), "session should be removed when dead"
+    assert "johnny:sonnet" not in mgr._first_message
+
+
+@pytest.mark.asyncio
+async def test_stream_message_preserves_session_on_transient_error():
+    """Streaming: transient error preserves session."""
+    mgr = _alive_bridge()
+    mgr._sessions["johnny:sonnet"] = "sess-1"
+    mgr._first_message["johnny:sonnet"] = True
+
+    async def feeder():
+        for _ in range(10):
+            if mgr._streams:
+                break
+            await asyncio.sleep(0.005)
+        queue = next(iter(mgr._streams.values()))
+        await queue.put({
+            "event": "error",
+            "message": "rate limited",
+            "recoverable": True,
+            "sessionDead": False,
+        })
+
+    task = asyncio.create_task(feeder())
+    chunks = []
+    async for item in mgr.stream_message("johnny", "hi", model="sonnet"):
+        chunks.append(item)
+    await task
+
+    assert any(isinstance(c, ClaudeResponse) and c.is_error for c in chunks)
+    assert mgr.has_session("johnny", "sonnet"), "session should survive transient error"
+
+
+@pytest.mark.asyncio
+async def test_stream_message_destroys_session_on_dead_error():
+    """Streaming: dead session error removes session."""
+    mgr = _alive_bridge()
+    mgr._sessions["johnny:sonnet"] = "sess-1"
+    mgr._first_message["johnny:sonnet"] = True
+
+    async def feeder():
+        for _ in range(10):
+            if mgr._streams:
+                break
+            await asyncio.sleep(0.005)
+        queue = next(iter(mgr._streams.values()))
+        await queue.put({
+            "event": "error",
+            "message": "session closed",
+            "recoverable": True,
+            "sessionDead": True,
+        })
+
+    task = asyncio.create_task(feeder())
+    chunks = []
+    async for item in mgr.stream_message("johnny", "hi", model="sonnet"):
+        chunks.append(item)
+    await task
+
+    assert any(isinstance(c, ClaudeResponse) and c.is_error for c in chunks)
+    assert not mgr.has_session("johnny", "sonnet"), "dead session should be removed"

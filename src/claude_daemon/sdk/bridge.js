@@ -102,7 +102,7 @@ async function handleSend(cmd) {
 
   const session = sessions.get(agent);
   if (!session) {
-    emit({ event: "error", id, agent, message: "No session for agent", recoverable: true });
+    emit({ event: "error", id, agent, message: "No session for agent", recoverable: true, sessionDead: true });
     return;
   }
 
@@ -232,6 +232,7 @@ async function handleSend(cmd) {
       event: "error", id, agent,
       message: err.message,
       recoverable: true,
+      sessionDead: isSessionDead,
     });
   }
 }
