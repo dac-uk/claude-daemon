@@ -39,7 +39,6 @@ class SDKBridgeManager:
         self._streams: dict[str, asyncio.Queue] = {}  # request_id -> Queue for streaming
         self._system_prompts: dict[str, str] = {}  # agent_name -> static system prompt
         self._first_message: dict[str, bool] = {}  # agent_name -> True if first message sent
-        self._resumed: set[str] = set()  # session keys where resume was attempted this daemon-life
         self._reader_task: asyncio.Task | None = None
         self._started = False
 
@@ -55,10 +54,6 @@ class SDKBridgeManager:
     def has_session(self, agent_name: str, model: str | None = None) -> bool:
         """Check if a warm session exists for this (agent, model) pair."""
         return self._key(agent_name, model) in self._sessions and self.is_alive
-
-    def has_resumed(self, agent_name: str, model: str | None = None) -> bool:
-        """Check if a resume has already been attempted for this (agent, model) pair."""
-        return self._key(agent_name, model) in self._resumed
 
     def warm_session_models(self, agent_name: str) -> list[str]:
         """Return the list of models with warm sessions for this agent."""
@@ -264,8 +259,6 @@ class SDKBridgeManager:
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
             log.warning("SDK create_session timeout for %s (%.0fs)", session_key, timeout_s)
-            if resume_session_id:
-                self._resumed.add(session_key)
             return None
 
         # Graceful fallback: if a resume attempt errored, retry once without the session_id.
@@ -274,7 +267,6 @@ class SDKBridgeManager:
                 "SDK resume failed for %s (%s) — creating fresh session",
                 session_key, result.get("message"),
             )
-            self._resumed.add(session_key)
             retry_id = self._new_id()
             retry_future: asyncio.Future = asyncio.get_event_loop().create_future()
             self._pending[retry_id] = retry_future
@@ -297,9 +289,6 @@ class SDKBridgeManager:
         if result.get("event") == "error":
             log.error("SDK create_session error for %s: %s", session_key, result.get("message"))
             return None
-
-        if resume_session_id:
-            self._resumed.add(session_key)
 
         session_id = result.get("sessionId")
         self._sessions[session_key] = session_id or ""
@@ -500,7 +489,6 @@ class SDKBridgeManager:
         self._sessions.clear()
         self._pending.clear()
         self._streams.clear()
-        self._resumed.clear()
         self._first_message.clear()
 
         if self._reader_task and not self._reader_task.done():
