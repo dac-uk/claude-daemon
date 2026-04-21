@@ -240,9 +240,6 @@ class ClaudeDaemon:
                         agent_workspace=str(agent.workspace),
                         resume_session_id=resume_session_id,
                     )
-                    if resume_session_id:
-                        log.info("Pre-warm %s: attempted resume from %s",
-                                 label, resume_session_id[:12])
                     return label, bool(ok)
                 except Exception:
                     log.debug("Pre-create session failed for %s", label)
