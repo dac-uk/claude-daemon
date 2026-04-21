@@ -460,3 +460,74 @@ async def test_stream_message_destroys_session_on_dead_error():
 
     assert any(isinstance(c, ClaudeResponse) and c.is_error for c in chunks)
     assert not mgr.has_session("johnny", "sonnet"), "dead session should be removed"
+
+
+# ── Server-reported dead sessions (regression: bridge.js now detects these) ─
+
+
+@pytest.mark.asyncio
+async def test_send_message_pops_session_when_server_reports_dead():
+    """bridge.js flags 'No conversation found with session ID' as sessionDead=true.
+    Python must pop the session so the next message creates a fresh one.
+    """
+    mgr = _alive_bridge()
+    mgr._sessions["johnny:sonnet"] = "bad-id-00000000"
+    mgr._first_message["johnny:sonnet"] = True
+
+    async def fake_send(cmd):
+        req_id = cmd["id"]
+        future = mgr._pending.get(req_id)
+        if future and not future.done():
+            future.set_result({
+                "event": "error",
+                "id": req_id,
+                "message": (
+                    "Claude Code returned an error result: "
+                    "No conversation found with session ID: bad-id-00000000"
+                ),
+                "recoverable": True,
+                "sessionDead": True,
+            })
+    mgr._send_command.side_effect = fake_send
+
+    resp = await mgr.send_message("johnny", "hi", model="sonnet")
+    assert resp.is_error
+    assert "No conversation found" in resp.result
+    assert not mgr.has_session("johnny", "sonnet")
+    assert "johnny:sonnet" not in mgr._first_message
+
+
+@pytest.mark.asyncio
+async def test_stream_message_pops_session_when_server_reports_dead():
+    """Streaming path mirrors the buffered-path behaviour for server-dead errors."""
+    mgr = _alive_bridge()
+    mgr._sessions["johnny:sonnet"] = "bad-id-00000000"
+    mgr._first_message["johnny:sonnet"] = True
+
+    async def feeder():
+        for _ in range(10):
+            if mgr._streams:
+                break
+            await asyncio.sleep(0.005)
+        queue = next(iter(mgr._streams.values()))
+        await queue.put({
+            "event": "error",
+            "message": (
+                "Claude Code returned an error result: "
+                "No conversation found with session ID: bad-id-00000000"
+            ),
+            "recoverable": True,
+            "sessionDead": True,
+        })
+
+    task = asyncio.create_task(feeder())
+    chunks = []
+    async for item in mgr.stream_message("johnny", "hi", model="sonnet"):
+        chunks.append(item)
+    await task
+
+    errors = [c for c in chunks if isinstance(c, ClaudeResponse) and c.is_error]
+    assert errors
+    assert "No conversation found" in errors[0].result
+    assert not mgr.has_session("johnny", "sonnet")
+    assert "johnny:sonnet" not in mgr._first_message
