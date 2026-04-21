@@ -233,6 +233,15 @@ class Orchestrator:
         except Exception:
             log.debug("Signal extraction failed for %s", agent_name, exc_info=True)
 
+    async def _index_conversation(self, conv_id: int, agent_name: str) -> None:
+        """Background: index conversation messages into conv_vec for semantic search."""
+        try:
+            count = await self._embedding_store.index_conversation_messages(conv_id, agent_name)
+            if count:
+                log.debug("Indexed %d conversation chunks for %s", count, agent_name)
+        except Exception:
+            log.debug("Conversation indexing failed for %s", agent_name, exc_info=True)
+
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
 
@@ -478,9 +487,12 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # Extract memory signals in background (feed the light_sleep → deep_sleep → MEMORY.md pipeline)
-        if not response.is_error and response.output_tokens >= 50 and getattr(self, "_compactor", None):
-            asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
+        # Extract memory signals + index conversation for semantic search (background)
+        if not response.is_error and response.output_tokens >= 50:
+            if self._compactor:
+                asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
+            if self._embedding_store and self._embedding_store.available:
+                asyncio.create_task(self._index_conversation(conv["id"], agent.name))
 
         # Process delegation tags in response (skip discussion tags when inside a discussion)
         if not response.is_error:
@@ -1083,9 +1095,12 @@ class Orchestrator:
             success=not resp.is_error,
         )
 
-        # Extract memory signals in background
-        if not resp.is_error and resp.output_tokens >= 50 and getattr(self, "_compactor", None):
-            asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
+        # Extract memory signals + index conversation for semantic search (background)
+        if not resp.is_error and resp.output_tokens >= 50:
+            if self._compactor:
+                asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
+            if self._embedding_store and self._embedding_store.available:
+                asyncio.create_task(self._index_conversation(conv["id"], agent.name))
 
         yield resp
 
