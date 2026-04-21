@@ -216,13 +216,25 @@ class ContextCompactor:
             prompt=prompt, max_budget=0.10, platform="system", user_id="dreamer",
         )
 
+        # Retry once on 0-token response (transient API issue)
+        if not response.is_error and response.output_tokens == 0:
+            log.warning("Deep sleep: 0 output tokens (cost=$%.4f), retrying", response.cost)
+            response = await self.pm.send_message(
+                prompt=prompt, max_budget=0.10, platform="system", user_id="dreamer",
+            )
+
         if not response.is_error and len(response.result) > 30:
             # Store daily summary
             self.store.add_summary(None, response.result, "deep_sleep")
             self.durable.append_daily_log(f"Deep sleep summary:\n{response.result[:500]}")
             log.info("Deep sleep: daily summary written (%d chars)", len(response.result))
+        elif response.is_error:
+            log.warning("Deep sleep: API error: %s", response.result[:200])
         else:
-            log.warning("Deep sleep: consolidation failed or empty")
+            log.warning(
+                "Deep sleep: consolidation too short (%d chars, %d output tokens)",
+                len(response.result), response.output_tokens,
+            )
 
         # Archive expired sessions
         archived = self.store.cleanup_expired(
@@ -413,6 +425,18 @@ class ContextCompactor:
             platform="system", user_id=f"compactor:{agent.name}",
             model_override=agent.get_model("scheduled"),
         )
+
+        # Retry once on 0-token response (transient API issue)
+        if not response.is_error and response.output_tokens == 0:
+            log.warning(
+                "Agent memory compaction for %s: 0 output tokens (cost=$%.4f), retrying",
+                agent.name, response.cost,
+            )
+            response = await self.pm.send_message(
+                prompt=prompt, max_budget=0.10,
+                platform="system", user_id=f"compactor:{agent.name}",
+                model_override=agent.get_model("scheduled"),
+            )
 
         if response.is_error or len(response.result) < 30:
             log.warning("Agent memory compaction for %s produced bad output", agent.name)
