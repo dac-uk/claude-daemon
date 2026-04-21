@@ -255,6 +255,26 @@ async def test_ensure_agent_session_without_resume_is_unchanged():
     assert bridge.created == []
 
 
+@pytest.mark.asyncio
+async def test_ensure_agent_session_does_not_retry_failed_resume():
+    """After a resume that ran + got popped, the next call must NOT re-attempt
+    resume with the same stale id — it should create a fresh session."""
+    bridge = _FakeBridge()
+    # has_resumed=True (we already tried this daemon-life) but no session —
+    # simulates "resume ran, first send errored with sessionDead, session popped".
+    bridge.resumed.add("johnny:sonnet")
+    pm = _process_manager_with(bridge)
+
+    ok = await pm.ensure_agent_session(
+        agent_name="johnny", model="sonnet",
+        resume_session_id="still-bad-id",
+    )
+    assert ok
+    assert len(bridge.created) == 1
+    # Resume id was cleared because has_resumed was already true.
+    assert bridge.created[0]["resume_session_id"] is None
+
+
 # ── Orchestrator._pick_resume_session ───────────────────────────────────────
 
 

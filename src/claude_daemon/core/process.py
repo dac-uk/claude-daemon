@@ -234,11 +234,14 @@ class ProcessManager:
         bridge = await self.ensure_sdk_bridge()
         if not bridge:
             return False
-        # Fast path: session already exists and either no resume requested, or
-        # resume has already been handled for this key.
-        if bridge.has_session(agent_name, model) and (
-            resume_session_id is None or bridge.has_resumed(agent_name, model)
-        ):
+        # If we've already tried resume for this key this daemon-life, don't
+        # retry — the resume target is the same stale session_id the caller
+        # passed last time, so retrying just re-hits the same error. Fall
+        # through to the create-fresh path.
+        if resume_session_id and bridge.has_resumed(agent_name, model):
+            resume_session_id = None
+        # Fast path: session already exists and no resume requested.
+        if bridge.has_session(agent_name, model) and resume_session_id is None:
             return True
         # Replace blank pre-warmed session with a resumed one.
         if resume_session_id and bridge.has_session(agent_name, model):

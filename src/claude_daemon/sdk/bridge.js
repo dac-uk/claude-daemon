@@ -186,10 +186,18 @@ async function handleSend(cmd) {
                               (typeof msg.subtype === "string" &&
                                msg.subtype.startsWith("error"));
         if (isErrorResult) {
-          const errMsg = typeof msg.result === "string"
-            ? msg.result
-            : (msg.error?.message || JSON.stringify(msg.result || msg));
-          const isSessionDead = DEAD_SESSION_PATTERNS.test(errMsg);
+          // Prefer concrete fields over JSON-blob stringification.
+          const errMsg =
+            (typeof msg.result === "string" && msg.result) ||
+            msg.error?.message ||
+            (typeof msg.error === "string" && msg.error) ||
+            `${msg.subtype || "error"} (duration=${msg.duration_ms || 0}ms, turns=${msg.num_turns || 0})`;
+          // Zero-duration / zero-turn error results mean the SDK never
+          // actually talked to the server — almost always a stale resume
+          // target or a session the server no longer has.
+          const zeroProgress = (msg.duration_ms === 0 || msg.duration_ms == null) &&
+                               (msg.num_turns === 0 || msg.num_turns == null);
+          const isSessionDead = DEAD_SESSION_PATTERNS.test(errMsg) || zeroProgress;
           if (isSessionDead) {
             sessions.delete(agent);
             sessionMeta.delete(agent);
