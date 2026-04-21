@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
 from claude_daemon.agents.bootstrap import is_user_profile_unconfigured
@@ -167,13 +168,49 @@ class ClaudeDaemon:
             "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
         }
 
+    def _pick_resume_for_agent(self, agent_name: str) -> str | None:
+        """Return the most recent SDK session_id for an agent if fresh enough."""
+        if not getattr(self, "store", None):
+            return None
+        max_age = getattr(self.config, "sdk_resume_max_age_hours", 0)
+        if max_age <= 0:
+            return None
+        try:
+            row = self.store._db.execute(
+                "SELECT session_id, last_active, message_count FROM conversations "
+                "WHERE user_id LIKE ? AND status = 'active' "
+                "ORDER BY last_active DESC LIMIT 1",
+                (f"%:{agent_name}",),
+            ).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        sess_id = row["session_id"] if isinstance(row, dict) else row[0]
+        last_active = row["last_active"] if isinstance(row, dict) else row[1]
+        msg_count = row["message_count"] if isinstance(row, dict) else row[2]
+        if not sess_id or not msg_count:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(last_active).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age)
+        return sess_id if ts > cutoff else None
+
     async def _precreate_agent_sessions(self) -> None:
         """Pre-create SDK sessions for all agents in parallel.
 
         Strategy: for each agent, deduplicate the models they use across task types
         (chat/default/planning) and create one warm session per unique model.
         Priority agents (johnny, albert) also warm their planning model.
-        All sessions are created concurrently via asyncio.gather.
+
+        When a recent conversation exists for an agent, the pre-warm attempts
+        to resume that SDK session (via unstable_v2_resumeSession).  If the
+        resume fails, create_session falls back to a blank session automatically.
+        Either way the user's first message hits an already-warm session.
         """
         if not self.agent_registry or not self.process_manager._sdk_bridge:
             return
@@ -184,7 +221,13 @@ class ClaudeDaemon:
         PRIORITY_AGENTS = {"johnny", "albert"}
         sem = asyncio.Semaphore(self.config.sdk_prewarm_concurrency)
 
-        async def _warm_one(agent, model: str) -> tuple[str, bool]:
+        resume_ids: dict[str, str | None] = {}
+        for agent in self.agent_registry:
+            resume_ids[agent.name] = self._pick_resume_for_agent(agent.name)
+
+        async def _warm_one(
+            agent, model: str, resume_session_id: str | None,
+        ) -> tuple[str, bool]:
             label = f"{agent.name}:{model}"
             async with sem:
                 try:
@@ -195,7 +238,11 @@ class ClaudeDaemon:
                         mcp_config_path=agent.mcp_config_path,
                         settings_path=agent.settings_path,
                         agent_workspace=str(agent.workspace),
+                        resume_session_id=resume_session_id,
                     )
+                    if resume_session_id:
+                        log.info("Pre-warm %s: attempted resume from %s",
+                                 label, resume_session_id[:12])
                     return label, bool(ok)
                 except Exception:
                     log.debug("Pre-create session failed for %s", label)
@@ -210,8 +257,9 @@ class ClaudeDaemon:
                 planning_model = agent.get_model("planning")
                 if planning_model and planning_model != default_model:
                     models_to_warm.add(planning_model)
+            agent_resume = resume_ids.get(agent.name)
             for model in models_to_warm:
-                tasks.append(_warm_one(agent, model))
+                tasks.append(_warm_one(agent, model, agent_resume))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 

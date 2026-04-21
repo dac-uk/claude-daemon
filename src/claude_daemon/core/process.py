@@ -227,25 +227,15 @@ class ProcessManager:
     ) -> bool:
         """Ensure an (agent, model) SDK session exists. Creates if needed.
 
-        If resume_session_id is provided and no resume has been attempted for
-        this (agent, model) yet in this daemon-life, the current session (if
-        any) is closed and replaced with one resumed from the given session_id.
+        If a warm session already exists it is always reused — never destroyed
+        for a resume attempt.  resume_session_id is only used when NO session
+        exists (e.g. during pre-warm at startup).
         """
         bridge = await self.ensure_sdk_bridge()
         if not bridge:
             return False
-        # If we've already tried resume for this key this daemon-life, don't
-        # retry — the resume target is the same stale session_id the caller
-        # passed last time, so retrying just re-hits the same error. Fall
-        # through to the create-fresh path.
-        if resume_session_id and bridge.has_resumed(agent_name, model):
-            resume_session_id = None
-        # Fast path: session already exists and no resume requested.
-        if bridge.has_session(agent_name, model) and resume_session_id is None:
+        if bridge.has_session(agent_name, model):
             return True
-        # Replace blank pre-warmed session with a resumed one.
-        if resume_session_id and bridge.has_session(agent_name, model):
-            await bridge.close_session(agent_name, model)
         await bridge.create_session(
             agent_name=agent_name,
             model=model,
@@ -255,7 +245,6 @@ class ProcessManager:
             agent_workspace=agent_workspace,
             resume_session_id=resume_session_id,
         )
-        # sessionId may be null until first message — check bridge state instead
         return bridge.has_session(agent_name, model)
 
     def _should_use_managed(self, task_type: str, agent_name: str | None) -> bool:
@@ -404,16 +393,50 @@ class ProcessManager:
                     model=sdk_model,
                 )
                 elapsed = _time.monotonic() - t0
-                if not response.is_error:
+                if not response.is_error and (
+                    response.output_tokens > 0 or response.result.strip()
+                ):
                     if response.session_id:
                         self._confirmed_sessions.add(response.session_id)
                     log.info("SDK response for %s in %.1fs", agent_name, elapsed)
                     return response
-                log.warning("SDK send failed for %s:%s (%.1fs), falling back to CLI: %s",
-                            agent_name, sdk_model, elapsed, response.result[:200])
+                if response.is_error:
+                    log.warning("SDK send failed for %s:%s (%.1fs): %s",
+                                agent_name, sdk_model, elapsed, response.result[:200])
+                else:
+                    log.warning("SDK returned empty response for %s:%s (0 tokens, %.1fs)",
+                                agent_name, sdk_model, elapsed)
             except Exception as e:
-                log.warning("SDK bridge error for %s:%s, falling back to CLI: %s",
+                log.warning("SDK bridge error for %s:%s: %s",
                             agent_name, sdk_model, e)
+
+            # SDK failed — recreate session and retry once before falling to CLI.
+            log.info("SDK retry: recreating session for %s:%s", agent_name, sdk_model)
+            try:
+                await self._sdk_bridge.close_session(agent_name, sdk_model)
+                await self._sdk_bridge.create_session(
+                    agent_name=agent_name, model=sdk_model,
+                )
+                if self._sdk_bridge.has_session(agent_name, sdk_model):
+                    t0 = _time.monotonic()
+                    response = await self._sdk_bridge.send_message(
+                        agent_name=agent_name,
+                        prompt=prompt,
+                        context=system_context,
+                        model=sdk_model,
+                    )
+                    elapsed = _time.monotonic() - t0
+                    if not response.is_error and (
+                        response.output_tokens > 0 or response.result.strip()
+                    ):
+                        if response.session_id:
+                            self._confirmed_sessions.add(response.session_id)
+                        log.info("SDK retry succeeded for %s in %.1fs", agent_name, elapsed)
+                        return response
+                    log.warning("SDK retry also failed for %s:%s", agent_name, sdk_model)
+            except Exception as e:
+                log.warning("SDK retry error for %s:%s: %s", agent_name, sdk_model, e)
+            log.info("Falling back to CLI subprocess for %s", agent_name)
 
         if session_id:
             lock = self._get_session_lock(session_id)
@@ -497,10 +520,14 @@ class ProcessManager:
                 )
                 # Fall through to CLI execution
 
-        # SDK bridge streaming — persistent sessions keyed by (agent, model)
+        # SDK bridge streaming — persistent sessions keyed by (agent, model).
+        # On error or 0-token response, recreate the session and retry once
+        # before falling through to the CLI subprocess path.
         sdk_model = model_override or self.config.default_model
-        if (agent_name and self._sdk_bridge
-                and self._sdk_bridge.has_session(agent_name, sdk_model)):
+        for _sdk_attempt in range(2):
+            if not (agent_name and self._sdk_bridge
+                    and self._sdk_bridge.has_session(agent_name, sdk_model)):
+                break
             sdk_ok = False
             try:
                 async for chunk in self._sdk_bridge.stream_message(
@@ -514,18 +541,34 @@ class ProcessManager:
                             self._confirmed_sessions.add(chunk.session_id)
                         if chunk.is_error:
                             log.warning(
-                                "SDK bridge error for %s:%s: %s — falling back to CLI",
+                                "SDK bridge error for %s:%s: %s",
                                 agent_name, sdk_model, chunk.result[:200],
                             )
-                            break  # Don't yield the error; fall through to CLI
+                            break
+                        if chunk.output_tokens == 0 and not chunk.result.strip():
+                            log.warning(
+                                "SDK returned empty stream response for %s:%s (0 tokens)",
+                                agent_name, sdk_model,
+                            )
+                            break
                         sdk_ok = True
                     yield chunk
                 if sdk_ok:
                     return
             except Exception as e:
-                log.warning("SDK streaming error for %s:%s, falling back: %s",
+                log.warning("SDK streaming error for %s:%s: %s",
                             agent_name, sdk_model, e)
-            log.info("SDK stream failed — falling back to CLI subprocess for %s", agent_name)
+            if _sdk_attempt == 0:
+                log.info("SDK retry: recreating session for %s:%s", agent_name, sdk_model)
+                try:
+                    await self._sdk_bridge.close_session(agent_name, sdk_model)
+                    await self._sdk_bridge.create_session(
+                        agent_name=agent_name, model=sdk_model,
+                    )
+                except Exception:
+                    break
+        if agent_name and self._sdk_bridge:
+            log.info("SDK failed after retry — falling back to CLI for %s", agent_name)
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:

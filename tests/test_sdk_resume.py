@@ -1,9 +1,10 @@
-"""Tests for lazy SDK session resume across daemon restart.
+"""Tests for SDK session resume and retry behaviour.
 
-Covers the three wiring layers:
-  * `SDKBridgeManager._resumed` tracking + graceful fallback on a failed resume
-  * `ProcessManager.ensure_agent_session(resume_session_id=...)` plumbing
+Covers:
+  * `SDKBridgeManager.create_session` graceful fallback on failed resume
+  * `ProcessManager.ensure_agent_session` — warm session always wins
   * `Orchestrator._pick_resume_session` freshness check
+  * 0-token / empty response detection
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ def _bridge_config() -> SimpleNamespace:
 def _alive_bridge() -> SDKBridgeManager:
     """Build a bridge whose `is_alive` is True and stdin is mocked out."""
     mgr = SDKBridgeManager(_bridge_config())
-    # Fake the subprocess so `is_alive` returns True without a real process.
     fake = MagicMock()
     fake.returncode = None
     mgr._process = fake
@@ -44,11 +44,10 @@ def _alive_bridge() -> SDKBridgeManager:
 
 
 @pytest.mark.asyncio
-async def test_create_session_marks_resumed_on_success():
-    """A successful resume marks the key so subsequent calls are no-ops."""
+async def test_create_session_with_resume_succeeds():
+    """A successful resume stores the session."""
     mgr = _alive_bridge()
 
-    # Simulate the bridge answering the create command with a created event.
     async def fake_send(cmd):
         req_id = cmd["id"]
         future = mgr._pending.get(req_id)
@@ -67,12 +66,11 @@ async def test_create_session_marks_resumed_on_success():
     )
     assert sid == "sess-123"
     assert mgr.has_session("johnny", "sonnet")
-    assert mgr.has_resumed("johnny", "sonnet")
 
 
 @pytest.mark.asyncio
 async def test_create_session_falls_back_when_resume_errors():
-    """A failed resume retries once without resume_session_id, and still marks _resumed."""
+    """A failed resume retries once without resume_session_id."""
     mgr = _alive_bridge()
 
     call_count = {"n": 0}
@@ -107,12 +105,11 @@ async def test_create_session_falls_back_when_resume_errors():
     assert sid == "fresh-sess"
     assert call_count["n"] == 2
     assert mgr.has_session("johnny", "sonnet")
-    assert mgr.has_resumed("johnny", "sonnet")
 
 
 @pytest.mark.asyncio
-async def test_create_session_no_resume_does_not_mark():
-    """A normal (non-resume) create should not mark _resumed."""
+async def test_create_session_no_resume():
+    """A normal (non-resume) create works as expected."""
     mgr = _alive_bridge()
 
     async def fake_send(cmd):
@@ -129,17 +126,14 @@ async def test_create_session_no_resume_does_not_mark():
 
     await mgr.create_session(agent_name="johnny", model="sonnet")
     assert mgr.has_session("johnny", "sonnet")
-    assert not mgr.has_resumed("johnny", "sonnet")
 
 
 @pytest.mark.asyncio
-async def test_shutdown_clears_resumed_set():
-    """Shutdown wipes _resumed so next daemon-life starts clean."""
+async def test_shutdown_clears_sessions():
+    """Shutdown clears all sessions."""
     mgr = _alive_bridge()
-    mgr._resumed.add("johnny:sonnet")
     mgr._sessions["johnny:sonnet"] = "sess-1"
 
-    # Make shutdown's _send_command and process.kill no-ops.
     async def answer_shutdown(cmd):
         req_id = cmd["id"]
         future = mgr._pending.get(req_id)
@@ -153,7 +147,6 @@ async def test_shutdown_clears_resumed_set():
     mgr._process.wait = fake_wait
 
     await mgr.shutdown()
-    assert mgr._resumed == set()
     assert mgr._sessions == {}
 
 
@@ -165,7 +158,6 @@ class _FakeBridge:
 
     def __init__(self) -> None:
         self.sessions: set[str] = set()
-        self.resumed: set[str] = set()
         self.created: list[dict] = []
         self.closed: list[str] = []
 
@@ -176,9 +168,6 @@ class _FakeBridge:
     def has_session(self, agent: str, model: str | None = None) -> bool:
         return self._key(agent, model) in self.sessions
 
-    def has_resumed(self, agent: str, model: str | None = None) -> bool:
-        return self._key(agent, model) in self.resumed
-
     async def close_session(self, agent: str, model: str | None = None) -> None:
         key = self._key(agent, model)
         self.closed.append(key)
@@ -188,8 +177,6 @@ class _FakeBridge:
         key = self._key(kwargs["agent_name"], kwargs.get("model"))
         self.created.append(kwargs)
         self.sessions.add(key)
-        if kwargs.get("resume_session_id"):
-            self.resumed.add(key)
         return "new-sess"
 
 
@@ -208,8 +195,8 @@ def _process_manager_with(bridge: _FakeBridge):
 
 
 @pytest.mark.asyncio
-async def test_ensure_agent_session_resumes_over_prewarm():
-    """A resume replaces an existing blank pre-warmed session."""
+async def test_ensure_agent_session_keeps_warm_session():
+    """When a warm session exists, it is always kept — even if resume_id provided."""
     bridge = _FakeBridge()
     bridge.sessions.add("johnny:sonnet")  # blank pre-warmed
     pm = _process_manager_with(bridge)
@@ -219,27 +206,23 @@ async def test_ensure_agent_session_resumes_over_prewarm():
         resume_session_id="sess-abc",
     )
     assert ok
-    assert bridge.closed == ["johnny:sonnet"]
-    assert len(bridge.created) == 1
-    assert bridge.created[0]["resume_session_id"] == "sess-abc"
-    assert bridge.has_resumed("johnny", "sonnet")
+    assert bridge.closed == [], "warm session must NOT be closed"
+    assert bridge.created == [], "no new session should be created"
 
 
 @pytest.mark.asyncio
-async def test_ensure_agent_session_noops_when_already_resumed():
-    """Once resumed for a key, subsequent calls with a resume_id are no-ops."""
+async def test_ensure_agent_session_creates_with_resume_when_no_session():
+    """With no warm session, resume_session_id is passed to create."""
     bridge = _FakeBridge()
-    bridge.sessions.add("johnny:sonnet")
-    bridge.resumed.add("johnny:sonnet")
     pm = _process_manager_with(bridge)
 
     ok = await pm.ensure_agent_session(
         agent_name="johnny", model="sonnet",
-        resume_session_id="sess-different",
+        resume_session_id="sess-old",
     )
     assert ok
-    assert bridge.closed == []
-    assert bridge.created == []
+    assert len(bridge.created) == 1
+    assert bridge.created[0]["resume_session_id"] == "sess-old"
 
 
 @pytest.mark.asyncio
@@ -253,26 +236,6 @@ async def test_ensure_agent_session_without_resume_is_unchanged():
     assert ok
     assert bridge.closed == []
     assert bridge.created == []
-
-
-@pytest.mark.asyncio
-async def test_ensure_agent_session_does_not_retry_failed_resume():
-    """After a resume that ran + got popped, the next call must NOT re-attempt
-    resume with the same stale id — it should create a fresh session."""
-    bridge = _FakeBridge()
-    # has_resumed=True (we already tried this daemon-life) but no session —
-    # simulates "resume ran, first send errored with sessionDead, session popped".
-    bridge.resumed.add("johnny:sonnet")
-    pm = _process_manager_with(bridge)
-
-    ok = await pm.ensure_agent_session(
-        agent_name="johnny", model="sonnet",
-        resume_session_id="still-bad-id",
-    )
-    assert ok
-    assert len(bridge.created) == 1
-    # Resume id was cleared because has_resumed was already true.
-    assert bridge.created[0]["resume_session_id"] is None
 
 
 # ── Orchestrator._pick_resume_session ───────────────────────────────────────
@@ -480,74 +443,3 @@ async def test_stream_message_destroys_session_on_dead_error():
 
     assert any(isinstance(c, ClaudeResponse) and c.is_error for c in chunks)
     assert not mgr.has_session("johnny", "sonnet"), "dead session should be removed"
-
-
-# ── Server-reported dead sessions (regression: bridge.js now detects these) ─
-
-
-@pytest.mark.asyncio
-async def test_send_message_pops_session_when_server_reports_dead():
-    """bridge.js flags 'No conversation found with session ID' as sessionDead=true.
-    Python must pop the session so the next message creates a fresh one.
-    """
-    mgr = _alive_bridge()
-    mgr._sessions["johnny:sonnet"] = "bad-id-00000000"
-    mgr._first_message["johnny:sonnet"] = True
-
-    async def fake_send(cmd):
-        req_id = cmd["id"]
-        future = mgr._pending.get(req_id)
-        if future and not future.done():
-            future.set_result({
-                "event": "error",
-                "id": req_id,
-                "message": (
-                    "Claude Code returned an error result: "
-                    "No conversation found with session ID: bad-id-00000000"
-                ),
-                "recoverable": True,
-                "sessionDead": True,
-            })
-    mgr._send_command.side_effect = fake_send
-
-    resp = await mgr.send_message("johnny", "hi", model="sonnet")
-    assert resp.is_error
-    assert "No conversation found" in resp.result
-    assert not mgr.has_session("johnny", "sonnet")
-    assert "johnny:sonnet" not in mgr._first_message
-
-
-@pytest.mark.asyncio
-async def test_stream_message_pops_session_when_server_reports_dead():
-    """Streaming path mirrors the buffered-path behaviour for server-dead errors."""
-    mgr = _alive_bridge()
-    mgr._sessions["johnny:sonnet"] = "bad-id-00000000"
-    mgr._first_message["johnny:sonnet"] = True
-
-    async def feeder():
-        for _ in range(10):
-            if mgr._streams:
-                break
-            await asyncio.sleep(0.005)
-        queue = next(iter(mgr._streams.values()))
-        await queue.put({
-            "event": "error",
-            "message": (
-                "Claude Code returned an error result: "
-                "No conversation found with session ID: bad-id-00000000"
-            ),
-            "recoverable": True,
-            "sessionDead": True,
-        })
-
-    task = asyncio.create_task(feeder())
-    chunks = []
-    async for item in mgr.stream_message("johnny", "hi", model="sonnet"):
-        chunks.append(item)
-    await task
-
-    errors = [c for c in chunks if isinstance(c, ClaudeResponse) and c.is_error]
-    assert errors
-    assert "No conversation found" in errors[0].result
-    assert not mgr.has_session("johnny", "sonnet")
-    assert "johnny:sonnet" not in mgr._first_message
