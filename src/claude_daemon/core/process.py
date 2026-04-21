@@ -223,13 +223,26 @@ class ProcessManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         agent_workspace: str | None = None,
+        resume_session_id: str | None = None,
     ) -> bool:
-        """Ensure an (agent, model) SDK session exists. Creates if needed."""
+        """Ensure an (agent, model) SDK session exists. Creates if needed.
+
+        If resume_session_id is provided and no resume has been attempted for
+        this (agent, model) yet in this daemon-life, the current session (if
+        any) is closed and replaced with one resumed from the given session_id.
+        """
         bridge = await self.ensure_sdk_bridge()
         if not bridge:
             return False
-        if bridge.has_session(agent_name, model):
+        # Fast path: session already exists and either no resume requested, or
+        # resume has already been handled for this key.
+        if bridge.has_session(agent_name, model) and (
+            resume_session_id is None or bridge.has_resumed(agent_name, model)
+        ):
             return True
+        # Replace blank pre-warmed session with a resumed one.
+        if resume_session_id and bridge.has_session(agent_name, model):
+            await bridge.close_session(agent_name, model)
         await bridge.create_session(
             agent_name=agent_name,
             model=model,
@@ -237,6 +250,7 @@ class ProcessManager:
             mcp_config_path=mcp_config_path,
             settings_path=settings_path,
             agent_workspace=agent_workspace,
+            resume_session_id=resume_session_id,
         )
         # sessionId may be null until first message — check bridge state instead
         return bridge.has_session(agent_name, model)

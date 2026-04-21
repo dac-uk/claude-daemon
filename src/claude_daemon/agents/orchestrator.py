@@ -18,6 +18,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, AsyncIterator
 
 from claude_daemon.agents.agent import Agent
@@ -296,6 +297,39 @@ class Orchestrator:
             return False
         return True
 
+    def _pick_resume_session(self, conv: dict) -> str | None:
+        """Return the conv's SDK session_id if it's a fresh candidate for resume.
+
+        Only returns a session_id when: the conversation has prior messages,
+        the last activity is within `sdk_resume_max_age_hours`, and the daemon
+        has sdk_resume_max_age_hours > 0.
+        """
+        max_age = getattr(self.pm.config, "sdk_resume_max_age_hours", 0)
+        if max_age <= 0:
+            return None
+        sess_id = conv.get("session_id")
+        if not sess_id:
+            return None
+        # Skip brand-new convs — nothing to resume.
+        if not conv.get("message_count"):
+            return None
+        last_active = conv.get("last_active")
+        if not last_active:
+            return None
+        try:
+            if isinstance(last_active, datetime):
+                ts = last_active if last_active.tzinfo else last_active.replace(
+                    tzinfo=timezone.utc,
+                )
+            else:
+                ts = datetime.fromisoformat(str(last_active).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age)
+        return sess_id if ts > cutoff else None
+
     async def send_to_agent(
         self,
         agent: Agent,
@@ -320,6 +354,14 @@ class Orchestrator:
         model = agent.get_model(task_type)
         mcp_path = agent.mcp_config_path
 
+        # Look up conv first so we have session_id + last_active for lazy resume.
+        conv = self.store.get_or_create_conversation(
+            session_id=session_id,
+            platform=platform,
+            user_id=f"{user_id}:{agent.name}",
+        )
+        resume_id = self._pick_resume_session(conv)
+
         # Launch semantic search + session ensure in parallel
         search_task = asyncio.create_task(self._semantic_search(prompt))
         ensure_task = asyncio.create_task(self.pm.ensure_agent_session(
@@ -329,13 +371,9 @@ class Orchestrator:
             mcp_config_path=mcp_path,
             settings_path=agent.settings_path,
             agent_workspace=str(agent.workspace),
+            resume_session_id=resume_id,
         ))
 
-        conv = self.store.get_or_create_conversation(
-            session_id=session_id,
-            platform=platform,
-            user_id=f"{user_id}:{agent.name}",
-        )
         self.store.add_message(conv["id"], "user", prompt)
 
         await ensure_task
