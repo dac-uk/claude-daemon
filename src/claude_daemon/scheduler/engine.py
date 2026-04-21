@@ -42,6 +42,7 @@ class SchedulerEngine:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._failure_counts: dict[str, int] = {}  # job_id -> consecutive failure count
         self._max_failures: int = 3  # pause job after this many consecutive failures
+        self._agent_locks: dict[str, asyncio.Lock] = {}
         self._load_failure_counts()
 
     def start(self) -> None:
@@ -196,6 +197,17 @@ class SchedulerEngine:
             result = await self.daemon.updater.check_and_update()
             log.info("Auto-update: %s", result)
 
+            # drain_all() killed the SDK bridge — restart it and re-warm sessions
+            if self.daemon.process_manager:
+                try:
+                    await self.daemon.process_manager.ensure_sdk_bridge()
+                except Exception:
+                    log.warning("Failed to restart SDK bridge after update")
+                try:
+                    await self.daemon._precreate_agent_sessions()
+                except Exception:
+                    log.warning("Failed to re-warm sessions after update")
+
             # Self-update the daemon's own code alongside Claude CLI
             try:
                 self_result = await self.daemon.updater.self_update()
@@ -300,12 +312,29 @@ class SchedulerEngine:
             log.warning("Heartbeat: agent '%s' not found", agent_name)
             return
 
+        # Use agent's configured model for scheduled tasks (authoritative)
+        effective_model = agent.get_model("scheduled")
+
         # Circuit breaker: skip if this heartbeat has failed too many times
-        job_key = f"{agent_name}:{model}"
+        job_key = f"{agent_name}:{effective_model}"
         if self._failure_counts.get(job_key, 0) >= self._max_failures:
             log.warning("Heartbeat %s circuit-broken after %d consecutive failures — skipping", agent_name, self._max_failures)
             return
 
+        # Serialize concurrent heartbeats for the same agent
+        lock = self._agent_locks.setdefault(agent_name, asyncio.Lock())
+        if lock.locked():
+            log.info("Heartbeat %s: already running, queuing", agent_name)
+        await lock.acquire()
+        try:
+            await self._do_agent_heartbeat(agent, agent_name, prompt, effective_model, job_key)
+        finally:
+            lock.release()
+
+    async def _do_agent_heartbeat(
+        self, agent, agent_name: str, prompt: str, model: str, job_key: str,
+    ) -> None:
+        """Inner heartbeat logic, called under agent lock."""
         log.info("Heartbeat: running '%s' task (model=%s)", agent_name, model)
 
         # Create task_queue row so heartbeat work appears on the Operations
