@@ -41,6 +41,7 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **DB Integrity** - SQLite `PRAGMA integrity_check` runs on startup. Corrupt databases are flagged in logs before any data is written.
 - **Streaming Responses** - Live streaming to Telegram, Discord, and CLI chat with throttled message edits. Tokens appear within seconds instead of waiting for the full response.
 - **SDK Persistent Sessions** - Uses the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) to keep one persistent Claude process per agent. MCP servers and OAuth initialize once on first message (~12s). All subsequent messages reuse the warm session (~2-5s). Authenticated via `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` — uses your Claude Max/Pro subscription with no separate API billing. Falls back to one-shot subprocess mode if SDK is unavailable.
+- **Lazy Session Resume** - When the daemon restarts (manual, auto-update, crash), the first user message per (agent, model) transparently resumes that conversation's last SDK session if `last_active` is within `sdk_resume_max_age_hours` (default 24h). Agents keep their working memory across restarts — no re-priming with context. Pre-warming stays blank as a fallback; if the stored session has expired server-side, the bridge falls back to a fresh session so the user never sees an error.
 - **Three-Phase Dreaming** - Light sleep (signal detection), Deep sleep (nightly consolidation + per-agent memory compaction), REM sleep (weekly rewrite + self-reflection + improvement cycle)
 - **Memory Validation** - REM sleep validates before overwriting MEMORY.md — rejects catastrophic data loss, logs diffs. Concurrent writes are serialized with a file lock (no silent data loss from parallel agents).
 - **Full-Text Search** - FTS5-indexed conversation history for searching past interactions. Queries are automatically escaped so special characters never cause SQLite syntax errors.
@@ -166,6 +167,8 @@ claude-daemon restart
 ```
 
 With the OAuth token set, the daemon uses the **Agent SDK** to keep persistent sessions per agent. First message to each agent takes ~12s (MCP initialization). Every message after that responds in ~2-5s.
+
+**Lazy resume across restarts.** When the daemon restarts, each agent's first user message transparently resumes that conversation's last SDK session if `last_active` is within `sdk_resume_max_age_hours` (default 24h, set to 0 to disable). Agents continue the thread as if nothing happened. If the server-side session has expired, the bridge falls back to a fresh session automatically.
 
 **Without the token**, the daemon falls back to spawning a fresh `claude --print` subprocess per message (~15-25s each). Everything still works, just slower.
 
