@@ -565,7 +565,9 @@ class ProcessManager:
                     await self._sdk_bridge.create_session(
                         agent_name=agent_name, model=sdk_model,
                     )
-                except Exception:
+                except Exception as retry_err:
+                    log.warning("SDK retry session recreation failed for %s:%s: %s",
+                                agent_name, sdk_model, retry_err)
                     break
         if agent_name and self._sdk_bridge:
             log.info("SDK failed after retry — falling back to CLI for %s", agent_name)

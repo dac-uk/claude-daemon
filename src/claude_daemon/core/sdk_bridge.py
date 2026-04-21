@@ -264,8 +264,9 @@ class SDKBridgeManager:
         # Graceful fallback: if a resume attempt errored, retry once without the session_id.
         if result.get("event") == "error" and resume_session_id:
             log.warning(
-                "SDK resume failed for %s (%s) — creating fresh session",
+                "SDK resume failed for %s: %s (code=%s, subtype=%s) — creating fresh session",
                 session_key, result.get("message"),
+                result.get("errorCode"), result.get("errorSubtype"),
             )
             retry_id = self._new_id()
             retry_future: asyncio.Future = asyncio.get_event_loop().create_future()
