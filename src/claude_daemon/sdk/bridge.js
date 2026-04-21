@@ -33,6 +33,11 @@ const sessionMeta = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+// Error messages that indicate the SDK session is truly dead on the server
+// or client side — as opposed to transient errors (rate limit, overloaded,
+// etc.) where the session is still usable and we should keep it warm.
+const DEAD_SESSION_PATTERNS = /closed|terminated|EPIPE|no conversation found|session not found|invalid session|conversation not found|session expired/i;
+
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
@@ -172,6 +177,32 @@ async function handleSend(cmd) {
           }
         }
       } else if (type === "result") {
+        // Detect SDK-reported error results (bad session, rate limit, auth, etc.).
+        // The SDK sometimes completes the stream with a result message whose
+        // `is_error` is true or whose `subtype` starts with "error" — if we
+        // just emitted it as a normal result, Python would treat it as a
+        // successful $0/0-token response.
+        const isErrorResult = msg.is_error === true ||
+                              (typeof msg.subtype === "string" &&
+                               msg.subtype.startsWith("error"));
+        if (isErrorResult) {
+          const errMsg = typeof msg.result === "string"
+            ? msg.result
+            : (msg.error?.message || JSON.stringify(msg.result || msg));
+          const isSessionDead = DEAD_SESSION_PATTERNS.test(errMsg);
+          if (isSessionDead) {
+            sessions.delete(agent);
+            sessionMeta.delete(agent);
+          }
+          emit({
+            event: "error", id, agent,
+            message: `Claude Code returned an error result: ${errMsg}`,
+            recoverable: true,
+            sessionDead: isSessionDead,
+          });
+          return;
+        }
+
         // Final result — extract metadata
         sessionId = msg.session_id || msg.sessionId || null;
         cost = msg.total_cost_usd || msg.cost_usd || msg.cost || 0;
@@ -218,10 +249,7 @@ async function handleSend(cmd) {
   } catch (err) {
     log(`Send error for ${agent}: ${err.message}`);
 
-    // Check if session is dead
-    const isSessionDead = err.message?.includes("closed") ||
-                          err.message?.includes("terminated") ||
-                          err.message?.includes("EPIPE");
+    const isSessionDead = DEAD_SESSION_PATTERNS.test(err.message || "");
 
     if (isSessionDead) {
       sessions.delete(agent);
