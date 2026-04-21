@@ -406,12 +406,8 @@ class ProcessManager:
                         self._confirmed_sessions.add(response.session_id)
                     log.info("SDK response for %s in %.1fs", agent_name, elapsed)
                     return response
-                log.warning("SDK send failed for %s:%s (%.1fs), falling back: %s",
+                log.warning("SDK send failed for %s:%s (%.1fs), falling back to CLI: %s",
                             agent_name, sdk_model, elapsed, response.result[:200])
-                # Remove dead session so next call recreates
-                self._sdk_bridge._sessions.pop(
-                    self._sdk_bridge._key(agent_name, sdk_model), None,
-                )
             except Exception as e:
                 log.warning("SDK bridge error for %s:%s, falling back to CLI: %s",
                             agent_name, sdk_model, e)
@@ -526,11 +522,7 @@ class ProcessManager:
             except Exception as e:
                 log.warning("SDK streaming error for %s:%s, falling back: %s",
                             agent_name, sdk_model, e)
-            # SDK path failed or errored — invalidate session and fall through to CLI
-            self._sdk_bridge._sessions.pop(
-                self._sdk_bridge._key(agent_name, sdk_model), None,
-            )
-            log.info("Falling back to CLI subprocess for %s", agent_name)
+            log.info("SDK stream failed — falling back to CLI subprocess for %s", agent_name)
 
         # Auto-parallel: if this session already has a running subprocess, start fresh
         if session_id and session_id in self._active:

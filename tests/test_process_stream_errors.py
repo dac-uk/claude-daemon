@@ -169,6 +169,7 @@ async def test_stream_to_agent_logs_warning_on_empty_response(caplog):
     pm._sdk_bridge = None
     pm.config.embedding_search_timeout_ms = 400
     pm.config.embedding_interactive_chat = True
+    pm.config.sdk_resume_max_age_hours = 24
 
     async def fake_stream(*args, **kwargs):
         yield ClaudeResponse.error("ANTHROPIC_API_KEY not set")
@@ -176,7 +177,9 @@ async def test_stream_to_agent_logs_warning_on_empty_response(caplog):
     pm.stream_message = fake_stream
 
     store = MagicMock()
-    store.get_or_create_conversation.return_value = {"id": 1, "session_id": "s1"}
+    store.get_or_create_conversation.return_value = {
+        "id": 1, "session_id": "s1", "message_count": 0, "last_active": None,
+    }
 
     orch = Orchestrator(registry=registry, process_manager=pm, store=store, hub=None)
     orch._semantic_search = AsyncMock(return_value=[])
@@ -243,8 +246,10 @@ async def test_sdk_bridge_error_falls_back_to_cli():
     assert len(final) == 1
     assert final[0].is_error is False
     assert final[0].result == "Hello from CLI!"
-    # SDK bridge session should have been invalidated
-    assert "albert:sonnet" not in bridge._sessions
+    # SDK session is preserved — the bridge handles its own cleanup for
+    # truly dead sessions (recoverable errors). Keeping the session lets
+    # the next message retry via SDK instead of falling through to CLI.
+    assert "albert:sonnet" in bridge._sessions
 
 
 @pytest.mark.asyncio

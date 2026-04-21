@@ -866,6 +866,14 @@ class Orchestrator:
         model = agent.get_model(task_type)
         mcp_path = agent.mcp_config_path
 
+        # Look up conv first so we have session_id + last_active for lazy resume.
+        conv = self.store.get_or_create_conversation(
+            session_id=session_id,
+            platform=platform,
+            user_id=f"{user_id}:{agent.name}",
+        )
+        resume_id = self._pick_resume_session(conv)
+
         # Launch semantic search + session ensure in parallel to minimise
         # time-to-first-token. Semantic search is best-effort with a timeout.
         interactive = platform in ("api", "cli")
@@ -882,13 +890,9 @@ class Orchestrator:
             mcp_config_path=mcp_path,
             settings_path=agent.settings_path,
             agent_workspace=str(agent.workspace),
+            resume_session_id=resume_id,
         ))
 
-        conv = self.store.get_or_create_conversation(
-            session_id=session_id,
-            platform=platform,
-            user_id=f"{user_id}:{agent.name}",
-        )
         self.store.add_message(conv["id"], "user", prompt)
 
         # Await session ensure (usually instant for warm sessions)
