@@ -499,7 +499,23 @@ class EmbeddingStore:
                 (serialized, top_k),
             ).fetchall()
             for row in conv_rows:
-                score = 1.0 - row[5]
+                base_score = 1.0 - row[5]
+                created_at = row[4]
+                score = base_score
+                if created_at:
+                    try:
+                        ts = datetime.fromisoformat(
+                            str(created_at).replace("Z", "+00:00")
+                        )
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        age_hours = (
+                            datetime.now(timezone.utc) - ts
+                        ).total_seconds() / 3600
+                        recency_boost = max(0.0, 0.15 * (1.0 - age_hours / 168))
+                        score = min(1.0, base_score + recency_boost)
+                    except (ValueError, TypeError):
+                        pass
                 if score >= min_score:
                     results.append({
                         "chunk": row[0],
