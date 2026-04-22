@@ -118,9 +118,13 @@ class SoftwareFactory:
         "MANDATORY CHECKS before responding PASS:\n"
         "1. Were tests run? If test output is missing, respond FAIL.\n"
         "2. Did all tests pass? If any failed, respond FAIL.\n"
-        "3. Does the implementation match the original request?\n\n"
+        "3. Does the implementation match the original request?\n"
+        "4. If the project has CI (GitHub Actions), check the latest commit's "
+        "CI status using your GitHub tools. If CI is red, respond FAIL.\n"
+        "5. Are there any security issues, missing error handling, or untested paths?\n\n"
         "Respond with PASS on the first line if ALL checks pass, "
-        "or FAIL on the first line followed by specific issues to fix."
+        "or FAIL on the first line followed by specific issues to fix. "
+        "Include evidence: paste the test output or CI status URL."
     )
 
     REVIEW_PANEL_PROMPT = (
