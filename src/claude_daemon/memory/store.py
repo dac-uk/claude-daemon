@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -404,6 +404,15 @@ class ConversationStore:
         self._db.commit()
 
     # -- Messages --
+
+    def has_recent_user_messages(self, minutes: int = 10) -> bool:
+        """Check if any user messages were sent in the last N minutes."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM messages WHERE timestamp > ? AND role = 'user'",
+            (cutoff,),
+        ).fetchone()
+        return bool(row and row[0] > 0)
 
     def add_message(
         self, conv_id: int, role: str, content: str,

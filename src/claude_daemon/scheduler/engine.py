@@ -374,7 +374,7 @@ class SchedulerEngine:
         if self.daemon.store:
             try:
                 reflections = self.daemon.store.get_summaries_by_type("reflection", limit=3)
-                agent_refs = [r for r in reflections if f"[{agent_name}]" in r]
+                agent_refs = [r for r in reflections if r.startswith(f"[{agent_name}]")]
                 if agent_refs:
                     ref_text = "\n".join(f"- {r[:200]}" for r in agent_refs[:3])
                     prompt = (
@@ -557,12 +557,7 @@ class SchedulerEngine:
 
         # Only act during idle periods — don't interfere with active conversations
         try:
-            from datetime import datetime, timezone, timedelta
-            recent = self.daemon.store._db.execute(
-                "SELECT COUNT(*) FROM messages WHERE timestamp > ? AND role = 'user'",
-                ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),),
-            ).fetchone()
-            if recent and recent[0] > 0:
+            if self.daemon.store.has_recent_user_messages(minutes=10):
                 return
         except Exception:
             return
