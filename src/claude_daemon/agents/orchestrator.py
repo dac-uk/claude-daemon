@@ -566,6 +566,7 @@ class Orchestrator:
         delegations = DELEGATION_PATTERN.findall(scan_text)
 
         appended = []
+        prior_results: dict[str, str] = {}
         for target_name, message in delegations:
             target = self.registry.get(target_name.lower())
             if not target:
@@ -577,16 +578,27 @@ class Orchestrator:
                 action="agent_delegation", agent_name=from_agent.name,
                 details=f"delegated to {target_name}: {message.strip()[:200]}",
             )
+
+            effective_message = message.strip()
+            if prior_results:
+                chain_context = "\n".join(
+                    f"[Result from {name}]:\n{res[:800]}"
+                    for name, res in prior_results.items()
+                )
+                effective_message = f"{chain_context}\n\n{effective_message}"
+
             try:
                 result = await self.agent_to_agent(
-                    from_agent, target, message.strip(),
+                    from_agent, target, effective_message,
                 )
+                prior_results[target_name] = result
                 appended.append(
                     f"\n\n--- Response from {target.identity.display_name} ---\n{result}"
                 )
-            except Exception:
+            except Exception as exc:
+                detail = str(exc)[:200]
                 log.exception("Delegation from %s to %s failed", from_agent.name, target_name)
-                appended.append(f"\n[Delegation to '{target_name}' failed: error]")
+                appended.append(f"\n[Delegation to '{target_name}' failed: {detail}]")
 
         if appended:
             response.result += "\n".join(appended)
@@ -594,15 +606,18 @@ class Orchestrator:
         # STATUS queries are always allowed — pure data, no LLM cost, no recursion risk
         response = await self._process_status_queries(from_agent, response)
 
-        # Skip discussion/help/council/optimize tags inside discussion turns (prevent recursion)
+        # Recursion guard: "intercom" = deepest level (no further nesting).
+        # "delegation" = one level deep (can use help/discuss but those use intercom).
+        # "discussion"/"council" = same: no further nesting.
         if platform not in ("discussion", "council", "intercom"):
             response = await self._process_help_requests(from_agent, response)
             if self._discussion_engine:
                 response = await self._process_discussions(from_agent, response)
-                response = await self._process_councils(from_agent, response)
+                if platform != "delegation":
+                    response = await self._process_councils(from_agent, response)
             if self._workflow_engine:
                 response = await self._process_optimizations(from_agent, response)
-            if self._factory:
+            if self._factory and platform != "delegation":
                 response = await self._process_factory_requests(
                     from_agent, response, platform=platform,
                 )
@@ -1242,15 +1257,35 @@ class Orchestrator:
     ) -> str:
         """Enable one agent to send a message to another.
 
-        The receiving agent sees the message as coming from the sending agent.
+        The receiving agent sees the message prefixed with the sender's name
+        plus recent conversation context so it can act with full awareness.
+        Platform is "delegation" (allows one level of nesting — the delegate
+        can use [HELP]/[DELEGATE] but those calls use "intercom" to prevent
+        infinite recursion).
         """
+        conv_context = ""
+        try:
+            from_conv = self.store.get_or_create_conversation(
+                session_id=None, platform="delegation",
+                user_id=f"agent:{from_agent.name}",
+            )
+            recent = self.store.get_conversation_text(from_conv["id"], limit=10)
+            if recent:
+                conv_context = (
+                    f"\n\n## Context from {from_agent.name}'s recent conversation\n"
+                    f"{recent[-2000:]}"
+                )
+        except Exception:
+            pass
+
         prompt = (
-            f"[Message from agent '{from_agent.name}']\n\n{message}"
+            f"[Task from {from_agent.name} — complete fully and report back]"
+            f"{conv_context}\n\n{message}"
         )
         response = await self.send_to_agent(
             agent=to_agent,
             prompt=prompt,
-            platform="intercom",
+            platform="delegation",
             user_id=f"agent:{from_agent.name}",
             task_type=task_type,
         )

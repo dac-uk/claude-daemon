@@ -341,14 +341,26 @@ class DiscussionEngine:
                     agent_name, config, result.turns, is_final,
                 )
 
-                # Send to agent (NOT through _process_delegations to avoid recursion)
-                response = await self.orchestrator.send_to_agent(
-                    agent=agent,
-                    prompt=prompt,
-                    platform=platform,
-                    user_id=f"{user_id}:disc:{discussion_id}",
-                    task_type="discussion",
-                )
+                # Send to agent with one retry on failure
+                response = None
+                for _attempt in range(2):
+                    response = await self.orchestrator.send_to_agent(
+                        agent=agent,
+                        prompt=prompt,
+                        platform=platform,
+                        user_id=f"{user_id}:disc:{discussion_id}",
+                        task_type="discussion",
+                    )
+                    if not response.is_error:
+                        break
+                    if _attempt == 0:
+                        log.warning(
+                            "Discussion %s turn %d (%s) failed, retrying: %s",
+                            discussion_id[:8], turn_number, agent_name,
+                            response.result[:100],
+                        )
+                        import asyncio as _asyncio
+                        await _asyncio.sleep(1)
 
                 turn = DiscussionTurn(
                     agent_name=agent_name,
