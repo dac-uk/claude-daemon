@@ -185,6 +185,8 @@ class TelegramIntegration(BaseIntegration):
                 elif isinstance(chunk, ClaudeResponse):
                     # Final result - do one last edit with complete text
                     final = accumulated or chunk.result
+                    if final and not accumulated:
+                        accumulated = final
                     if final:
                         display = final if len(final) <= 4096 else final[-4096:]
                         try:

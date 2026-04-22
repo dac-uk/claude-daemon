@@ -524,10 +524,15 @@ class ProcessManager:
         # On error or 0-token response, recreate the session and retry once
         # before falling through to the CLI subprocess path.
         sdk_model = model_override or self.config.default_model
+        _last_sdk_error = ""
         for _sdk_attempt in range(2):
-            if not (agent_name and self._sdk_bridge
-                    and self._sdk_bridge.has_session(agent_name, sdk_model)):
-                break
+            if _sdk_attempt == 0:
+                if not (agent_name and self._sdk_bridge
+                        and self._sdk_bridge.has_session(agent_name, sdk_model)):
+                    break
+            else:
+                if not (agent_name and self._sdk_bridge):
+                    break
             sdk_ok = False
             try:
                 async for chunk in self._sdk_bridge.stream_message(
@@ -540,12 +545,14 @@ class ProcessManager:
                         if chunk.session_id:
                             self._confirmed_sessions.add(chunk.session_id)
                         if chunk.is_error:
+                            _last_sdk_error = chunk.result[:300]
                             log.warning(
                                 "SDK bridge error for %s:%s: %s",
                                 agent_name, sdk_model, chunk.result[:200],
                             )
                             break
                         if chunk.output_tokens == 0 and not chunk.result.strip():
+                            _last_sdk_error = f"Empty response (0 tokens) from {agent_name}"
                             log.warning(
                                 "SDK returned empty stream response for %s:%s (0 tokens)",
                                 agent_name, sdk_model,
@@ -556,6 +563,7 @@ class ProcessManager:
                 if sdk_ok:
                     return
             except Exception as e:
+                _last_sdk_error = str(e)[:300]
                 log.warning("SDK streaming error for %s:%s: %s",
                             agent_name, sdk_model, e)
             if _sdk_attempt == 0:
@@ -667,18 +675,22 @@ class ProcessManager:
                     is_error=False,
                 )
             else:
-                # No output at all. Capture stderr so the user can see what broke.
-                stderr_text = ""
-                try:
-                    stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
-                    stderr_text = stderr_bytes.decode(errors="replace").strip()
-                except (asyncio.TimeoutError, Exception):
-                    pass
-                exit_code = proc.returncode
-                msg = stderr_text or (
-                    f"Claude CLI exited with code {exit_code} and produced no output. "
-                    "Check that ANTHROPIC_API_KEY is set and that the `claude` binary is installed."
-                )
+                # No output at all. Surface the SDK error if we have one,
+                # otherwise capture stderr so the user can see what broke.
+                if _last_sdk_error:
+                    msg = f"Both SDK and CLI failed. SDK error: {_last_sdk_error}"
+                else:
+                    stderr_text = ""
+                    try:
+                        stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
+                        stderr_text = stderr_bytes.decode(errors="replace").strip()
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                    exit_code = proc.returncode
+                    msg = stderr_text or (
+                        f"Claude CLI exited with code {exit_code} and produced no output. "
+                        "Check that ANTHROPIC_API_KEY is set and that the `claude` binary is installed."
+                    )
                 log.error(
                     "Claude CLI produced no output. exit_code=%s stderr=%r",
                     exit_code, stderr_text,
