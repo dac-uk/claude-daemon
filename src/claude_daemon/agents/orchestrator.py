@@ -494,18 +494,24 @@ class Orchestrator:
             if recent:
                 history = f"## Recent Conversation History\n{recent[-3000:]}"
                 dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
-            team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
-            if team_signals:
-                signal_text = "\n".join(s[:200] for s in team_signals)
-                signals_block = f"## Recent Team Memory Signals\n{signal_text}"
-                dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
+            try:
+                team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
+                if team_signals:
+                    signal_text = "\n".join(s[:200] for s in team_signals)
+                    signals_block = f"## Recent Team Memory Signals\n{signal_text}"
+                    dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
+            except Exception:
+                pass
             try:
                 active_plans = self.store.get_active_plans(agent_name=agent.name)
                 if active_plans:
                     import json as _json
                     plan_lines = []
                     for p in active_plans[:3]:
-                        steps = _json.loads(p.get("steps_json", "[]"))
+                        try:
+                            steps = _json.loads(p.get("steps_json", "[]"))
+                        except (ValueError, TypeError):
+                            steps = []
                         step_summary = ", ".join(
                             f"{s.get('step', s.get('description', '?')[:40])}" +
                             (" ✓" if s.get("done") else "")
@@ -1211,11 +1217,14 @@ class Orchestrator:
                 if recent:
                     history = f"## Recent Conversation History\n{recent[-3000:]}"
                     dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
-                team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
-                if team_signals:
-                    signal_text = "\n".join(s[:200] for s in team_signals)
-                    signals_block = f"## Recent Team Memory Signals\n{signal_text}"
-                    dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
+                try:
+                    team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
+                    if team_signals:
+                        signal_text = "\n".join(s[:200] for s in team_signals)
+                        signals_block = f"## Recent Team Memory Signals\n{signal_text}"
+                        dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
+                except Exception:
+                    pass
                 effective_context = dynamic_context or None
             else:
                 effective_context = agent_context

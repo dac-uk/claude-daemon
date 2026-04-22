@@ -443,15 +443,14 @@ class WorkflowEngine:
             # Run review — optionally execute test_command first
             build_output = build_result.final_result
             test_results_text = ""
-            test_command = getattr(
-                getattr(self.orchestrator, "pm", None),
-                "config", None,
-            )
-            if test_command:
-                test_command = getattr(
-                    getattr(test_command, "factory_config", None),
-                    "test_command", "",
-                )
+            test_command = ""
+            try:
+                pm_config = self.orchestrator.pm.config
+                factory_cfg = getattr(pm_config, "factory_config", None)
+                if factory_cfg:
+                    test_command = (getattr(factory_cfg, "test_command", "") or "").strip()
+            except (AttributeError, TypeError):
+                pass
             if test_command:
                 try:
                     proc = await asyncio.create_subprocess_shell(
