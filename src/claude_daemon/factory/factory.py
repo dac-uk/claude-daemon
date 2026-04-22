@@ -104,7 +104,9 @@ class SoftwareFactory:
         "{plan_section}"
         "Previous step output (empty for first step):\n{prev_result}\n\n"
         "Produce the actual changes: files edited, commands run, tests "
-        "added. At the end, summarise what you did and how to verify."
+        "added. You MUST run tests before reporting completion. "
+        "Include the test output in your response. At the end, summarise "
+        "what you did, test results, and how to verify."
     )
 
     REVIEW_STEP_PROMPT = (
@@ -112,7 +114,12 @@ class SoftwareFactory:
         "and adherence to the plan.\n\n"
         "Original request: {original_request}\n\n"
         "Build output:\n{build_output}\n\n"
-        "Respond with PASS on the first line if the build is acceptable, "
+        "{test_results}"
+        "MANDATORY CHECKS before responding PASS:\n"
+        "1. Were tests run? If test output is missing, respond FAIL.\n"
+        "2. Did all tests pass? If any failed, respond FAIL.\n"
+        "3. Does the implementation match the original request?\n\n"
+        "Respond with PASS on the first line if ALL checks pass, "
         "or FAIL on the first line followed by specific issues to fix."
     )
 

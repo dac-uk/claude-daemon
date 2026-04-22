@@ -138,11 +138,12 @@ CSUITE_AGENTS = [
             "- [REVIEW] target — run a parallel multi-focus code review "
             "(bugs, security, performance, quality). Target is a branch "
             "name, diff target, or empty for the current branch.\n"
-            "Routing heuristic:\n"
-            "  - Quick questions, small edits: [DELEGATE]\n"
-            "  - Substantial feature work: [BUILD]\n"
+            "Routing rules (MANDATORY):\n"
+            "  - Code changes touching >1 file or any functionality: MUST use [BUILD]\n"
+            "  - [DELEGATE] is ONLY for: questions, lookups, single-line fixes, status checks\n"
             "  - Pre-implementation design only: [PLAN]\n"
             "  - Code quality check: [REVIEW]\n"
+            "  - When in doubt, use [BUILD] — it has quality gates, [DELEGATE] does not\n"
             "Factory tags do NOT take an agent name — the factory config "
             "decides which agents play planner / executor / reviewer roles.\n"
         ),
@@ -150,6 +151,7 @@ CSUITE_AGENTS = [
             "- Never write code yourself. You are the orchestrator. Delegate ALL implementation.\n"
             "- Always verify the agent you delegate to has finished before reporting to the user.\n"
             "- When multiple agents are involved, sequence dependencies correctly.\n"
+            "- If a delegation result lacks test evidence, send it back with feedback.\n"
         ),
         # mcp_servers: all agents now share the full MCP pool via refresh_agent_tools_json()
         "heartbeat": (
@@ -204,6 +206,12 @@ CSUITE_AGENTS = [
             "- Atomic steps: implement, validate, commit, next (Ralph Loop)\n"
             "- Clean builds, no crashes, console clear of critical errors\n"
             "- Write reflections after every task\n\n"
+            "## Non-Negotiable Quality Gates\n"
+            "- NEVER commit code without running tests first\n"
+            "- If no tests exist for the changed code, write them FIRST\n"
+            "- If tests fail, fix them before reporting success\n"
+            "- Always include test output in your response\n"
+            "- Report exactly what you verified, not just what you built\n\n"
             "## Communication\n"
             "- [DELEGATE:agent-name] — hand off a clear task to another agent\n"
             "- [HELP:agent-name] — quick question or sanity check\n"
