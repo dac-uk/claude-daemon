@@ -456,6 +456,15 @@ class ClaudeDaemon:
         if self.config.sdk_bridge_enabled and bridge and bridge.is_alive:
             asyncio.create_task(self._precreate_agent_sessions())
 
+        # Resume pending workflows from before the last shutdown
+        if self.workflow_engine:
+            try:
+                resumed = await self.workflow_engine.resume_pending_workflows()
+                if resumed:
+                    log.info("Resumed %d pending workflows from before shutdown", resumed)
+            except Exception:
+                log.debug("Workflow resume failed", exc_info=True)
+
         # Register agents with Managed Agents API (if enabled + API key available)
         if self.config.managed_agents_enabled and self.process_manager.managed:
             await self._register_managed_agents()

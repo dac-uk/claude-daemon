@@ -249,6 +249,27 @@ class ConversationStore:
         except sqlite3.OperationalError:
             pass
 
+        # workflow_state: persistent workflow checkpoint/resume
+        self._db.execute("""
+            CREATE TABLE IF NOT EXISTS workflow_state (
+                workflow_id TEXT PRIMARY KEY,
+                workflow_type TEXT NOT NULL,
+                initiator TEXT,
+                steps_json TEXT NOT NULL,
+                results_json TEXT NOT NULL DEFAULT '[]',
+                current_step INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'running',
+                original_request TEXT,
+                max_total_cost REAL DEFAULT 0,
+                actual_cost REAL DEFAULT 0,
+                platform TEXT,
+                user_id TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        self._db.commit()
+
     def close(self) -> None:
         self._db.close()
 
@@ -958,12 +979,20 @@ class ConversationStore:
         log.info("Swept %d orphan task(s) on startup", len(orphans))
         return orphans
 
-    def get_pending_tasks(self) -> list[dict]:
-        rows = self._db.execute(
-            "SELECT * FROM task_queue "
-            "WHERE status IN ('pending', 'running', 'pending_approval') "
-            "ORDER BY created_at",
-        ).fetchall()
+    def get_pending_tasks(self, agent_name: str | None = None) -> list[dict]:
+        if agent_name:
+            rows = self._db.execute(
+                "SELECT * FROM task_queue "
+                "WHERE status IN ('pending', 'pending_approval') "
+                "AND agent_name = ? ORDER BY created_at",
+                (agent_name,),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM task_queue "
+                "WHERE status IN ('pending', 'running', 'pending_approval') "
+                "ORDER BY created_at",
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def get_task(self, task_id: str) -> dict | None:
@@ -1122,3 +1151,40 @@ class ConversationStore:
             (f"-{days} days",),
         ).fetchone()
         return dict(row) if row else {}
+
+    # -- Workflow State --
+
+    def save_workflow_state(
+        self, workflow_id: str, workflow_type: str, steps_json: str,
+        results_json: str = "[]", current_step: int = 0,
+        status: str = "running", original_request: str = "",
+        max_total_cost: float = 0, actual_cost: float = 0,
+        platform: str = "", user_id: str = "", initiator: str = "",
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._db.execute(
+            "INSERT OR REPLACE INTO workflow_state "
+            "(workflow_id, workflow_type, initiator, steps_json, results_json, "
+            "current_step, status, original_request, max_total_cost, actual_cost, "
+            "platform, user_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "COALESCE((SELECT created_at FROM workflow_state WHERE workflow_id = ?), ?), ?)",
+            (workflow_id, workflow_type, initiator, steps_json, results_json,
+             current_step, status, original_request, max_total_cost, actual_cost,
+             platform, user_id, workflow_id, now, now),
+        )
+        self._db.commit()
+
+    def get_pending_workflows(self) -> list[dict]:
+        rows = self._db.execute(
+            "SELECT * FROM workflow_state WHERE status = 'running' ORDER BY created_at",
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_workflow_status(self, workflow_id: str, status: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._db.execute(
+            "UPDATE workflow_state SET status = ?, updated_at = ? WHERE workflow_id = ?",
+            (status, now, workflow_id),
+        )
+        self._db.commit()

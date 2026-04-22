@@ -32,6 +32,7 @@ class HeartbeatTask:
     cron: str
     model: str = "haiku"
     prompt: str = ""
+    task_type: str = "heartbeat"  # "heartbeat" or "watch"
 
 
 @dataclass
@@ -511,12 +512,16 @@ class Agent:
 
             cron = ""
             model = "haiku"
+            task_type = "heartbeat"
             prompt_lines: list[str] = []
 
             for line in lines[1:]:
                 stripped = line.strip()
                 if stripped.lower().startswith("cron:"):
                     cron = stripped.split(":", 1)[1].strip()
+                elif stripped.lower().startswith("watch:"):
+                    cron = stripped.split(":", 1)[1].strip()
+                    task_type = "watch"
                 elif stripped.lower().startswith("model:"):
                     model = stripped.split(":", 1)[1].strip()
                 elif stripped:
@@ -528,6 +533,7 @@ class Agent:
                     cron=cron,
                     model=model,
                     prompt="\n".join(prompt_lines),
+                    task_type=task_type,
                 ))
 
         return tasks

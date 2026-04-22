@@ -44,7 +44,7 @@ _PLACEHOLDER = r'(?!(?:name|agent_name|agent|target|example)\b)'
 # parsers consistent when new tag families (factory, etc.) are added.
 _TAG_TERMINATORS = (
     r'\[DELEGATE:|\[DISCUSS:|\[COUNCIL\]|\[HELP:|\[OPTIMIZE:|'
-    r'\[STATUS:|\[STATUS\]|'
+    r'\[STATUS:|\[STATUS\]|\[SPAWN:|\[TASK:self\]|'
     r'\[BUILD\]|\[PLAN\]|\[REVIEW\]|\Z'
 )
 
@@ -102,6 +102,18 @@ PLAN_PATTERN = re.compile(
 )
 REVIEW_PATTERN = re.compile(
     rf'\[REVIEW\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    re.DOTALL,
+)
+
+# [SPAWN:agent_name] prompt — async background task (fire-and-forget)
+SPAWN_PATTERN = re.compile(
+    rf'\[SPAWN:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    re.DOTALL,
+)
+
+# [TASK:self] description — add to own pending task queue
+SELF_TASK_PATTERN = re.compile(
+    rf'\[TASK:self\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
@@ -241,6 +253,27 @@ class Orchestrator:
                 log.debug("Indexed %d conversation chunks for %s", count, agent_name)
         except Exception:
             log.debug("Conversation indexing failed for %s", agent_name, exc_info=True)
+
+    def _write_shared_event(
+        self, agent_name: str, event_type: str, prompt_summary: str, result_summary: str,
+    ) -> None:
+        """Append a one-line event to shared/events.md so all agents see cross-team activity."""
+        try:
+            data_dir = self.pm.config.data_dir
+            events_file = data_dir / "shared" / "events.md"
+            events_file.parent.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            summary = f"{prompt_summary.strip()} → {result_summary.strip()}"
+            entry = f"- [{ts}] **{agent_name}** ({event_type}): {summary[:200]}"
+            lines: list[str] = []
+            if events_file.exists():
+                lines = events_file.read_text().split("\n")
+            lines.append(entry)
+            if len(lines) > 100:
+                lines = lines[-100:]
+            events_file.write_text("# Agent Events\n\n" + "\n".join(lines) + "\n")
+        except Exception:
+            log.debug("Failed to write shared event for %s", agent_name)
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
@@ -418,6 +451,11 @@ class Orchestrator:
             if recent:
                 history = f"## Recent Conversation History\n{recent[-3000:]}"
                 dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
+            team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
+            if team_signals:
+                signal_text = "\n".join(s["summary"][:200] for s in team_signals)
+                signals_block = f"## Recent Team Memory Signals\n{signal_text}"
+                dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
             effective_context = dynamic_context or None
         else:
             effective_context = agent_context
@@ -487,8 +525,9 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # Extract memory signals + index conversation for semantic search (background)
+        # Post-response: shared events, memory signals, conversation indexing (all background)
         if not response.is_error and response.output_tokens >= 50:
+            self._write_shared_event(agent.name, "conversation", prompt[:100], response.result[:150])
             if self._compactor:
                 asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
             if self._embedding_store and self._embedding_store.available:
@@ -555,6 +594,77 @@ class Orchestrator:
                     from_agent, response, platform=platform,
                 )
 
+        response = await self._process_spawn_tags(from_agent, response)
+        response = self._process_self_task_tags(from_agent, response)
+
+        return response
+
+    async def _process_spawn_tags(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [SPAWN:agent] tags — fire-and-forget background tasks."""
+        scan_text = _strip_code_blocks(response.result)
+        spawns = SPAWN_PATTERN.findall(scan_text)
+        if not spawns:
+            return response
+
+        appended = []
+        for target_name, prompt_text in spawns:
+            target = self.registry.get(target_name.lower())
+            if not target:
+                appended.append(f"\n[Spawn to '{target_name}' failed: agent not found]")
+                continue
+            prompt_text = prompt_text.strip()
+            if not prompt_text:
+                continue
+            log.info("Spawn: %s -> %s: %s", from_agent.name, target_name, prompt_text[:80])
+            self.store.record_audit(
+                action="agent_spawn", agent_name=from_agent.name,
+                details=f"spawned task on {target_name}: {prompt_text[:200]}",
+            )
+            try:
+                task = self.spawn_task(target, prompt_text, platform="spawn")
+                appended.append(f"\n[Spawned background task {task.task_id[:8]} on {target.identity.display_name}]")
+                self._write_shared_event(
+                    from_agent.name, "spawn",
+                    f"spawned task on {target_name}", prompt_text[:150],
+                )
+            except Exception:
+                log.exception("Spawn from %s to %s failed", from_agent.name, target_name)
+                appended.append(f"\n[Spawn to '{target_name}' failed: error]")
+
+        if appended:
+            response.result += "\n".join(appended)
+        return response
+
+    def _process_self_task_tags(
+        self, from_agent: Agent, response: ClaudeResponse,
+    ) -> ClaudeResponse:
+        """Process [TASK:self] tags — add to the agent's own pending task queue."""
+        scan_text = _strip_code_blocks(response.result)
+        tasks = SELF_TASK_PATTERN.findall(scan_text)
+        if not tasks:
+            return response
+
+        appended = []
+        for prompt_text in tasks:
+            prompt_text = prompt_text.strip()
+            if not prompt_text:
+                continue
+            task_id = uuid.uuid4().hex[:12]
+            log.info("Self-task: %s queued: %s", from_agent.name, prompt_text[:80])
+            self.store.create_task(
+                task_id, from_agent.name, prompt_text,
+                task_type="self", platform="self", user_id="self",
+                source="agent", initial_status="pending",
+            )
+            appended.append(f"\n[Queued self-task {task_id[:8]}: {prompt_text[:60]}]")
+            self._write_shared_event(
+                from_agent.name, "self_task", "queued self-task", prompt_text[:150],
+            )
+
+        if appended:
+            response.result += "\n".join(appended)
         return response
 
     async def _process_help_requests(
@@ -976,6 +1086,11 @@ class Orchestrator:
                 if recent:
                     history = f"## Recent Conversation History\n{recent[-3000:]}"
                     dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
+                team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
+                if team_signals:
+                    signal_text = "\n".join(s["summary"][:200] for s in team_signals)
+                    signals_block = f"## Recent Team Memory Signals\n{signal_text}"
+                    dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
                 effective_context = dynamic_context or None
             else:
                 effective_context = agent_context
@@ -1095,8 +1210,9 @@ class Orchestrator:
             success=not resp.is_error,
         )
 
-        # Extract memory signals + index conversation for semantic search (background)
+        # Post-response: shared events, memory signals, conversation indexing (all background)
         if not resp.is_error and resp.output_tokens >= 50:
+            self._write_shared_event(agent.name, "conversation", prompt[:100], (accumulated or resp.result)[:150])
             if self._compactor:
                 asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
             if self._embedding_store and self._embedding_store.available:
@@ -1249,6 +1365,10 @@ class Orchestrator:
                     )
                 except Exception:
                     pass
+            self._write_shared_event(
+                agent.name, f"task_{spawned.status}",
+                prompt[:80], (spawned.result or "")[:150],
+            )
 
         spawned = SpawnedTask(
             task_id=task_id,
