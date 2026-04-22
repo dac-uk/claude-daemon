@@ -180,6 +180,7 @@ class Orchestrator:
         self._budget_store = None
         self._compactor = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
+        self._events_lock = asyncio.Lock()
 
     def set_discussion_engine(self, engine) -> None:
         """Inject discussion engine (avoids circular init)."""
@@ -257,23 +258,35 @@ class Orchestrator:
     def _write_shared_event(
         self, agent_name: str, event_type: str, prompt_summary: str, result_summary: str,
     ) -> None:
-        """Append a one-line event to shared/events.md so all agents see cross-team activity."""
-        try:
-            data_dir = self.pm.config.data_dir
-            events_file = data_dir / "shared" / "events.md"
-            events_file.parent.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-            summary = f"{prompt_summary.strip()} → {result_summary.strip()}"
-            entry = f"- [{ts}] **{agent_name}** ({event_type}): {summary[:200]}"
-            lines: list[str] = []
-            if events_file.exists():
-                lines = events_file.read_text().split("\n")
-            lines.append(entry)
-            if len(lines) > 100:
-                lines = lines[-100:]
-            events_file.write_text("# Agent Events\n\n" + "\n".join(lines) + "\n")
-        except Exception:
-            log.debug("Failed to write shared event for %s", agent_name)
+        """Append a one-line event to shared/events.md so all agents see cross-team activity.
+
+        Uses a sync lock via _schedule_event_write to avoid file corruption
+        from concurrent writes. Fire-and-forget — callers don't await.
+        """
+        asyncio.create_task(self._write_shared_event_locked(
+            agent_name, event_type, prompt_summary, result_summary,
+        ))
+
+    async def _write_shared_event_locked(
+        self, agent_name: str, event_type: str, prompt_summary: str, result_summary: str,
+    ) -> None:
+        async with self._events_lock:
+            try:
+                data_dir = self.pm.config.data_dir
+                events_file = data_dir / "shared" / "events.md"
+                events_file.parent.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                summary = f"{prompt_summary.strip()} → {result_summary.strip()}"
+                entry = f"- [{ts}] **{agent_name}** ({event_type}): {summary[:200]}"
+                lines: list[str] = []
+                if events_file.exists():
+                    lines = events_file.read_text().split("\n")
+                lines.append(entry)
+                if len(lines) > 100:
+                    lines = lines[-100:]
+                events_file.write_text("# Agent Events\n\n" + "\n".join(lines) + "\n")
+            except Exception:
+                log.debug("Failed to write shared event for %s", agent_name)
 
     def resolve_agent(self, message: str) -> tuple[Agent | None, str]:
         """Determine which agent should handle a message.
@@ -453,7 +466,7 @@ class Orchestrator:
                 dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
             team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
             if team_signals:
-                signal_text = "\n".join(s["summary"][:200] for s in team_signals)
+                signal_text = "\n".join(s[:200] for s in team_signals)
                 signals_block = f"## Recent Team Memory Signals\n{signal_text}"
                 dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
             effective_context = dynamic_context or None
@@ -1088,7 +1101,7 @@ class Orchestrator:
                     dynamic_context = f"{history}\n\n{dynamic_context}" if dynamic_context else history
                 team_signals = self.store.get_summaries_by_type("light_sleep", limit=5)
                 if team_signals:
-                    signal_text = "\n".join(s["summary"][:200] for s in team_signals)
+                    signal_text = "\n".join(s[:200] for s in team_signals)
                     signals_block = f"## Recent Team Memory Signals\n{signal_text}"
                     dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
                 effective_context = dynamic_context or None
