@@ -535,6 +535,8 @@ class DiscordIntegration(BaseIntegration):
 
                 elif isinstance(chunk, ClaudeResponse):
                     final = accumulated or chunk.result
+                    if final and not accumulated:
+                        accumulated = final
                     if final:
                         if len(final) <= 2000:
                             try:
