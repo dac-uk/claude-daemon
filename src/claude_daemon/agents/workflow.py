@@ -440,8 +440,42 @@ class WorkflowEngine:
                 all_results.success = False
                 break
 
-            # Run review
+            # Run review — optionally execute test_command first
             build_output = build_result.final_result
+            test_results_text = ""
+            test_command = getattr(
+                getattr(self.orchestrator, "pm", None),
+                "config", None,
+            )
+            if test_command:
+                test_command = getattr(
+                    getattr(test_command, "factory_config", None),
+                    "test_command", "",
+                )
+            if test_command:
+                try:
+                    proc = await asyncio.create_subprocess_shell(
+                        test_command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=120,
+                    )
+                    test_out = stdout.decode(errors="replace")[:2000]
+                    test_err = stderr.decode(errors="replace")[:500]
+                    if proc.returncode == 0:
+                        test_results_text = f"Test command (`{test_command}`) PASSED:\n{test_out}\n\n"
+                        log.info("Factory test_command passed for iteration %d", iteration)
+                    else:
+                        test_results_text = (
+                            f"Test command (`{test_command}`) FAILED (exit {proc.returncode}):\n"
+                            f"{test_out}\n{test_err}\n\n"
+                        )
+                        log.warning("Factory test_command failed for iteration %d", iteration)
+                except Exception as e:
+                    test_results_text = f"Test command failed to run: {e}\n\n"
+
             reviewer = self.registry.get(review_step.agent_name)
             if not reviewer:
                 sr = StepResult(
@@ -457,6 +491,7 @@ class WorkflowEngine:
                 original_request=original_request,
                 prev_result=build_output,
                 build_output=build_output,
+                test_results=test_results_text,
             )
 
             start = time.monotonic()

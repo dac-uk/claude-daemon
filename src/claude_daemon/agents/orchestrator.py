@@ -591,6 +591,27 @@ class Orchestrator:
                 result = await self.agent_to_agent(
                     from_agent, target, effective_message,
                 )
+
+                if len(result) > 200 and platform not in ("delegation", "intercom", "verification"):
+                    verify_resp = await self.send_to_agent(
+                        agent=from_agent,
+                        prompt=(
+                            f"You delegated this task to {target_name}:\n{message.strip()[:300]}\n\n"
+                            f"Their response:\n{result[:1500]}\n\n"
+                            f"Is this complete and correct? Are there tests if code was changed? "
+                            f"Reply VERIFIED if satisfied, or describe what's missing."
+                        ),
+                        platform="verification",
+                        user_id=f"verify:{from_agent.name}",
+                    )
+                    if "VERIFIED" not in verify_resp.result.upper()[:200]:
+                        log.info("Delegation %s->%s: not verified, re-delegating", from_agent.name, target_name)
+                        result = await self.agent_to_agent(
+                            from_agent, target,
+                            f"Your previous response was incomplete. Feedback from {from_agent.name}:\n"
+                            f"{verify_resp.result[:500]}\n\nOriginal task: {message.strip()}",
+                        )
+
                 prior_results[target_name] = result
                 appended.append(
                     f"\n\n--- Response from {target.identity.display_name} ---\n{result}"
@@ -1238,6 +1259,59 @@ class Orchestrator:
             success=not resp.is_error,
         )
 
+        # Process delegation/spawn/self-task tags from the streamed response.
+        # Yield progress strings so the user sees delegation activity in real-time.
+        if not resp.is_error and (accumulated or resp.result):
+            full_text = accumulated or resp.result
+            scan_text = _strip_code_blocks(full_text)
+
+            delegations = DELEGATION_PATTERN.findall(scan_text)
+            prior_results: dict[str, str] = {}
+            for target_name, message_text in delegations:
+                target = self.registry.get(target_name.lower())
+                if not target:
+                    yield f"\n[Delegation to '{target_name}' failed: agent not found]\n"
+                    continue
+                yield f"\n[→ Delegating to {target.identity.display_name}...]\n"
+                effective_msg = message_text.strip()
+                if prior_results:
+                    chain_ctx = "\n".join(
+                        f"[Result from {n}]:\n{r[:800]}" for n, r in prior_results.items()
+                    )
+                    effective_msg = f"{chain_ctx}\n\n{effective_msg}"
+                try:
+                    del_result = await self.agent_to_agent(
+                        agent, target, effective_msg,
+                    )
+                    prior_results[target_name] = del_result
+                    yield f"\n[← {target.identity.display_name}: {del_result[:300]}]\n"
+                    accumulated += f"\n\n--- Response from {target.identity.display_name} ---\n{del_result}"
+                except Exception as exc:
+                    yield f"\n[Delegation to '{target_name}' failed: {str(exc)[:150]}]\n"
+
+            spawns = SPAWN_PATTERN.findall(scan_text)
+            for target_name, prompt_text in spawns:
+                target = self.registry.get(target_name.lower())
+                if target and prompt_text.strip():
+                    try:
+                        task = self.spawn_task(target, prompt_text.strip(), platform="spawn")
+                        yield f"\n[Spawned background task {task.task_id[:8]} on {target.identity.display_name}]\n"
+                        self._write_shared_event(agent.name, "spawn", f"spawned on {target_name}", prompt_text[:150])
+                    except Exception:
+                        pass
+
+            self_tasks = SELF_TASK_PATTERN.findall(scan_text)
+            for task_text in self_tasks:
+                task_text = task_text.strip()
+                if task_text:
+                    tid = uuid.uuid4().hex[:12]
+                    self.store.create_task(
+                        tid, agent.name, task_text,
+                        task_type="self", platform="self", user_id="self",
+                        source="agent", initial_status="pending",
+                    )
+                    yield f"\n[Queued self-task: {task_text[:60]}]\n"
+
         # Post-response: shared events, memory signals, conversation indexing (all background)
         if not resp.is_error and resp.output_tokens >= 50:
             self._write_shared_event(agent.name, "conversation", prompt[:100], (accumulated or resp.result)[:150])
@@ -1359,7 +1433,22 @@ class Orchestrator:
                 )
                 spawned.result = response.result
                 spawned.cost = response.cost
-                spawned.status = "failed" if response.is_error else "completed"
+                if response.is_error:
+                    spawned.status = "failed"
+                else:
+                    result_lower = (response.result or "").lower()
+                    has_evidence = any(marker in result_lower for marker in (
+                        "test", "verified", "confirmed", "passed", "checked",
+                        "result:", "output:", "completed:", "done:",
+                    ))
+                    if has_evidence or len(response.result or "") < 100:
+                        spawned.status = "completed"
+                    else:
+                        spawned.status = "completed_unverified"
+                        log.warning(
+                            "Task %s on %s: completed but result lacks verification evidence",
+                            task_id[:8], agent.name,
+                        )
             except Exception as e:
                 log.exception("Background task %s on %s failed", task_id, agent.name)
                 spawned.result = f"Task failed: {e}"
