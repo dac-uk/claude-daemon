@@ -508,11 +508,19 @@ class DiscordIntegration(BaseIntegration):
         self, message: discord.Message, content: str,
         channel_agent: str | None = None,
     ) -> None:
-        """Stream response by editing a message progressively."""
+        """Stream response by editing a message progressively.
+
+        If the response takes a long time and newer messages have appeared
+        in the channel, the final result is posted as a new message at the
+        bottom instead of editing the old placeholder — so the user doesn't
+        have to scan backwards.
+        """
         placeholder = await message.reply("...")
+        placeholder_id = placeholder.id
 
         accumulated = ""
         last_edit = time.monotonic()
+        start_time = time.monotonic()
 
         try:
             async for chunk in self.daemon.handle_message_streaming(
@@ -538,7 +546,27 @@ class DiscordIntegration(BaseIntegration):
                     if final and not accumulated:
                         accumulated = final
                     if final:
-                        if len(final) <= 2000:
+                        elapsed = time.monotonic() - start_time
+                        is_stale = False
+                        if elapsed > 10:
+                            try:
+                                recent = [m async for m in message.channel.history(limit=1)]
+                                if recent and recent[0].id != placeholder_id:
+                                    is_stale = True
+                            except Exception:
+                                pass
+
+                        if is_stale:
+                            try:
+                                await placeholder.edit(content="(See response below)")
+                            except Exception:
+                                pass
+                            if len(final) <= 2000:
+                                await message.channel.send(final)
+                            else:
+                                for i in range(0, len(final), 2000):
+                                    await message.channel.send(final[i:i + 2000])
+                        elif len(final) <= 2000:
                             try:
                                 await placeholder.edit(content=final)
                             except Exception:
