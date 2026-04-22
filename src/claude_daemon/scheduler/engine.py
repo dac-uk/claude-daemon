@@ -471,34 +471,41 @@ class SchedulerEngine:
         If the agent's response contains [ALERT] or [ACTION], the result is
         broadcast and logged. Otherwise the response is silently discarded
         (watch tasks are expected to be no-ops most of the time).
+
+        Serialised per-agent via the same lock as heartbeats to prevent
+        concurrent watch + heartbeat execution on the same agent.
         """
         agent = self.daemon.agent_registry.get(agent_name) if self.daemon.agent_registry else None
         if not agent:
             return
-        effective_model = model or agent.get_model("scheduled")
-        try:
-            response = await self.daemon.orchestrator.send_to_agent(
-                agent=agent,
-                prompt=prompt,
-                platform="watch",
-                user_id="scheduler",
-                task_type="scheduled",
-            )
-            if response.is_error:
-                return
-            result = response.result or ""
-            triggered = "[ALERT]" in result or "[ACTION]" in result
-            if triggered:
-                log.info("Watch triggered for %s: %s", agent_name, result[:200])
-                self._write_event(agent_name, "watch_triggered", result[:500])
-                if self.daemon.durable:
-                    self.daemon.durable.append_daily_log(
-                        f"WATCH {agent_name}: {result[:300]}"
-                    )
-            else:
-                log.debug("Watch %s: no trigger (silent)", agent_name)
-        except Exception:
-            log.debug("Watch task failed for %s", agent_name, exc_info=True)
+        lock = self._agent_locks.setdefault(agent_name, asyncio.Lock())
+        if lock.locked():
+            log.debug("Watch %s: agent busy, skipping", agent_name)
+            return
+        async with lock:
+            try:
+                response = await self.daemon.orchestrator.send_to_agent(
+                    agent=agent,
+                    prompt=prompt,
+                    platform="watch",
+                    user_id="scheduler",
+                    task_type="scheduled",
+                )
+                if response.is_error:
+                    return
+                result = response.result or ""
+                triggered = "[ALERT]" in result or "[ACTION]" in result
+                if triggered:
+                    log.info("Watch triggered for %s: %s", agent_name, result[:200])
+                    self._write_event(agent_name, "watch_triggered", result[:500])
+                    if self.daemon.durable:
+                        self.daemon.durable.append_daily_log(
+                            f"WATCH {agent_name}: {result[:300]}"
+                        )
+                else:
+                    log.debug("Watch %s: no trigger (silent)", agent_name)
+            except Exception:
+                log.debug("Watch task failed for %s", agent_name, exc_info=True)
 
     async def _job_log_retention(self) -> None:
         """Delete daily log files older than log_retention_days."""

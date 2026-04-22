@@ -26,9 +26,11 @@ Persistent daemon wrapper for Claude Code. Runs a self-improving team of AI agen
 - **Task Persistence** - Spawned background tasks survive daemon restarts. SQLite `task_queue` table tracks full lifecycle (pending → running → completed/failed). Stale tasks from crashed runs are auto-marked as failed on startup.
 - **Crash Alerting & Watchdog** - systemd `Type=notify` with `WatchdogSec=120`. 60-second watchdog ping prevents restart on silent hangs. Crash detection on startup alerts you via Telegram/Discord. No more silent failures.
 - **Self-Improvement Loop** - Weekly: agents self-assess, cross-agent learnings synthesised, improvement plan generated, evolution proposals applied, results delivered to you automatically.
-- **Agent Heartbeats** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings, Albert audits tech debt, Max runs quality retrospectives.
-- **Workflow Engine** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops (Albert builds, Luna styles, Max reviews, retry on failure)
-- **Inter-Agent Communication** - Five communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, and `[OPTIMIZE:name]` to trigger evo code optimization. Agents have built-in guidance for when to use each mode. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
+- **Agent Heartbeats + Watch Directives** - Autonomous recurring tasks: Penny audits costs at 8am, Jeremy scans security at 2am, Johnny sends morning briefings. New `Watch:` directive in HEARTBEAT.md enables cron-polled condition monitoring — the agent checks a condition and only acts when `[ALERT]` or `[ACTION]` triggers fire. Pending tasks from the queue are injected into every heartbeat prompt so agents can prioritise queued work.
+- **Workflow Engine (Persistent)** - Multi-step orchestration: sequential pipelines, parallel fan-out, and build-review loops. Workflows now checkpoint after each step to SQLite — if the daemon restarts, pending workflows resume from the last completed step automatically.
+- **Inter-Agent Communication** - Seven communication modes: `[DELEGATE:name]` for one-shot handoffs, `[HELP:name]` for quick consultations, `[DISCUSS:name]` for multi-turn bilateral discussions, `[COUNCIL]` for full team deliberation, `[OPTIMIZE:name]` to trigger evo code optimization, `[SPAWN:name]` for async fire-and-forget background tasks, and `[TASK:self]` for agents to queue work for themselves. Council sessions produce synthesized decisions with rationale and action items. All discussions recorded to SQLite + markdown transcripts.
+- **Cross-Agent Memory** - All conversations are logged to `shared/events.md` so every agent sees what the team is working on. Team memory signals (from light_sleep extraction) are injected into every SDK message. Semantic search via `conv_vec` finds relevant past conversations across all agents, not just the current one.
+- **Self-Directed Autonomy** - Agents can spawn background tasks on other agents (`[SPAWN:albert] review the API`), queue work for themselves (`[TASK:self] follow up tomorrow`), and check their pending task backlog on every heartbeat. The team directive instructs agents to write memories immediately, prioritise queued work, and act like full-time employees rather than chatbots.
 - **Shared Playbooks** - Lessons learned compound across the team via `shared/playbooks/`. Every agent reads them.
 - **AI Command Center** - Multi-view glassmorphism dashboard: D3 force graph with pulsing agent nodes, live activity feed, agent fleet cards, per-agent chat with streaming responses, task queue, discussion transcripts, Chart.js analytics (cost/tokens/failures), filterable audit log, MCP settings panel, native Operations view (tasks / budgets / goals / approvals), and an Alerts hub that aggregates failed tasks, pending approvals, exhausted budgets, unhealthy MCP servers, and recent daemon-log warnings into one triage screen. All real-time via WebSocket — no polling.
 - **Native Orchestration** - Built-in task queue, budget caps, goal tracking, and approval workflow — Paperclip-free by default. Atomic budget reservations (race-safe), two-pass enforcement where rejection beats approval threshold, re-enforced approvals that can't resurrect cancelled tasks, orphan task sweep on startup. Exposed via `/api/v1/*` and the Ops dashboard view.
@@ -1446,14 +1448,16 @@ Scheduler (APScheduler)
   ├── Failure Analysis
   │   └── Auto-classify errors via Haiku → extract lessons → shared/
   │
-  ├── Agent Heartbeats (from HEARTBEAT.md per agent)
-  │   ├── Penny: cost audit (8 AM)
-  │   ├── Jeremy: security scan (2 AM)
-  │   ├── Johnny: morning briefing
-  │   └── Albert: tech debt audit
+  ├── Agent Heartbeats + Watch (from HEARTBEAT.md per agent)
+  │   ├── Cron: tasks (Penny cost audit, Jeremy security scan, etc.)
+  │   ├── Watch: condition monitors (poll + trigger on [ALERT]/[ACTION])
+  │   └── Pending task injection (agents see their backlog each heartbeat)
   │
-  ├── Memory Compaction (nightly per agent)
-  │   └── EmbeddingStore reindex (sqlite-vec, Voyage AI)
+  ├── Memory Pipeline
+  │   ├── Conversation events → shared/events.md (cross-agent visibility)
+  │   ├── Light sleep: signal extraction after every conversation
+  │   ├── Conversation indexing → conv_vec (semantic search)
+  │   └── EmbeddingStore reindex (sqlite-vec, nightly)
   │
   └── Watchdog ping (60s) → sd_notify("WATCHDOG=1")
 ```
