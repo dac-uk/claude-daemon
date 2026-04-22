@@ -360,6 +360,17 @@ class SchedulerEngine:
             except Exception:
                 pass
 
+        # Wrap prompt with thoroughness directive so agents don't shortcut
+        prompt = (
+            "You are executing an autonomous scheduled task. Be thorough:\n"
+            "- Complete every step mentioned in the task\n"
+            "- If the task mentions multiple items (repos, files, checks), do ALL of them\n"
+            "- Verify your work before reporting results\n"
+            "- If you need help from another agent, use [HELP:name] or [DELEGATE:name]\n"
+            "- If you discover follow-up work, use [TASK:self] to queue it\n\n"
+            f"{prompt}"
+        )
+
         # Create task_queue row so heartbeat work appears on the Operations
         # audit trail (autonomous agent actions need to be visible).
         task_id = uuid.uuid4().hex
