@@ -246,6 +246,36 @@ class Orchestrator:
         except Exception:
             log.debug("Signal extraction failed for %s", agent_name, exc_info=True)
 
+    async def _self_reflect(
+        self, agent: Agent, prompt: str, result: str, conv_id: int,
+    ) -> None:
+        """Background: agent self-assesses its response quality.
+
+        One lightweight LLM call (Haiku) checks: Did I fully address the
+        request? Did I include evidence? What's still open? Stored in
+        memory_summaries for the next heartbeat to surface.
+        """
+        try:
+            reflect_prompt = (
+                f"You just responded to this request:\n{prompt[:300]}\n\n"
+                f"Your response summary:\n{result[:500]}\n\n"
+                f"Self-assess in ONE line: Did you fully complete the task? "
+                f"Did you include tests/evidence? What (if anything) is still open? "
+                f"If everything is done, say COMPLETE. Otherwise list what remains."
+            )
+            response = await self.pm.send_message(
+                prompt=reflect_prompt, max_budget=0.02,
+                platform="system", user_id=f"reflect:{agent.name}",
+                model_override="haiku",
+            )
+            if not response.is_error and response.result.strip():
+                reflection = f"[{agent.name}] {response.result.strip()[:300]}"
+                self.store.add_summary(conv_id, reflection, "reflection")
+                if "COMPLETE" not in response.result.upper():
+                    log.info("Self-reflection for %s: incomplete — %s", agent.name, response.result[:100])
+        except Exception:
+            log.debug("Self-reflection failed for %s", agent.name, exc_info=True)
+
     async def _index_conversation(self, conv_id: int, agent_name: str) -> None:
         """Background: index conversation messages into conv_vec for semantic search."""
         try:
@@ -469,6 +499,23 @@ class Orchestrator:
                 signal_text = "\n".join(s[:200] for s in team_signals)
                 signals_block = f"## Recent Team Memory Signals\n{signal_text}"
                 dynamic_context = f"{dynamic_context}\n\n{signals_block}" if dynamic_context else signals_block
+            try:
+                active_plans = self.store.get_active_plans(agent_name=agent.name)
+                if active_plans:
+                    import json as _json
+                    plan_lines = []
+                    for p in active_plans[:3]:
+                        steps = _json.loads(p.get("steps_json", "[]"))
+                        step_summary = ", ".join(
+                            f"{s.get('step', s.get('description', '?')[:40])}" +
+                            (" ✓" if s.get("done") else "")
+                            for s in (steps if isinstance(steps, list) else [])
+                        )
+                        plan_lines.append(f"- **{p['goal'][:80]}**: {step_summary}")
+                    plans_block = f"## Active Plans\n" + "\n".join(plan_lines)
+                    dynamic_context = f"{dynamic_context}\n\n{plans_block}" if dynamic_context else plans_block
+            except Exception:
+                pass
             effective_context = dynamic_context or None
         else:
             effective_context = agent_context
@@ -538,13 +585,14 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # Post-response: shared events, memory signals, conversation indexing (all background)
+        # Post-response: shared events, memory signals, conversation indexing, self-reflection
         if not response.is_error and response.output_tokens >= 50:
             self._write_shared_event(agent.name, "conversation", prompt[:100], response.result[:150])
             if self._compactor:
                 asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
             if self._embedding_store and self._embedding_store.available:
                 asyncio.create_task(self._index_conversation(conv["id"], agent.name))
+            asyncio.create_task(self._self_reflect(agent, prompt, response.result, conv["id"]))
 
         # Process delegation tags in response (skip discussion tags when inside a discussion)
         if not response.is_error:
@@ -593,13 +641,22 @@ class Orchestrator:
                 )
 
                 if len(result) > 200 and platform not in ("delegation", "intercom", "verification"):
+                    criteria_hint = ""
+                    msg_lower = effective_message.lower()
+                    if "acceptance criteria" in msg_lower or "criteria:" in msg_lower:
+                        criteria_hint = (
+                            "The delegation included acceptance criteria. "
+                            "Check EACH criterion is met. "
+                        )
                     verify_resp = await self.send_to_agent(
                         agent=from_agent,
                         prompt=(
-                            f"You delegated this task to {target_name}:\n{message.strip()[:300]}\n\n"
+                            f"You delegated this task to {target_name}:\n{effective_message[:500]}\n\n"
                             f"Their response:\n{result[:1500]}\n\n"
+                            f"{criteria_hint}"
                             f"Is this complete and correct? Are there tests if code was changed? "
-                            f"Reply VERIFIED if satisfied, or describe what's missing."
+                            f"Does it meet the acceptance criteria (if any)? "
+                            f"Reply VERIFIED if ALL criteria met, or describe what's missing."
                         ),
                         platform="verification",
                         user_id=f"verify:{from_agent.name}",
@@ -623,6 +680,25 @@ class Orchestrator:
 
         if appended:
             response.result += "\n".join(appended)
+
+        # Auto-create a plan when multi-step delegation is detected
+        if len(delegations) >= 2:
+            try:
+                import json as _json
+                steps = [
+                    {"step": f"Delegate to {name}: {msg[:60]}", "agent": name, "done": name in prior_results}
+                    for name, msg in delegations
+                ]
+                plan_id = uuid.uuid4().hex[:12]
+                self.store.create_plan(
+                    plan_id=plan_id,
+                    agent_name=from_agent.name,
+                    goal=f"Multi-step: {response.result[:80]}",
+                    steps_json=_json.dumps(steps),
+                )
+                log.info("Auto-created plan %s with %d steps for %s", plan_id[:8], len(steps), from_agent.name)
+            except Exception:
+                pass
 
         # STATUS queries are always allowed — pure data, no LLM cost, no recursion risk
         response = await self._process_status_queries(from_agent, response)
@@ -1312,13 +1388,14 @@ class Orchestrator:
                     )
                     yield f"\n[Queued self-task: {task_text[:60]}]\n"
 
-        # Post-response: shared events, memory signals, conversation indexing (all background)
+        # Post-response: shared events, memory signals, conversation indexing, self-reflection
         if not resp.is_error and resp.output_tokens >= 50:
             self._write_shared_event(agent.name, "conversation", prompt[:100], (accumulated or resp.result)[:150])
             if self._compactor:
                 asyncio.create_task(self._extract_signals(conv["session_id"], agent.name))
             if self._embedding_store and self._embedding_store.available:
                 asyncio.create_task(self._index_conversation(conv["id"], agent.name))
+            asyncio.create_task(self._self_reflect(agent, prompt, (accumulated or resp.result), conv["id"]))
 
         yield resp
 

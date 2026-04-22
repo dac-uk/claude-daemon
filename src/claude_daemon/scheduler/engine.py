@@ -103,6 +103,16 @@ class SchedulerEngine:
             replace_existing=True,
         )
 
+        # Proactive agent initiative — check for unfinished work during idle periods
+        self._scheduler.add_job(
+            self._run_async,
+            IntervalTrigger(minutes=15),
+            args=[self._job_proactive_initiative],
+            id="proactive_initiative",
+            name="Proactive agent initiative",
+            replace_existing=True,
+        )
+
         # Heartbeat
         self._scheduler.add_job(
             self._run_async,
@@ -360,6 +370,20 @@ class SchedulerEngine:
             except Exception:
                 pass
 
+        # Inject recent self-reflections so agent sees its own gaps
+        if self.daemon.store:
+            try:
+                reflections = self.daemon.store.get_summaries_by_type("reflection", limit=3)
+                agent_refs = [r for r in reflections if f"[{agent_name}]" in r]
+                if agent_refs:
+                    ref_text = "\n".join(f"- {r[:200]}" for r in agent_refs[:3])
+                    prompt = (
+                        f"## Your Recent Self-Assessments\n{ref_text}\n"
+                        f"Address any open items from your previous assessments.\n\n{prompt}"
+                    )
+            except Exception:
+                pass
+
         # Wrap prompt with thoroughness directive so agents don't shortcut
         prompt = (
             "You are executing an autonomous scheduled task. Be thorough:\n"
@@ -517,6 +541,91 @@ class SchedulerEngine:
                     log.debug("Watch %s: no trigger (silent)", agent_name)
             except Exception:
                 log.debug("Watch task failed for %s", agent_name, exc_info=True)
+
+    async def _job_proactive_initiative(self) -> None:
+        """Check for unfinished work and prompt agents to act autonomously.
+
+        Runs every 15 minutes. For each agent with pending tasks or incomplete
+        self-assessments, prompts the orchestrator (Johnny) to review and
+        dispatch work. Only fires if the system has been idle (no user messages
+        in the last 10 minutes).
+        """
+        if not self.daemon.store or not self.daemon.orchestrator:
+            return
+        if not self.daemon.agent_registry:
+            return
+
+        # Only act during idle periods — don't interfere with active conversations
+        try:
+            from datetime import datetime, timezone, timedelta
+            recent = self.daemon.store._db.execute(
+                "SELECT COUNT(*) FROM messages WHERE timestamp > ? AND role = 'user'",
+                ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),),
+            ).fetchone()
+            if recent and recent[0] > 0:
+                return
+        except Exception:
+            return
+
+        # Check for agents with pending tasks
+        agents_with_work = []
+        for agent in self.daemon.agent_registry:
+            try:
+                pending = self.daemon.store.get_pending_tasks(agent_name=agent.name)
+                if pending:
+                    agents_with_work.append((agent.name, len(pending), pending[0]))
+            except Exception:
+                pass
+
+        # Check for incomplete reflections (agent flagged something as open)
+        open_reflections = []
+        try:
+            reflections = self.daemon.store.get_summaries_by_type("reflection", limit=10)
+            for r in reflections:
+                if "COMPLETE" not in r.upper():
+                    open_reflections.append(r[:150])
+        except Exception:
+            pass
+
+        if not agents_with_work and not open_reflections:
+            return
+
+        # Build a status prompt for the orchestrator
+        lines = []
+        if agents_with_work:
+            lines.append("## Agents with Pending Tasks")
+            for name, count, first_task in agents_with_work:
+                lines.append(f"- **{name}**: {count} pending — first: {first_task.get('prompt', '')[:80]}")
+        if open_reflections:
+            lines.append("\n## Open Items from Self-Assessments")
+            for r in open_reflections[:3]:
+                lines.append(f"- {r}")
+        lines.append(
+            "\nReview these items. For any that are urgent, either handle them "
+            "yourself or [SPAWN:agent-name] to dispatch the work. For items that "
+            "can wait, note them for the next heartbeat cycle."
+        )
+
+        orchestrator_agent = None
+        for agent in self.daemon.agent_registry:
+            if agent.identity.is_orchestrator:
+                orchestrator_agent = agent
+                break
+        if not orchestrator_agent:
+            return
+
+        try:
+            log.info("Proactive initiative: %d agents with work, %d open reflections",
+                     len(agents_with_work), len(open_reflections))
+            await self.daemon.orchestrator.send_to_agent(
+                agent=orchestrator_agent,
+                prompt="\n".join(lines),
+                platform="initiative",
+                user_id="scheduler",
+                task_type="scheduled",
+            )
+        except Exception:
+            log.debug("Proactive initiative failed", exc_info=True)
 
     async def _job_log_retention(self) -> None:
         """Delete daily log files older than log_retention_days."""

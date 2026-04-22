@@ -268,6 +268,20 @@ class ConversationStore:
                 updated_at TEXT
             )
         """)
+
+        # task_plans: conversation-level multi-step planning
+        self._db.execute("""
+            CREATE TABLE IF NOT EXISTS task_plans (
+                plan_id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                conv_id INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
         self._db.commit()
 
     def close(self) -> None:
@@ -1188,3 +1202,41 @@ class ConversationStore:
             (status, now, workflow_id),
         )
         self._db.commit()
+
+    # -- Task Plans (conversation-level multi-step reasoning) --
+
+    def create_plan(
+        self, plan_id: str, agent_name: str, goal: str,
+        steps_json: str, conv_id: int | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._db.execute(
+            "INSERT OR REPLACE INTO task_plans "
+            "(plan_id, agent_name, goal, steps_json, status, conv_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+            (plan_id, agent_name, goal, steps_json, conv_id, now, now),
+        )
+        self._db.commit()
+
+    def update_plan(self, plan_id: str, steps_json: str, status: str = "active") -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._db.execute(
+            "UPDATE task_plans SET steps_json = ?, status = ?, updated_at = ? "
+            "WHERE plan_id = ?",
+            (steps_json, status, now, plan_id),
+        )
+        self._db.commit()
+
+    def get_active_plans(self, agent_name: str | None = None) -> list[dict]:
+        if agent_name:
+            rows = self._db.execute(
+                "SELECT * FROM task_plans WHERE status = 'active' AND agent_name = ? "
+                "ORDER BY created_at DESC LIMIT 5",
+                (agent_name,),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM task_plans WHERE status = 'active' "
+                "ORDER BY created_at DESC LIMIT 10",
+            ).fetchall()
+        return [dict(r) for r in rows]

@@ -38,7 +38,15 @@ TEAM_DIRECTIVE = (
     "**Self-direction:** You can spawn work on other agents ([SPAWN:name]), queue tasks "
     "for yourself ([TASK:self]), and delegate synchronously ([DELEGATE:name]). Use these "
     "to break down complex work, follow up on commitments, and keep the team moving "
-    "without waiting for the user to orchestrate everything.\n"
+    "without waiting for the user to orchestrate everything.\n\n"
+    "**Structured handoff:** When delegating, always specify what 'done' looks like:\n"
+    "[DELEGATE:albert] Fix the auth bug in user_api.py.\n"
+    "Acceptance criteria: tests pass, no regressions, commit message references the issue.\n"
+    "The system will verify the delegate's work against your criteria before accepting it. "
+    "If the delegate's response doesn't meet the criteria, it will be sent back with feedback.\n\n"
+    "**Self-assessment:** After every response, you will self-assess: Did I fully complete "
+    "the task? Did I include evidence? What's still open? Your self-assessments are surfaced "
+    "in your next heartbeat so you can follow up on open items.\n"
 )
 
 CSUITE_AGENTS = [
