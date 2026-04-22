@@ -148,12 +148,18 @@ class SchedulerEngine:
                     log.error("Invalid cron in %s HEARTBEAT.md: %s", agent.name, e)
                     continue
 
+                if task.task_type == "watch":
+                    handler = self._job_agent_watch
+                    label = "Watch"
+                else:
+                    handler = self._job_agent_heartbeat
+                    label = "Heartbeat"
                 self._scheduler.add_job(
                     self._run_async,
                     CronTrigger(**cron_kwargs),
-                    args=[self._job_agent_heartbeat, agent.name, task.prompt, task.model],
+                    args=[handler, agent.name, task.prompt, task.model],
                     id=job_id,
-                    name=f"Heartbeat: {agent.name} - {task.title}",
+                    name=f"{label}: {agent.name} - {task.title}",
                     replace_existing=True,
                 )
                 count += 1
@@ -337,6 +343,23 @@ class SchedulerEngine:
         """Inner heartbeat logic, called under agent lock."""
         log.info("Heartbeat: running '%s' task (model=%s)", agent_name, model)
 
+        # Inject pending tasks so the agent can prioritise queued work.
+        if self.daemon.store:
+            try:
+                pending = self.daemon.store.get_pending_tasks(agent_name=agent_name)
+                if pending:
+                    task_list = "\n".join(
+                        f"- [{t['task_id'][:8]}] {t.get('prompt', '')[:100]}"
+                        for t in pending[:5]
+                    )
+                    prompt = (
+                        f"## Pending Tasks (queued for you)\n{task_list}\n"
+                        f"Review these before your scheduled task. If any are urgent, "
+                        f"handle them first.\n\n{prompt}"
+                    )
+            except Exception:
+                pass
+
         # Create task_queue row so heartbeat work appears on the Operations
         # audit trail (autonomous agent actions need to be visible).
         task_id = uuid.uuid4().hex
@@ -439,6 +462,43 @@ class SchedulerEngine:
                     )
                 except Exception:
                     log.exception("Failed to mark heartbeat task failed after exception")
+
+    async def _job_agent_watch(
+        self, agent_name: str, prompt: str, model: str | None = None,
+    ) -> None:
+        """Run a [WATCH] task — like a heartbeat but checks for action triggers.
+
+        If the agent's response contains [ALERT] or [ACTION], the result is
+        broadcast and logged. Otherwise the response is silently discarded
+        (watch tasks are expected to be no-ops most of the time).
+        """
+        agent = self.daemon.agent_registry.get(agent_name) if self.daemon.agent_registry else None
+        if not agent:
+            return
+        effective_model = model or agent.get_model("scheduled")
+        try:
+            response = await self.daemon.orchestrator.send_to_agent(
+                agent=agent,
+                prompt=prompt,
+                platform="watch",
+                user_id="scheduler",
+                task_type="scheduled",
+            )
+            if response.is_error:
+                return
+            result = response.result or ""
+            triggered = "[ALERT]" in result or "[ACTION]" in result
+            if triggered:
+                log.info("Watch triggered for %s: %s", agent_name, result[:200])
+                self._write_event(agent_name, "watch_triggered", result[:500])
+                if self.daemon.durable:
+                    self.daemon.durable.append_daily_log(
+                        f"WATCH {agent_name}: {result[:300]}"
+                    )
+            else:
+                log.debug("Watch %s: no trigger (silent)", agent_name)
+        except Exception:
+            log.debug("Watch task failed for %s", agent_name, exc_info=True)
 
     async def _job_log_retention(self) -> None:
         """Delete daily log files older than log_retention_days."""

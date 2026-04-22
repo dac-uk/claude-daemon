@@ -95,6 +95,129 @@ class WorkflowEngine:
     ) -> None:
         self.orchestrator = orchestrator
         self.registry = registry
+        self._store = getattr(orchestrator, "store", None)
+
+    def _checkpoint(
+        self, workflow_id: str, workflow_type: str, steps: list[WorkflowStep],
+        results: list[StepResult], current_step: int, original_request: str,
+        max_total_cost: float, platform: str, user_id: str,
+    ) -> None:
+        """Persist workflow state so it can be resumed after a restart."""
+        if not self._store:
+            return
+        import json
+        steps_json = json.dumps([
+            {"agent_name": s.agent_name, "prompt_template": s.prompt_template,
+             "task_type": s.task_type, "label": s.label, "timeout": s.timeout}
+            for s in steps
+        ])
+        results_json = json.dumps([
+            {"agent_name": r.agent_name, "label": r.label, "result": r.result[:5000],
+             "cost": r.cost, "duration_ms": r.duration_ms, "is_error": r.is_error}
+            for r in results
+        ])
+        actual_cost = sum(r.cost for r in results)
+        try:
+            self._store.save_workflow_state(
+                workflow_id=workflow_id, workflow_type=workflow_type,
+                steps_json=steps_json, results_json=results_json,
+                current_step=current_step, original_request=original_request,
+                max_total_cost=max_total_cost, actual_cost=actual_cost,
+                platform=platform, user_id=user_id,
+            )
+        except Exception:
+            log.debug("Failed to checkpoint workflow %s", workflow_id)
+
+    async def resume_pending_workflows(self) -> int:
+        """Resume any workflows that were running when the daemon stopped."""
+        if not self._store:
+            return 0
+        import json
+        pending = self._store.get_pending_workflows()
+        resumed = 0
+        for wf in pending:
+            try:
+                steps = [WorkflowStep(**s) for s in json.loads(wf["steps_json"])]
+                completed = [StepResult(**r) for r in json.loads(wf["results_json"])]
+                current = wf["current_step"]
+                remaining = steps[current:]
+                if not remaining:
+                    self._store.update_workflow_status(wf["workflow_id"], "completed")
+                    continue
+                log.info(
+                    "Resuming workflow %s from step %d/%d",
+                    wf["workflow_id"][:8], current + 1, len(steps),
+                )
+                asyncio.create_task(self._resume_pipeline(
+                    wf["workflow_id"], steps, completed, current,
+                    wf.get("original_request", ""),
+                    wf.get("platform", "workflow"),
+                    wf.get("user_id", "workflow"),
+                    wf.get("max_total_cost", 0),
+                ))
+                resumed += 1
+            except Exception:
+                log.exception("Failed to resume workflow %s", wf.get("workflow_id", "?"))
+                try:
+                    self._store.update_workflow_status(wf["workflow_id"], "failed")
+                except Exception:
+                    pass
+        return resumed
+
+    async def _resume_pipeline(
+        self, workflow_id: str, steps: list[WorkflowStep],
+        completed: list[StepResult], start_step: int,
+        original_request: str, platform: str, user_id: str,
+        max_total_cost: float,
+    ) -> None:
+        """Resume a pipeline from a checkpoint."""
+        remaining = steps[start_step:]
+        prev_result = completed[-1].result if completed else ""
+        result = WorkflowResult(steps=list(completed), max_total_cost=max_total_cost)
+        step_results = {i: r.result for i, r in enumerate(completed)}
+
+        for i, step in enumerate(remaining, start=start_step):
+            if result.is_over_budget():
+                break
+            agent = self.registry.get(step.agent_name)
+            if not agent:
+                break
+            prompt = step.prompt_template.format(
+                original_request=original_request,
+                prev_result=prev_result,
+                **{f"step_{j}_result": r for j, r in step_results.items()},
+            )
+            start = time.monotonic()
+            try:
+                response = await asyncio.wait_for(
+                    self.orchestrator.send_to_agent(
+                        agent=agent, prompt=prompt,
+                        platform=platform, user_id=user_id, task_type=step.task_type,
+                    ),
+                    timeout=step.timeout,
+                )
+            except asyncio.TimeoutError:
+                self._store.update_workflow_status(workflow_id, "failed")
+                return
+            duration = int((time.monotonic() - start) * 1000)
+            sr = StepResult(
+                agent_name=step.agent_name, label=step.label,
+                result=response.result, cost=response.cost,
+                duration_ms=duration, is_error=response.is_error,
+            )
+            result.steps.append(sr)
+            step_results[i] = response.result
+            prev_result = response.result
+            self._checkpoint(
+                workflow_id, "pipeline", steps, result.steps, i + 1,
+                original_request, max_total_cost, platform, user_id,
+            )
+            if response.is_error:
+                self._store.update_workflow_status(workflow_id, "failed")
+                return
+
+        self._store.update_workflow_status(workflow_id, "completed")
+        log.info("Resumed workflow %s completed: %s", workflow_id[:8], result.summary())
 
     async def execute_pipeline(
         self,
@@ -103,6 +226,7 @@ class WorkflowEngine:
         platform: str = "workflow",
         user_id: str = "workflow",
         max_total_cost: float = 0.0,
+        workflow_id: str | None = None,
     ) -> WorkflowResult:
         """Run steps sequentially. Each step's prompt can reference previous results.
 
@@ -191,6 +315,12 @@ class WorkflowEngine:
 
             step_results[i] = response.result
             prev_result = response.result
+
+            if workflow_id:
+                self._checkpoint(
+                    workflow_id, "pipeline", steps, result.steps, i + 1,
+                    original_request, max_total_cost, platform, user_id,
+                )
 
         return result
 
