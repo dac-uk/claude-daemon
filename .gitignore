@@ -13,3 +13,9 @@ build/
 node_modules/
 src/claude_daemon/sdk/package.json
 src/claude_daemon/sdk/package-lock.json
+
+# Security - local env and credentials
+.env.local
+.env.*.local
+*.pem
+*.key
