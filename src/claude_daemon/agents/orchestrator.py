@@ -181,6 +181,7 @@ class Orchestrator:
         self._compactor = None
         self._spawned_tasks: dict[str, SpawnedTask] = {}
         self._events_lock = asyncio.Lock()
+        self._delegate_tip_sent: set[str] = set()  # agents already shown the criteria tip
 
     def set_discussion_engine(self, engine) -> None:
         """Inject discussion engine (avoids circular init)."""
@@ -646,22 +647,21 @@ class Orchestrator:
                     from_agent, target, effective_message,
                 )
 
-                if len(result) > 200 and platform not in ("delegation", "intercom", "verification"):
-                    criteria_hint = ""
-                    msg_lower = effective_message.lower()
-                    if "acceptance criteria" in msg_lower or "criteria:" in msg_lower:
-                        criteria_hint = (
-                            "The delegation included acceptance criteria. "
-                            "Check EACH criterion is met. "
-                        )
+                msg_lower = effective_message.lower()
+                has_criteria = (
+                    "acceptance criteria" in msg_lower
+                    or "acceptance_criteria" in msg_lower
+                )
+                if has_criteria and platform not in ("delegation", "intercom", "verification"):
                     verify_resp = await self.send_to_agent(
                         agent=from_agent,
                         prompt=(
                             f"You delegated this task to {target_name}:\n{effective_message[:500]}\n\n"
                             f"Their response:\n{result[:1500]}\n\n"
-                            f"{criteria_hint}"
+                            f"The delegation included acceptance criteria. "
+                            f"Check EACH criterion is met. "
                             f"Is this complete and correct? Are there tests if code was changed? "
-                            f"Does it meet the acceptance criteria (if any)? "
+                            f"Does it meet the acceptance criteria? "
                             f"Reply VERIFIED if ALL criteria met, or describe what's missing."
                         ),
                         platform="verification",
@@ -673,6 +673,15 @@ class Orchestrator:
                             from_agent, target,
                             f"Your previous response was incomplete. Feedback from {from_agent.name}:\n"
                             f"{verify_resp.result[:500]}\n\nOriginal task: {message.strip()}",
+                        )
+                elif len(result) > 200 and platform not in ("delegation", "intercom", "verification"):
+                    # No acceptance criteria — inject a one-per-session tip so the agent
+                    # learns to include criteria next time (prevents tip spam).
+                    if from_agent.name not in self._delegate_tip_sent:
+                        self._delegate_tip_sent.add(from_agent.name)
+                        result += (
+                            "\n\n[Tip: next time include `Acceptance criteria:` in your "
+                            "[DELEGATE] tag for automatic verification]"
                         )
 
                 prior_results[target_name] = result
