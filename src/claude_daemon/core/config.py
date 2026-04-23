@@ -56,7 +56,7 @@ class DaemonConfig:
     # SDK bridge (persistent sessions via @anthropic-ai/claude-agent-sdk)
     sdk_bridge_enabled: bool = True  # Use Agent SDK for persistent sessions (sub-second responses)
     sdk_bridge_node_path: str = "node"  # Path to Node.js executable
-    sdk_bridge_idle_timeout_ms: int = 300_000  # ms without any event before we fail over to CLI; 5 min covers Opus extended-thinking silent phases (raised from 90s)
+    sdk_bridge_idle_timeout_ms: int = 1_800_000  # ms without any event before we fail over to CLI; 30 min accommodates long-running delegated tasks (git ops across repos, etc.)
     sdk_create_session_timeout_ms: int = 20_000  # ms to wait for SDK bridge to create a session (MCP init can be slow)
     sdk_prewarm_concurrency: int = 4  # Max parallel session creations during startup pre-warm
     sdk_resume_max_age_hours: int = 24  # Max age of a conv for lazy resume after restart (0 disables)
@@ -259,7 +259,7 @@ class DaemonConfig:
             agent_deny_rules=claude_cfg.get("agent_deny_rules", []),
             sdk_bridge_enabled=claude_cfg.get("sdk_bridge_enabled", True),
             sdk_bridge_node_path=claude_cfg.get("sdk_bridge_node_path", "node"),
-            sdk_bridge_idle_timeout_ms=int(claude_cfg.get("sdk_bridge_idle_timeout_ms", 300_000)),
+            sdk_bridge_idle_timeout_ms=int(claude_cfg.get("sdk_bridge_idle_timeout_ms", 1_800_000)),
             sdk_create_session_timeout_ms=int(claude_cfg.get("sdk_create_session_timeout_ms", 20_000)),
             sdk_prewarm_concurrency=int(claude_cfg.get("sdk_prewarm_concurrency", 4)),
             sdk_resume_max_age_hours=int(claude_cfg.get("sdk_resume_max_age_hours", 24)),

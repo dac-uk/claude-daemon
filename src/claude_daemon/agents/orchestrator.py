@@ -1256,12 +1256,18 @@ class Orchestrator:
             resp = ClaudeResponse.error("Agent error")
         finally:
             # Classify "no usable response" more precisely now that stop_reason
-            # flows through. A clean end_turn with empty accumulated text is
-            # legitimate (tool-only turn, refusal, etc.) and shouldn't spam
-            # as a warning; only genuine infra errors or non-end stops do.
+            # flows through. A clean end_turn or tool_use with empty accumulated
+            # text is legitimate and shouldn't spam as a warning; only genuine
+            # infra errors or unexpected empty non-end stops do.
             stop_reason = getattr(resp, "stop_reason", "") or ""
+            # tool_use: model's last action was a tool call — any text yielded
+            # before it is valid output. Promote to non-error if we have text.
+            if stop_reason == "tool_use" and resp.is_error and accumulated:
+                resp.is_error = False
+                resp.result = resp.result or accumulated
             empty_without_error = (
-                not resp.is_error and not accumulated and stop_reason not in {"end_turn", ""}
+                not resp.is_error and not accumulated
+                and stop_reason not in {"end_turn", "tool_use", ""}
             )
             if resp.is_error or empty_without_error:
                 log.warning(

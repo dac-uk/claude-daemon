@@ -394,11 +394,14 @@ class ProcessManager:
                 )
                 elapsed = _time.monotonic() - t0
                 if not response.is_error and (
-                    response.output_tokens > 0 or response.result.strip()
+                    response.output_tokens > 0
+                    or response.result.strip()
+                    or response.stop_reason == "tool_use"
                 ):
                     if response.session_id:
                         self._confirmed_sessions.add(response.session_id)
-                    log.info("SDK response for %s in %.1fs", agent_name, elapsed)
+                    log.info("SDK response for %s in %.1fs (stop_reason=%s)",
+                             agent_name, elapsed, response.stop_reason or "unknown")
                     return response
                 if response.is_error:
                     log.warning("SDK send failed for %s:%s (%.1fs): %s",
@@ -427,11 +430,14 @@ class ProcessManager:
                     )
                     elapsed = _time.monotonic() - t0
                     if not response.is_error and (
-                        response.output_tokens > 0 or response.result.strip()
+                        response.output_tokens > 0
+                        or response.result.strip()
+                        or response.stop_reason == "tool_use"
                     ):
                         if response.session_id:
                             self._confirmed_sessions.add(response.session_id)
-                        log.info("SDK retry succeeded for %s in %.1fs", agent_name, elapsed)
+                        log.info("SDK retry succeeded for %s in %.1fs (stop_reason=%s)",
+                                 agent_name, elapsed, response.stop_reason or "unknown")
                         return response
                     log.warning("SDK retry also failed for %s:%s", agent_name, sdk_model)
             except Exception as e:
@@ -551,7 +557,7 @@ class ProcessManager:
                                 agent_name, sdk_model, chunk.result[:200],
                             )
                             break
-                        if chunk.output_tokens == 0 and not chunk.result.strip():
+                        if chunk.output_tokens == 0 and not chunk.result.strip() and chunk.stop_reason != "tool_use":
                             _last_sdk_error = f"Empty response (0 tokens) from {agent_name}"
                             log.warning(
                                 "SDK returned empty stream response for %s:%s (0 tokens)",
