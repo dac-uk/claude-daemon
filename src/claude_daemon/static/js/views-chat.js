@@ -270,6 +270,12 @@ CC.chatSend = async function(prompt) {
             if (evt.error) {
               agentMsg.text = (agentMsg.text ? agentMsg.text + '\n\n' : '') + 'Error: ' + evt.error;
             }
+            // Render immediately when the server signals done so the stop
+            // button is removed and the completed message is visible without
+            // waiting for the reader to notice EOF and run the finally block.
+            if (ch === CC.chat.activeChannel) {
+              CC.renderChatMessages();
+            }
           }
         } catch (_) {}
       }
@@ -288,18 +294,29 @@ CC.chatSend = async function(prompt) {
       agentMsg.text = '(No response. Check daemon log: `tail -50 ~/.config/claude-daemon/logs/daemon.log`)';
     }
     CC.chat.activeStreams.delete(streamId);
-    if (ch === CC.chat.activeChannel) {
-      CC.renderChatMessages();
-    }
+    // Always re-render: renderChatMessages() shows the current active channel,
+    // so calling it unconditionally is safe even if the user switched away from
+    // ch during the stream. The completed message for ch will be shown when the
+    // user navigates back (chatSwitchChannel always calls renderChatMessages).
+    // Previously this was guarded by `ch === CC.chat.activeChannel`, which
+    // silently swallowed the final render whenever the channel check failed,
+    // causing the completed response to only appear on the user's next send.
+    CC.renderChatMessages();
     CC.chatPersist(ch);
   }
 };
 
 CC.chatUpdateMsg = function(streamId, ch) {
-  // Only called from our own chatSend — the user initiated this stream,
-  // so never mark the source channel as "unread". If they've switched
-  // away, the channel's busy indicator already reflects work-in-flight.
-  if (ch !== CC.chat.activeChannel) return;
+  // Called from chatSend for each streaming delta. If the user is still on
+  // this channel, update the message element in-place (fast path — avoids a
+  // full renderChatMessages re-render for every token). If they've switched
+  // away, mark the channel as unread and update the channel list so the dot
+  // appears; the full render will happen when they switch back.
+  if (ch !== CC.chat.activeChannel) {
+    CC.chat.unread.add(ch);
+    if (CC.currentView === 'chat') CC.renderChatChannels();
+    return;
+  }
   var el = document.getElementById('chatMessages');
   var msgEl = el.querySelector('[data-stream-id="' + streamId + '"] .msg-text');
   var s = CC.chat.activeStreams.get(streamId);
