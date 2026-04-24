@@ -558,24 +558,37 @@ class DiscordIntegration(BaseIntegration):
 
                         if is_stale:
                             try:
-                                await placeholder.edit(content="(See response below)")
+                                await placeholder.delete()
                             except Exception:
-                                pass
+                                try:
+                                    await placeholder.edit(content="(See response below)")
+                                except Exception:
+                                    pass
                             if len(final) <= 2000:
                                 await message.channel.send(final)
                             else:
                                 for i in range(0, len(final), 2000):
                                     await message.channel.send(final[i:i + 2000])
-                        elif len(final) <= 2000:
-                            try:
-                                await placeholder.edit(content=final)
-                            except Exception:
-                                pass
                         else:
+                            # Delete placeholder and send as a new reply so Discord
+                            # triggers a real notification (edits don't notify).
+                            deleted = False
                             try:
-                                await placeholder.edit(content=final[:2000])
+                                await placeholder.delete()
+                                deleted = True
                             except Exception:
                                 pass
+
+                            first_chunk = final[:2000]
+                            try:
+                                await message.reply(first_chunk)
+                            except Exception:
+                                if not deleted:
+                                    try:
+                                        await placeholder.edit(content=first_chunk)
+                                    except Exception:
+                                        pass
+
                             for i in range(2000, len(final), 2000):
                                 await message.channel.send(final[i:i + 2000])
 
