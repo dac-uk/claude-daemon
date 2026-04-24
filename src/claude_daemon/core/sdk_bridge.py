@@ -308,6 +308,7 @@ class SDKBridgeManager:
         prompt: str,
         context: str | None = None,
         model: str | None = None,
+        max_budget: float | None = None,
     ) -> ClaudeResponse:
         """Send a prompt and return the full response (buffered)."""
         req_id = self._new_id()
@@ -323,13 +324,16 @@ class SDKBridgeManager:
             if sys_prompt:
                 effective_context = sys_prompt + ("\n\n" + context if context else "")
 
-        await self._send_command({
+        cmd: dict = {
             "cmd": "send",
             "id": req_id,
             "agent": session_key,
             "prompt": prompt,
             "context": effective_context or None,
-        })
+        }
+        if max_budget is not None and max_budget > 0:
+            cmd["maxBudget"] = max_budget
+        await self._send_command(cmd)
 
         try:
             result = await asyncio.wait_for(future, timeout=self.config.process_timeout)
@@ -349,6 +353,15 @@ class SDKBridgeManager:
                 self._first_message.pop(session_key, None)
             return ClaudeResponse.error(f"SDK bridge error: {msg}")
 
+        # Post-hoc budget enforcement: the SDK can only report cost after turn completes.
+        # Log at ERROR level so the cost overrun is visible in daemon logs.
+        cost = result.get("cost", 0)
+        if result.get("budgetExceeded") or (max_budget and max_budget > 0 and cost > max_budget):
+            log.error(
+                "SDK budget exceeded for %s: cost=%.4f > max_budget=%.4f",
+                session_key, cost, max_budget or 0,
+            )
+
         # Update session_id if we got one
         session_id = result.get("sessionId", "")
         if session_id:
@@ -357,7 +370,7 @@ class SDKBridgeManager:
         return ClaudeResponse(
             result=result.get("result", ""),
             session_id=session_id,
-            cost=result.get("cost", 0),
+            cost=cost,
             input_tokens=result.get("inputTokens", 0),
             output_tokens=result.get("outputTokens", 0),
             num_turns=1,
@@ -372,6 +385,7 @@ class SDKBridgeManager:
         prompt: str,
         context: str | None = None,
         model: str | None = None,
+        max_budget: float | None = None,
     ) -> AsyncIterator[str | ClaudeResponse]:
         """Send a prompt and stream text deltas, then final ClaudeResponse."""
         req_id = self._new_id()
@@ -387,13 +401,16 @@ class SDKBridgeManager:
             if sys_prompt:
                 effective_context = sys_prompt + ("\n\n" + context if context else "")
 
-        await self._send_command({
+        stream_cmd: dict = {
             "cmd": "send",
             "id": req_id,
             "agent": session_key,
             "prompt": prompt,
             "context": effective_context or None,
-        })
+        }
+        if max_budget is not None and max_budget > 0:
+            stream_cmd["maxBudget"] = max_budget
+        await self._send_command(stream_cmd)
 
         idle_timeout = self.config.sdk_bridge_idle_timeout_ms / 1000.0
         try:
@@ -427,10 +444,19 @@ class SDKBridgeManager:
                     session_id = event.get("sessionId", "")
                     if session_id:
                         self._sessions[session_key] = session_id
+                    evt_cost = event.get("cost", 0)
+                    # Post-hoc budget enforcement: log ERROR if turn cost exceeded budget.
+                    if event.get("budgetExceeded") or (
+                        max_budget and max_budget > 0 and evt_cost > max_budget
+                    ):
+                        log.error(
+                            "SDK budget exceeded for %s: cost=%.4f > max_budget=%.4f",
+                            session_key, evt_cost, max_budget or 0,
+                        )
                     yield ClaudeResponse(
                         result=event.get("result", ""),
                         session_id=session_id,
-                        cost=event.get("cost", 0),
+                        cost=evt_cost,
                         input_tokens=event.get("inputTokens", 0),
                         output_tokens=event.get("outputTokens", 0),
                         num_turns=1,

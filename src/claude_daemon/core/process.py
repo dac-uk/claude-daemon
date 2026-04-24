@@ -399,6 +399,7 @@ class ProcessManager:
                     prompt=prompt,
                     context=system_context,
                     model=sdk_model,
+                    max_budget=budget,
                 )
                 elapsed = _time.monotonic() - t0
                 if not response.is_error and (
@@ -435,6 +436,7 @@ class ProcessManager:
                         prompt=prompt,
                         context=system_context,
                         model=sdk_model,
+                        max_budget=budget,
                     )
                     elapsed = _time.monotonic() - t0
                     if not response.is_error and (
@@ -554,6 +556,7 @@ class ProcessManager:
                     prompt=prompt,
                     context=system_context,
                     model=sdk_model,
+                    max_budget=budget,
                 ):
                     if isinstance(chunk, ClaudeResponse):
                         if chunk.session_id:

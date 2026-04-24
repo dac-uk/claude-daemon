@@ -6,14 +6,14 @@
  *
  * Commands (stdin):
  *   {"cmd":"create","id":"...","agent":"name","model":"sonnet",...}
- *   {"cmd":"send","id":"...","agent":"name","prompt":"...","context":"..."}
+ *   {"cmd":"send","id":"...","agent":"name","prompt":"...","context":"...","maxBudget":0.50}
  *   {"cmd":"close","id":"...","agent":"name"}
  *   {"cmd":"shutdown","id":"..."}
  *
  * Events (stdout):
  *   {"event":"created","id":"...","agent":"name","sessionId":"..."}
  *   {"event":"text","id":"...","agent":"name","text":"..."}
- *   {"event":"result","id":"...","agent":"name",...metadata...}
+ *   {"event":"result","id":"...","agent":"name",...metadata...,"budgetExceeded":bool}
  *   {"event":"error","id":"...","agent":"name","message":"...","recoverable":bool}
  *   {"event":"ready"}  (sent once on startup)
  */
@@ -109,7 +109,7 @@ async function handleCreate(cmd) {
 }
 
 async function handleSend(cmd) {
-  const { id, agent, prompt, context } = cmd;
+  const { id, agent, prompt, context, maxBudget } = cmd;
 
   const session = sessions.get(agent);
   if (!session) {
@@ -243,6 +243,14 @@ async function handleSend(cmd) {
             : JSON.stringify(msg.result);
         }
 
+        // Post-hoc budget check — true mid-turn abort isn't possible because
+        // cost is only known after the stream completes.  Flag the result so
+        // Python can log a hard ERROR and callers can detect over-budget turns.
+        const budgetExceeded = (maxBudget != null && maxBudget > 0 && cost > maxBudget);
+        if (budgetExceeded) {
+          log(`Budget exceeded for ${agent}: cost=${cost.toFixed(4)} > maxBudget=${maxBudget.toFixed(4)}`);
+        }
+
         // Done — break out of stream
         break;
       } else if (type === "system") {
@@ -257,11 +265,13 @@ async function handleSend(cmd) {
       // Ignore other message types (tool_use, status, etc.)
     }
 
+    const budgetExceeded = (maxBudget != null && maxBudget > 0 && cost > maxBudget);
     emit({
       event: "result", id, agent, sessionId,
       result: resultText, cost, inputTokens, outputTokens,
       durationMs: durationMs || (Date.now() - startTime),
       stopReason,
+      budgetExceeded: budgetExceeded || false,
     });
   } catch (err) {
     log(`Send error for ${agent}: ${err.message} (code=${err.code}, name=${err.name})`);

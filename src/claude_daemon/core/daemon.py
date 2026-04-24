@@ -208,6 +208,11 @@ class ClaudeDaemon:
             models_to_warm: set[str] = set()
             default_model = agent.get_model("default")
             models_to_warm.add(default_model)
+            # Also warm the chat model so that interactive chat uses the SDK
+            # bridge rather than falling through to a cold subprocess spawn.
+            chat_model = agent.get_model("chat")
+            if chat_model and chat_model != default_model:
+                models_to_warm.add(chat_model)
             if agent.name.lower() in PRIORITY_AGENTS:
                 planning_model = agent.get_model("planning")
                 if planning_model and planning_model != default_model:
@@ -785,6 +790,7 @@ class ClaudeDaemon:
             async for chunk in self.orchestrator.stream_to_agent(
                 agent=agent, prompt=cleaned_prompt,
                 session_id=session_id, platform=platform, user_id=user_id,
+                task_type="chat",
             ):
                 yield chunk
 
