@@ -813,6 +813,31 @@ class ConversationStore:
         )
         self._db.commit()
 
+    def get_daily_agent_model_costs(self) -> list[dict]:
+        """Return today's cost per (agent_name, model) from agent_metrics.
+
+        Results are ordered by cost descending and include only rows where
+        both agent_name and model are non-empty, so the caller can apply
+        per-model thresholds without surprises.
+        """
+        rows = self._db.execute(
+            "SELECT agent_name, model, COALESCE(SUM(cost_usd), 0) AS total_cost "
+            "FROM agent_metrics "
+            "WHERE date(timestamp) = date('now') "
+            "  AND agent_name IS NOT NULL AND agent_name != '' "
+            "  AND model IS NOT NULL AND model != '' "
+            "GROUP BY agent_name, model "
+            "ORDER BY total_cost DESC",
+        ).fetchall()
+        return [
+            {
+                "agent_name": r["agent_name"],
+                "model": r["model"],
+                "total_cost": float(r["total_cost"]),
+            }
+            for r in rows
+        ]
+
     def get_agent_metrics(
         self, agent_name: str | None = None, days: int = 7,
     ) -> list[dict]:

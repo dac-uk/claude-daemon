@@ -44,6 +44,11 @@ class DaemonConfig:
     mcp_config: str | None = None  # Path to MCP server config JSON
     streaming_enabled: bool = True  # Use stream-json for interactive responses
     per_agent_daily_budget: float = 0.0  # USD per agent per day (0 = unlimited)
+    # Cost alert thresholds: keys are model name substrings (e.g. "opus"), value is USD/day.
+    # "default" key applies to all models not matched by a more specific key.
+    agent_model_cost_alert_usd: dict = field(
+        default_factory=lambda: {"opus": 5.0, "default": 10.0}
+    )
     model_fallback_chain: list[str] = field(default_factory=lambda: ["sonnet", "haiku"])
     model_retry_delay: float = 2.0  # Seconds between fallback retries
     model_max_retries: int = 2  # 0 disables model fallback
@@ -249,6 +254,9 @@ class DaemonConfig:
             mcp_config=claude_cfg.get("mcp_config"),
             streaming_enabled=claude_cfg.get("streaming", True),
             per_agent_daily_budget=float(claude_cfg.get("per_agent_daily_budget", 0.0)),
+            agent_model_cost_alert_usd=claude_cfg.get(
+                "agent_model_cost_alert_usd", {"opus": 5.0, "default": 10.0}
+            ),
             model_fallback_chain=claude_cfg.get("model_fallback_chain", ["sonnet", "haiku"]),
             model_retry_delay=float(claude_cfg.get("model_retry_delay", 2.0)),
             model_max_retries=int(claude_cfg.get("model_max_retries", 2)),

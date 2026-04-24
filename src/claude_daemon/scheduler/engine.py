@@ -142,6 +142,16 @@ class SchedulerEngine:
             replace_existing=True,
         )
 
+        # Daily per-agent model cost alerts (hourly check)
+        self._scheduler.add_job(
+            self._run_async,
+            IntervalTrigger(hours=1),
+            args=[self._job_agent_model_cost_alerts],
+            id="agent_model_cost_alerts",
+            name="Agent model cost alerts",
+            replace_existing=True,
+        )
+
     def _register_agent_heartbeats(self) -> None:
         """Parse each agent's HEARTBEAT.md and register their tasks as cron jobs."""
         if not self.daemon.agent_registry:
@@ -681,6 +691,81 @@ class SchedulerEngine:
         if len(lines) > 100:
             lines = lines[-100:]
         events_file.write_text("# Agent Events\n\n" + "\n".join(lines) + "\n")
+
+    async def _job_agent_model_cost_alerts(self) -> None:
+        """Check today's per-(agent, model) spend and fire alerts when thresholds are exceeded."""
+        if not self.daemon.store:
+            return
+        try:
+            rows = self.daemon.store.get_daily_agent_model_costs()
+        except Exception:
+            log.exception("Failed to query daily agent model costs")
+            return
+
+        thresholds = self.config.agent_model_cost_alert_usd
+        for row in rows:
+            agent_name = row["agent_name"]
+            model = row["model"]
+            cost = row["total_cost"]
+
+            threshold = self._resolve_model_threshold(model, thresholds)
+            if threshold is None or cost <= threshold:
+                continue
+
+            message = (
+                f"\u26a0\ufe0f Cost alert: {agent_name} used ${cost:.2f} on {model} today "
+                f"(threshold: ${threshold:.2f})"
+            )
+            log.warning(message)
+            self._send_cost_alert(message, agent_name=agent_name, model=model, cost=cost)
+            await self._send_webhook_alerts(
+                "cost_alert",
+                message,
+                metadata={"agent": agent_name, "model": model, "cost_usd": cost, "threshold_usd": threshold},
+            )
+
+    @staticmethod
+    def _resolve_model_threshold(model: str, thresholds: dict) -> float | None:
+        """Return the alert threshold for *model* from the config dict.
+
+        Matching is case-insensitive substring: e.g. "opus" matches
+        "claude-opus-4-5". Falls back to "default" key, then returns None
+        (meaning no alert) if neither is present.
+        """
+        model_lower = model.lower()
+        for key, value in thresholds.items():
+            if key == "default":
+                continue
+            if key.lower() in model_lower:
+                return float(value)
+        default = thresholds.get("default")
+        return float(default) if default is not None else None
+
+    def _send_cost_alert(self, message: str, **metadata) -> None:
+        """Log cost alert, write to daily log, audit trail, and attempt integration delivery."""
+        if self.daemon.durable:
+            self.daemon.durable.append_daily_log(f"COST ALERT: {message}")
+        if self.daemon.store:
+            self.daemon.store.record_audit(
+                action="cost_alert",
+                agent_name=metadata.get("agent_name", ""),
+                details=message,
+                cost_usd=metadata.get("cost", 0.0),
+                success=True,
+            )
+        # Fire-and-forget integration delivery
+        if self.daemon.router and self._loop and self._loop.is_running():
+            async def _deliver():
+                for platform_name, integration in self.daemon.router.integrations.items():
+                    for chat_id in self._get_alert_targets(platform_name):
+                        try:
+                            await integration.send_response(chat_id, message)
+                        except Exception:
+                            log.warning(
+                                "Failed to deliver cost alert via %s:%s",
+                                platform_name, chat_id,
+                            )
+            asyncio.run_coroutine_threadsafe(_deliver(), self._loop)
 
     def _alert_failure(self, message: str) -> None:
         """Log failure and attempt to notify via daily log and webhooks."""
