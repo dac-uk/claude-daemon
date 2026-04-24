@@ -275,6 +275,7 @@ class ProcessManager:
         mcp_config_path: str | None = None,
         settings_path: str | None = None,
         effort: str | None = None,
+        disable_tools: bool = False,
     ) -> tuple[list[str], str]:
         """Build the claude CLI arguments. Returns (args, tracking_id)."""
         args = [
@@ -326,6 +327,12 @@ class ProcessManager:
         if system_context:
             args.extend(["--append-system-prompt", system_context])
 
+        # Tool suppression: empty --tools disables all built-in tools.
+        # Used by pure text-to-text flows (e.g. memory compaction) where
+        # tool use inflates turn count and yields meta replies instead of content.
+        if disable_tools:
+            args.extend(["--tools", ""])
+
         args.append(prompt)
         return args, tracking_id
 
@@ -343,6 +350,7 @@ class ProcessManager:
         effort: str | None = None,
         task_type: str = "default",
         agent_name: str | None = None,
+        disable_tools: bool = False,
     ) -> ClaudeResponse:
         """Send a prompt and return the complete response (buffered mode).
 
@@ -453,21 +461,21 @@ class ProcessManager:
                     return await self._execute_buffered(
                         prompt, None, system_context, budget, platform, user_id,
                         model_override, mcp_config_path, settings_path, effort,
-                        agent_name=agent_name,
+                        agent_name=agent_name, disable_tools=disable_tools,
                     )
             async with lock:
                 async with self._semaphore:
                     return await self._execute_buffered(
                         prompt, session_id, system_context, budget, platform, user_id,
                         model_override, mcp_config_path, settings_path, effort,
-                        agent_name=agent_name,
+                        agent_name=agent_name, disable_tools=disable_tools,
                     )
         else:
             async with self._semaphore:
                 return await self._execute_buffered(
                     prompt, session_id, system_context, budget, platform, user_id,
                     model_override, mcp_config_path, settings_path, effort,
-                    agent_name=agent_name,
+                    agent_name=agent_name, disable_tools=disable_tools,
                 )
 
     async def stream_message(
@@ -730,6 +738,7 @@ class ProcessManager:
         settings_path: str | None = None,
         effort: str | None = None,
         agent_name: str | None = None,
+        disable_tools: bool = False,
     ) -> ClaudeResponse:
         """Execute claude CLI with automatic model fallback on rate limit errors."""
         max_retries = self.config.model_max_retries
@@ -738,7 +747,7 @@ class ProcessManager:
             response, _ = await self._execute_buffered_once(
                 prompt, session_id, system_context, max_budget, platform, user_id,
                 model_override, mcp_config_path, settings_path, effort,
-                agent_name=agent_name,
+                agent_name=agent_name, disable_tools=disable_tools,
             )
             response.model_used = model_override or ""
             return response
@@ -750,7 +759,7 @@ class ProcessManager:
             response, stderr_text = await self._execute_buffered_once(
                 prompt, session_id, system_context, max_budget, platform, user_id,
                 model, mcp_config_path, settings_path, effort,
-                agent_name=agent_name,
+                agent_name=agent_name, disable_tools=disable_tools,
             )
             response.model_used = model
             last_response = response
@@ -775,12 +784,14 @@ class ProcessManager:
         settings_path: str | None = None,
         effort: str | None = None,
         agent_name: str | None = None,
+        disable_tools: bool = False,
     ) -> tuple[ClaudeResponse, str]:
         """Execute a single buffered Claude CLI call. Returns (response, stderr_text)."""
         args, tracking_id = self._build_args(
             prompt, session_id, system_context, max_budget,
             model_override=model_override, mcp_config_path=mcp_config_path,
             settings_path=settings_path, effort=effort,
+            disable_tools=disable_tools,
         )
 
         log.debug("Executing Claude: session=%s, prompt_len=%d", tracking_id, len(prompt))

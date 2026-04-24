@@ -418,19 +418,27 @@ class ContextCompactor:
             return
 
         prompt = (
-            f"You are {agent.name} ({agent.identity.role}). "
-            f"Update your persistent memory based on recent conversations.\n\n"
+            f"You are helping agent '{agent.name}' ({agent.identity.role}) "
+            f"consolidate their persistent memory.\n\n"
             f"Current memory:\n{current_memory[:2000]}\n\n"
             f"Recent conversations:\n{'---'.join(interaction_texts)}\n\n"
-            f"Write the complete updated memory. Preserve all important facts, "
-            f"preferences, and decisions. Add new learnings. Remove outdated info. "
-            f"Keep it concise and actionable."
+            f"Produce the updated memory document. Preserve important facts, "
+            f"preferences, and decisions. Add new learnings from the conversations. "
+            f"Remove outdated info. Keep it concise and actionable.\n\n"
+            f"CRITICAL OUTPUT RULES:\n"
+            f"- Respond with the memory content ONLY — plain text/markdown.\n"
+            f"- Do NOT call any tools.\n"
+            f"- Do NOT add preamble, acknowledgement, or trailing commentary.\n"
+            f"- Do NOT wrap the output in code fences.\n"
+            f"- The first character of your response must be the first character "
+            f"of the new memory document."
         )
 
         response = await self.pm.send_message(
             prompt=prompt, max_budget=0.10,
             platform="system", user_id=f"compactor:{agent.name}",
             model_override=agent.get_model("scheduled"),
+            disable_tools=True,
         )
 
         # Retry once on 0-token response (transient API issue)
@@ -443,10 +451,17 @@ class ContextCompactor:
                 prompt=prompt, max_budget=0.10,
                 platform="system", user_id=f"compactor:{agent.name}",
                 model_override=agent.get_model("scheduled"),
+                disable_tools=True,
             )
 
         if response.is_error or len(response.result) < 30:
-            log.warning("Agent memory compaction for %s produced bad output", agent.name)
+            preview = (response.result or "").strip().replace("\n", " ")[:120]
+            log.warning(
+                "Agent memory compaction for %s produced bad output "
+                "(is_error=%s, len=%d, tokens=%d, turns=%d, preview=%r)",
+                agent.name, response.is_error, len(response.result),
+                response.output_tokens, response.num_turns, preview,
+            )
             return
 
         new_memory = response.result

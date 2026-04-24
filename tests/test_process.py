@@ -229,6 +229,37 @@ def test_build_args_stream_json_includes_verbose():
     assert args.index("--verbose") < args.index("--permission-mode") + 3
 
 
+def test_build_args_disable_tools_appends_empty_tools_flag():
+    """disable_tools=True must pass `--tools ""` so Claude CLI skips all built-in tools.
+
+    Regression for the 2026-04-23 'agent memory compaction produced bad output' bug:
+    without this, Haiku burned 6 turns exploring with tools and returned a short meta
+    reply (< 30 chars) that tripped the compactor's output-length guard.
+    """
+    config = MagicMock()
+    config.max_concurrent_sessions = 5
+    config.max_budget_per_message = 0.5
+    config.claude_binary = "claude"
+    config.permission_mode = "auto"
+    config.default_model = None
+    config.mcp_config = None
+    pm = ProcessManager(config)
+
+    args, _ = pm._build_args(
+        prompt="hi", session_id=None, system_context=None,
+        max_budget=0.5, disable_tools=True,
+    )
+    assert "--tools" in args
+    idx = args.index("--tools")
+    assert args[idx + 1] == ""
+
+    # Default path must NOT include --tools
+    args2, _ = pm._build_args(
+        prompt="hi", session_id=None, system_context=None, max_budget=0.5,
+    )
+    assert "--tools" not in args2
+
+
 def test_build_args_json_does_not_include_verbose():
     """Buffered --output-format=json does not need --verbose; keep args minimal."""
     config = MagicMock()
@@ -314,7 +345,7 @@ async def test_execute_buffered_falls_back_on_rate_limit():
 
     async def fake_once(prompt, session_id, system_context, max_budget,
                         platform, user_id, model_override=None, mcp_config_path=None,
-                        settings_path=None, effort=None, agent_name=None):
+                        settings_path=None, effort=None, agent_name=None, **kwargs):
         nonlocal call_count
         call_count += 1
         if model_override == "opus":
@@ -351,7 +382,7 @@ async def test_execute_buffered_no_fallback_on_normal_error():
 
     async def fake_once(prompt, session_id, system_context, max_budget,
                         platform, user_id, model_override=None, mcp_config_path=None,
-                        settings_path=None, effort=None, agent_name=None):
+                        settings_path=None, effort=None, agent_name=None, **kwargs):
         nonlocal call_count
         call_count += 1
         return ClaudeResponse.error("Authentication error"), "auth failed"
@@ -380,7 +411,7 @@ async def test_execute_buffered_exhausts_chain():
 
     async def fake_once(prompt, session_id, system_context, max_budget,
                         platform, user_id, model_override=None, mcp_config_path=None,
-                        settings_path=None, effort=None, agent_name=None):
+                        settings_path=None, effort=None, agent_name=None, **kwargs):
         nonlocal call_count
         call_count += 1
         return ClaudeResponse.error("rate limit exceeded"), "429"
