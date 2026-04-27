@@ -40,7 +40,7 @@ class DaemonConfig:
     max_budget_per_message: float = 0.50
     default_model: str | None = None
     permission_mode: str = "auto"
-    process_timeout: int = 300
+    process_timeout: int = 1800
     mcp_config: str | None = None  # Path to MCP server config JSON
     streaming_enabled: bool = True  # Use stream-json for interactive responses
     per_agent_daily_budget: float = 0.0  # USD per agent per day (0 = unlimited)
@@ -250,7 +250,7 @@ class DaemonConfig:
             max_budget_per_message=float(claude_cfg.get("max_budget_per_message", 0.50)),
             default_model=claude_cfg.get("model"),
             permission_mode=claude_cfg.get("permission_mode", "auto"),
-            process_timeout=int(claude_cfg.get("process_timeout", 300)),
+            process_timeout=int(claude_cfg.get("process_timeout", 1800)),
             mcp_config=claude_cfg.get("mcp_config"),
             streaming_enabled=claude_cfg.get("streaming", True),
             per_agent_daily_budget=float(claude_cfg.get("per_agent_daily_budget", 0.0)),

@@ -48,9 +48,12 @@ _TAG_TERMINATORS = (
     r'\[BUILD\]|\[PLAN\]|\[REVIEW\]|\Z'
 )
 
-# Pattern to detect delegation requests in agent responses: [DELEGATE:agent_name] message
+# Pattern to detect delegation requests in agent responses:
+#   [DELEGATE:agent_name] message              — default routing (sonnet)
+#   [DELEGATE:agent_name:complex] message      — planning routing (opus)
+# The optional ``:flag`` group is mapped to a task_type via _resolve_task_type().
 DELEGATION_PATTERN = re.compile(
-    rf'\[DELEGATE:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    rf'\[DELEGATE:{_PLACEHOLDER}(\w+)(?::(\w+))?\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
@@ -66,9 +69,11 @@ COUNCIL_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# [HELP:agent_name] question — quick single-turn consultation
+# [HELP:agent_name] question — quick single-turn consultation.
+# Optional flag mirrors DELEGATION_PATTERN so a help-request can opt into
+# opus when the consultation itself is complex.
 HELP_PATTERN = re.compile(
-    rf'\[HELP:{_PLACEHOLDER}(\w+)\]\s*(.*?)(?={_TAG_TERMINATORS})',
+    rf'\[HELP:{_PLACEHOLDER}(\w+)(?::(\w+))?\]\s*(.*?)(?={_TAG_TERMINATORS})',
     re.DOTALL,
 )
 
@@ -128,6 +133,142 @@ def _strip_code_blocks(text: str) -> str:
     in examples or documentation-style prose."""
     without_fenced = _CODE_BLOCK_RE.sub('', text)
     return _INLINE_CODE_RE.sub('', without_fenced)
+
+
+# Maps the optional delegation flag to the agent task_type used by
+# ``agent.get_model(task_type)``. Any unknown flag falls back to
+# ``"default"`` and emits a WARNING so typos surface in logs.
+# See shared/playbooks/model-routing.md for the rubric.
+_DELEGATION_FLAG_TO_TASK_TYPE = {
+    "simple": "default",
+    "complex": "planning",
+    "plan": "planning",
+    "planning": "planning",
+}
+
+
+def _resolve_task_type(flag: str | None) -> str:
+    """Resolve a [DELEGATE:agent:flag] flag to an agent task_type.
+
+    No flag (or empty) → ``"default"``. Unknown flag → ``"default"`` plus a
+    WARNING so typos (e.g. ``[DELEGATE:albert:complx]``) are visible.
+    """
+    if not flag:
+        return "default"
+    task_type = _DELEGATION_FLAG_TO_TASK_TYPE.get(flag.lower())
+    if task_type is None:
+        log.warning(
+            "Unknown delegation flag '%s' — falling back to 'default' "
+            "(valid flags: %s)",
+            flag, ", ".join(sorted(_DELEGATION_FLAG_TO_TASK_TYPE)),
+        )
+        return "default"
+    return task_type
+
+
+# Keywords whose presence in the original prompt pushes a task toward opus
+# per the model-routing rubric's "when in doubt" clause.
+_COMPLEXITY_KEYWORDS = (
+    "refactor", "migrate", "design", "architecture",
+    "implement new", "split", "consolidate", "rewrite",
+)
+
+# Regex to parse Albert/agents' wrap-up deliverables: "files_changed: N".
+_FILES_CHANGED_RE = re.compile(
+    r'files[_\s-]*changed\s*[:=]\s*(\d+)', re.IGNORECASE,
+)
+_LOC_DELTA_RE = re.compile(
+    r'loc[_\s-]*delta\s*[:=]\s*(\d+)', re.IGNORECASE,
+)
+_NEW_TESTS_RE = re.compile(
+    r'new[_\s-]*tests?[_\s-]*(?:added|files?)\s*[:=]\s*(yes|true|1|no|false|0)',
+    re.IGNORECASE,
+)
+
+
+def _classify_model(model: str) -> str:
+    """Collapse a resolved model name to 'opus' / 'sonnet' / 'other'."""
+    m = (model or "").lower()
+    if "opus" in m:
+        return "opus"
+    if "sonnet" in m:
+        return "sonnet"
+    if "haiku" in m:
+        return "haiku"
+    return m or "unknown"
+
+
+def _parse_delegation_result(result: str) -> tuple[int, int, bool]:
+    """Best-effort parse of files_changed / loc_delta / new_tests_added
+    from a delegated agent's wrap-up message. Missing fields → zeros/False.
+    """
+    files_changed = 0
+    loc_delta = 0
+    new_tests = False
+    if not result:
+        return files_changed, loc_delta, new_tests
+    m = _FILES_CHANGED_RE.search(result)
+    if m:
+        try:
+            files_changed = int(m.group(1))
+        except ValueError:
+            pass
+    m = _LOC_DELTA_RE.search(result)
+    if m:
+        try:
+            loc_delta = int(m.group(1))
+        except ValueError:
+            pass
+    m = _NEW_TESTS_RE.search(result)
+    if m:
+        new_tests = m.group(1).lower() in ("yes", "true", "1")
+    return files_changed, loc_delta, new_tests
+
+
+def compute_delegation_audit(
+    files_changed: int,
+    loc_delta: int,
+    new_test_files: bool,
+    task_type: str,
+    model_used: str,
+    prompt: str = "",
+) -> dict:
+    """Apply the model-routing rubric to a completed delegation.
+
+    Returns a dict with: ``tripped`` (int), ``expected`` ('opus'|'sonnet'),
+    ``used`` (classified model), and ``outcome`` (one of
+    'appropriate', 'under-routed', 'over-routed'). Pure function — safe to
+    test without touching the DB.
+    """
+    prompt_lc = (prompt or "").lower()
+    keyword_hit = any(kw in prompt_lc for kw in _COMPLEXITY_KEYWORDS)
+
+    tripped = sum([
+        files_changed >= 3,
+        loc_delta >= 100,
+        bool(new_test_files),
+        task_type == "planning" or keyword_hit,
+    ])
+
+    expected = "opus" if tripped >= 2 else "sonnet"
+    used = _classify_model(model_used)
+
+    if used == expected:
+        outcome = "appropriate"
+    elif expected == "sonnet" and used == "opus":
+        outcome = "under-routed"
+    elif expected == "opus" and used == "sonnet":
+        outcome = "over-routed"
+    else:
+        # e.g. haiku in either column — treat as informational mismatch.
+        outcome = "appropriate"
+
+    return {
+        "tripped": tripped,
+        "expected": expected,
+        "used": used,
+        "outcome": outcome,
+    }
 
 
 ROUTING_PROMPT = """\
@@ -622,16 +763,23 @@ class Orchestrator:
 
         appended = []
         prior_results: dict[str, str] = {}
-        for target_name, message in delegations:
+        for target_name, flag, message in delegations:
             target = self.registry.get(target_name.lower())
             if not target:
                 appended.append(f"\n[Delegation to '{target_name}' failed: agent not found]")
                 continue
 
-            log.info("Delegation: %s -> %s", from_agent.name, target_name)
+            task_type = _resolve_task_type(flag)
+            log.info(
+                "Delegation: %s -> %s (flag=%s task_type=%s)",
+                from_agent.name, target_name, flag or "none", task_type,
+            )
             self.store.record_audit(
                 action="agent_delegation", agent_name=from_agent.name,
-                details=f"delegated to {target_name}: {message.strip()[:200]}",
+                details=(
+                    f"delegated to {target_name} (flag={flag or 'none'}, "
+                    f"task_type={task_type}): {message.strip()[:200]}"
+                ),
             )
 
             effective_message = message.strip()
@@ -645,6 +793,7 @@ class Orchestrator:
             try:
                 result = await self.agent_to_agent(
                     from_agent, target, effective_message,
+                    task_type=task_type,
                 )
 
                 msg_lower = effective_message.lower()
@@ -688,6 +837,13 @@ class Orchestrator:
                 appended.append(
                     f"\n\n--- Response from {target.identity.display_name} ---\n{result}"
                 )
+                self._audit_delegation(
+                    from_agent=from_agent,
+                    target=target,
+                    prompt=message.strip(),
+                    result=result,
+                    task_type=task_type,
+                )
             except Exception as exc:
                 detail = str(exc)[:200]
                 log.exception("Delegation from %s to %s failed", from_agent.name, target_name)
@@ -702,7 +858,7 @@ class Orchestrator:
                 import json as _json
                 steps = [
                     {"step": f"Delegate to {name}: {msg[:60]}", "agent": name, "done": name in prior_results}
-                    for name, msg in delegations
+                    for name, _flag, msg in delegations
                 ]
                 plan_id = uuid.uuid4().hex[:12]
                 self.store.create_plan(
@@ -738,6 +894,70 @@ class Orchestrator:
         response = self._process_self_task_tags(from_agent, response)
 
         return response
+
+    def _audit_delegation(
+        self,
+        from_agent: Agent,
+        target: Agent,
+        prompt: str,
+        result: str,
+        task_type: str,
+    ) -> dict | None:
+        """Emit a post-hoc rubric-compliance audit for a completed delegation.
+
+        Parses the delegate's wrap-up for files_changed / loc_delta /
+        new_tests_added, compares actual work-size against the model-routing
+        rubric (shared/playbooks/model-routing.md), logs an INFO line, and
+        persists the outcome to ``delegation_audit``. Always safe to call —
+        any failure is swallowed so the delegation path can't break.
+        """
+        try:
+            files_changed, loc_delta, new_tests = _parse_delegation_result(result)
+            model_used = target.get_model(task_type)
+            audit = compute_delegation_audit(
+                files_changed=files_changed,
+                loc_delta=loc_delta,
+                new_test_files=new_tests,
+                task_type=task_type,
+                model_used=model_used,
+                prompt=prompt,
+            )
+            task_id = uuid.uuid4().hex[:12]
+
+            base = (
+                f"model_choice={audit['outcome']} agent={target.name} "
+                f"task={task_id} tripped={audit['tripped']} "
+                f"used={audit['used']} expected={audit['expected']}"
+            )
+            if audit["outcome"] == "under-routed":
+                log.info("%s — cost waste", base)
+            elif audit["outcome"] == "over-routed":
+                log.info("%s — quality risk, bump to complex next time", base)
+            else:
+                log.info(base)
+
+            # Persist — swallow errors so an audit-table issue never breaks
+            # the main delegation flow. The log line above is still emitted.
+            try:
+                self.store.record_delegation_audit(
+                    task_id=task_id,
+                    agent_name=target.name,
+                    task_type_used=task_type,
+                    model_used=model_used,
+                    tripped_count=audit["tripped"],
+                    outcome=audit["outcome"],
+                    files_changed=files_changed,
+                    loc_delta=loc_delta,
+                    new_test_files=new_tests,
+                    prompt_sample=prompt[:200],
+                )
+            except Exception:
+                log.debug("delegation_audit persistence failed", exc_info=True)
+
+            return {**audit, "task_id": task_id, "model_used": model_used}
+        except Exception:
+            log.debug("delegation audit failed for %s", target.name, exc_info=True)
+            return None
 
     async def _process_spawn_tags(
         self, from_agent: Agent, response: ClaudeResponse,
@@ -816,21 +1036,29 @@ class Orchestrator:
             return response
 
         appended = []
-        for target_name, question in helps:
+        for target_name, flag, question in helps:
             target = self.registry.get(target_name.lower())
             if not target:
                 appended.append(f"\n[Help from '{target_name}' failed: agent not found]")
                 continue
 
-            log.info("Help request: %s -> %s", from_agent.name, target_name)
+            task_type = _resolve_task_type(flag)
+            log.info(
+                "Help request: %s -> %s (flag=%s task_type=%s)",
+                from_agent.name, target_name, flag or "none", task_type,
+            )
             self.store.record_audit(
                 action="agent_help_request", agent_name=from_agent.name,
-                details=f"help from {target_name}: {question.strip()[:200]}",
+                details=(
+                    f"help from {target_name} (flag={flag or 'none'}, "
+                    f"task_type={task_type}): {question.strip()[:200]}"
+                ),
             )
             try:
                 result = await self.agent_to_agent(
                     from_agent, target,
                     f"[Help request from {from_agent.name}]\n\n{question.strip()}",
+                    task_type=task_type,
                 )
                 appended.append(
                     f"\n\n--- Help from {target.identity.display_name} ---\n{result}"
@@ -1367,11 +1595,12 @@ class Orchestrator:
 
             delegations = DELEGATION_PATTERN.findall(scan_text)
             prior_results: dict[str, str] = {}
-            for target_name, message_text in delegations:
+            for target_name, flag, message_text in delegations:
                 target = self.registry.get(target_name.lower())
                 if not target:
                     yield f"\n[Delegation to '{target_name}' failed: agent not found]\n"
                     continue
+                del_task_type = _resolve_task_type(flag)
                 yield f"\n[→ Delegating to {target.identity.display_name}...]\n"
                 effective_msg = message_text.strip()
                 if prior_results:
@@ -1382,10 +1611,18 @@ class Orchestrator:
                 try:
                     del_result = await self.agent_to_agent(
                         agent, target, effective_msg,
+                        task_type=del_task_type,
                     )
                     prior_results[target_name] = del_result
                     yield f"\n[← {target.identity.display_name}: {del_result[:300]}]\n"
                     accumulated += f"\n\n--- Response from {target.identity.display_name} ---\n{del_result}"
+                    self._audit_delegation(
+                        from_agent=agent,
+                        target=target,
+                        prompt=message_text.strip(),
+                        result=del_result,
+                        task_type=del_task_type,
+                    )
                 except Exception as exc:
                     yield f"\n[Delegation to '{target_name}' failed: {str(exc)[:150]}]\n"
 

@@ -20,7 +20,7 @@ def test_default_config():
     assert config.daily_log_enabled is True
     assert config.dream_enabled is True
     assert config.streaming_enabled is True
-    assert config.process_timeout == 300
+    assert config.process_timeout == 1800
     assert config.max_context_chars == 5000
     assert config.max_memory_chars == 3000
     assert config.log_retention_days == 30

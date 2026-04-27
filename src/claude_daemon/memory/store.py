@@ -282,6 +282,32 @@ class ConversationStore:
                 updated_at TEXT
             )
         """)
+
+        # delegation_audit: post-hoc model-routing rubric outcomes per delegation
+        self._db.execute("""
+            CREATE TABLE IF NOT EXISTS delegation_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                agent_name TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                task_type_used TEXT NOT NULL,
+                model_used TEXT NOT NULL,
+                tripped_count INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL,
+                files_changed INTEGER NOT NULL DEFAULT 0,
+                loc_delta INTEGER NOT NULL DEFAULT 0,
+                new_test_files INTEGER NOT NULL DEFAULT 0,
+                prompt_sample TEXT
+            )
+        """)
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delegation_audit_agent "
+            "ON delegation_audit(agent_name)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delegation_audit_outcome "
+            "ON delegation_audit(outcome)"
+        )
         self._db.commit()
 
     def close(self) -> None:
@@ -884,6 +910,53 @@ class ConversationStore:
             (action, agent_name, user_id, platform, details[:5000], cost_usd, success),
         )
         self._db.commit()
+
+    def record_delegation_audit(
+        self,
+        task_id: str,
+        agent_name: str,
+        task_type_used: str,
+        model_used: str,
+        tripped_count: int,
+        outcome: str,
+        files_changed: int = 0,
+        loc_delta: int = 0,
+        new_test_files: bool = False,
+        prompt_sample: str = "",
+    ) -> None:
+        """Persist a post-hoc model-routing rubric outcome for a delegated task."""
+        self._db.execute(
+            "INSERT INTO delegation_audit "
+            "(agent_name, task_id, task_type_used, model_used, tripped_count, "
+            "outcome, files_changed, loc_delta, new_test_files, prompt_sample) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                agent_name, task_id, task_type_used, model_used, tripped_count,
+                outcome, files_changed, loc_delta, int(bool(new_test_files)),
+                (prompt_sample or "")[:200],
+            ),
+        )
+        self._db.commit()
+
+    def get_delegation_audits(
+        self,
+        agent_name: str | None = None,
+        outcome: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Query delegation audit entries, most recent first."""
+        query = "SELECT * FROM delegation_audit WHERE 1=1"
+        params: list = []
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        if outcome:
+            query += " AND outcome = ?"
+            params.append(outcome)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self._db.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
 
     def get_audit_log(
         self,

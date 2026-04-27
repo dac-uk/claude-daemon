@@ -294,8 +294,10 @@ def test_help_pattern():
     text = "[HELP:penny] What's our current monthly API spend?"
     matches = HELP_PATTERN.findall(text)
     assert len(matches) == 1
+    # HELP_PATTERN captures (agent, flag, question); flag is optional.
     assert matches[0][0] == "penny"
-    assert "API spend" in matches[0][1]
+    assert matches[0][1] == ""
+    assert "API spend" in matches[0][2]
 
 
 def test_multiple_tags_in_one_response():

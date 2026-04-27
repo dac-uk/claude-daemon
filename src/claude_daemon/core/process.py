@@ -327,13 +327,15 @@ class ProcessManager:
         if system_context:
             args.extend(["--append-system-prompt", system_context])
 
+        args.append(prompt)
+
         # Tool suppression: empty --tools disables all built-in tools.
         # Used by pure text-to-text flows (e.g. memory compaction) where
         # tool use inflates turn count and yields meta replies instead of content.
+        # NOTE: prompt must come BEFORE --tools; the variadic --tools flag
+        # greedily consumes following positional arguments as tool names.
         if disable_tools:
             args.extend(["--tools", ""])
-
-        args.append(prompt)
         return args, tracking_id
 
     async def send_message(
