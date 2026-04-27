@@ -132,10 +132,13 @@ class Updater:
             git_dir = package_dir / ".git"
 
             if git_dir.is_dir():
-                # Editable git install — pull and reinstall
+                # Editable git install — pull and reinstall.
+                # --rebase --autostash: stash any local edits (e.g. agent MEMORY.md /
+                # REFLECTIONS.md writes), pull, then restore the stash so agent
+                # files are never lost and the merge can't be blocked by them.
                 log.info("Self-update: detected editable git install at %s", package_dir)
                 proc = await asyncio.create_subprocess_exec(
-                    "git", "-C", str(package_dir), "pull", "--ff-only",
+                    "git", "-C", str(package_dir), "pull", "--rebase", "--autostash",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -144,7 +147,10 @@ class Updater:
 
                 if proc.returncode != 0:
                     err = stderr.decode().strip()
-                    log.warning("git pull failed: %s", err)
+                    log.warning(
+                        "git pull failed: %s — local changes were stashed and "
+                        "will not be lost; run `git stash list` to inspect", err,
+                    )
                     return UpdateResult(current_version=current, updated=False, error=err)
 
                 already_up_to_date = "already up to date" in pull_output.lower()
