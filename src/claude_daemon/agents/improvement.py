@@ -227,6 +227,11 @@ class ImprovementPlanner:
         )
 
         if response.is_error or len(response.result) < 30:
+            log.error(
+                "Self-assessment for %s failed: is_error=%s, len=%d, tokens=%d, preview=%r",
+                agent.name, response.is_error, len(response.result),
+                response.output_tokens, (response.result or "").strip()[:200],
+            )
             log.warning("Self-assessment for %s failed", agent.name)
             return
 

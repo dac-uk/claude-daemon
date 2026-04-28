@@ -457,16 +457,6 @@ class SchedulerEngine:
                     success=not response.is_error,
                 )
 
-            # Record metric
-            if self.daemon.store:
-                self.daemon.store.record_agent_metric(
-                    agent_name=agent_name, metric_type="heartbeat",
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    cost_usd=response.cost, model=model,
-                    platform="heartbeat", success=True,
-                )
-
             # Log to daily log
             if self.daemon.durable:
                 self.daemon.durable.append_daily_log(
